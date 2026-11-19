@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
 #
-# Boot a ready-made Alaya image in QEMU from Termux on Android (also works on
-# any Linux with bash, curl and qemu-system-x86_64). Nothing is built here:
-# the image comes from the project's CI.
+# Boot a ready-made Alaya image in QEMU from Termux on Android, or on any
+# Linux PC with bash, curl and qemu-system-x86_64 (there it uses KVM when it
+# can). Nothing is built here: the image comes from the project's CI.
 #
 #   alaya.sh run  [image]   boot and show the serial console (Ctrl+A then x quits)
 #   alaya.sh test [image]   boot, pass if the kernel reports a clean boot
 #   alaya.sh fetch          only download the latest image
 #
 # Options (environment):
-#   ALAYA_CPUS=2            virtual cores (default 1)
+#   ALAYA_CPUS=2            virtual cores (default 1); "all" = every host core
+#   ALAYA_ACCEL=auto        kvm, tcg or auto (default: kvm if /dev/kvm is usable)
 #   ALAYA_TIMEOUT=300       seconds before "test" gives up (default 300)
 #   ALAYA_IMAGE_URL=...     download from somewhere else
 #   ALAYA_DIR=...           where images are kept (default ~/alaya)
@@ -21,9 +22,19 @@ REPO_URL="https://github.com/gahitchi/os"
 IMAGE_URL="${ALAYA_IMAGE_URL:-$REPO_URL/releases/download/nightly/alaya-x86_64.iso}"
 DIR="${ALAYA_DIR:-$HOME/alaya}"
 CPUS="${ALAYA_CPUS:-1}"
+ACCEL="${ALAYA_ACCEL:-auto}"
 TIMEOUT="${ALAYA_TIMEOUT:-300}"
 OK_MARKER="alaya: boot ok"
 PANIC_MARKER="alaya: panic"
+# Each core prints "core <n>: ready, ..." once it passed its self-tests.
+READY_PATTERN='^core [0-9]+: ready'
+
+if [ "$CPUS" = all ]; then
+    CPUS=$(nproc)
+fi
+case "$CPUS" in
+    '' | *[!0-9]*) printf 'alaya.sh: ALAYA_CPUS must be a number or "all"\n' >&2; exit 1 ;;
+esac
 
 say() { printf 'alaya.sh: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
@@ -57,15 +68,40 @@ fetch() {
     echo "$image"
 }
 
+kvm_usable() {
+    [ -r /dev/kvm ] && [ -w /dev/kvm ]
+}
+
+# Decide once: "kvm" or "tcg".
+resolve_accel() {
+    case "$ACCEL" in
+        kvm) kvm_usable || die "ALAYA_ACCEL=kvm, but /dev/kvm is missing or not accessible (are you in the kvm group? log out and back in after adding yourself)"
+             ACCEL=kvm ;;
+        tcg) ;;
+        # A phone has no KVM: plain emulation (TCG), slower but enough.
+        auto) if kvm_usable; then ACCEL=kvm; else ACCEL=tcg; fi ;;
+        *) die "ALAYA_ACCEL must be kvm, tcg or auto" ;;
+    esac
+}
+
+accel_name() {
+    if [ "$ACCEL" = kvm ]; then echo "KVM"; else echo "emulation (TCG)"; fi
+}
+
 qemu_args() {
-    # No KVM on a phone: plain TCG emulation. Slower, but enough for the kernel.
-    printf '%s\n' -accel tcg -machine q35 -m 256M -smp "$CPUS" -no-reboot \
+    if [ "$ACCEL" = kvm ]; then
+        # The host CPU as it is: TSC-deadline timer, x2APIC, invariant TSC.
+        printf '%s\n' -accel kvm -cpu host,+invtsc
+    else
+        printf '%s\n' -accel tcg
+    fi
+    printf '%s\n' -machine q35 -m 256M -smp "$CPUS" -no-reboot \
         -display none -monitor none -cdrom "$1"
 }
 
 run() {
     local image="$1"
-    say "booting $image on $CPUS core(s)"
+    say "booting $image on $CPUS core(s) with $(accel_name)"
     say "after 'alaya: boot ok' the kernel just waits; quit with Ctrl+A, then lowercase x"
     say "(or Ctrl+A, then c, then type quit). 'alaya.sh test' exits on its own."
     mapfile -t args < <(qemu_args "$image")
@@ -76,7 +112,7 @@ test_boot() {
     local image="$1" log
     log=$(mktemp "${TMPDIR:-/tmp}/alaya-serial.XXXXXX")
     mapfile -t args < <(qemu_args "$image")
-    say "boot test on $CPUS core(s), timeout ${TIMEOUT}s (TCG can take a while)"
+    say "boot test on $CPUS core(s) with $(accel_name), timeout ${TIMEOUT}s"
     qemu-system-x86_64 "${args[@]}" -serial "file:$log" </dev/null &
     local pid=$! result=timeout start=$SECONDS
     while [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
@@ -88,9 +124,15 @@ test_boot() {
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     tr -d '\r' <"$log" | sed 's/^/  | /'
+    local ready
+    ready=$(tr -d '\r' <"$log" | grep -cE "$READY_PATTERN" || true)
     rm -f "$log"
+    if [ "$result" = pass ] && [ "$ready" -ne "$CPUS" ]; then
+        result=cores
+    fi
     case "$result" in
-        pass) say "PASS in $((SECONDS - start))s" ;;
+        pass) say "PASS in $((SECONDS - start))s: all $CPUS core(s) ready" ;;
+        cores) die "FAIL: only $ready of $CPUS core(s) reported ready" ;;
         panic) die "FAIL: kernel panicked" ;;
         exited) die "FAIL: QEMU exited before the kernel booted" ;;
         *) die "FAIL: no boot marker within ${TIMEOUT}s" ;;
@@ -111,6 +153,7 @@ image_arg() {
 cmd="${1:-run}"
 shift || true
 need_tools
+resolve_accel
 case "$cmd" in
     run) run "$(image_arg "${1:-}")" ;;
     test) test_boot "$(image_arg "${1:-}")" ;;

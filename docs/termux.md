@@ -49,7 +49,8 @@ Settings, given in front of the command:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ALAYA_CPUS` | 1 | Number of virtual cores, for example `ALAYA_CPUS=4 bash alaya.sh run` |
+| `ALAYA_CPUS` | 1 | Number of virtual cores, for example `ALAYA_CPUS=4 bash alaya.sh run`; `all` uses as many as the device has |
+| `ALAYA_ACCEL` | auto | `kvm`, `tcg` (plain emulation) or `auto` (KVM if `/dev/kvm` is usable, which it is not on a phone) |
 | `ALAYA_TIMEOUT` | 300 | Seconds before `test` gives up |
 | `ALAYA_IMAGE_URL` | nightly release | Download the image from somewhere else |
 | `ALAYA_DIR` | `~/alaya` | Where the image is kept |
@@ -62,11 +63,32 @@ download it). Unzip it and pass the `.iso` to `alaya.sh run`.
 
 ## What you should see
 
+With `ALAYA_CPUS=2` (the memory map lines are shortened here):
+
 ```
 Alaya 0.0.1 (x86-64)
 boot: Limine 9.6.7
-cpu: 1 core(s), bootstrap LAPIC id 0
-mem: 253 MiB usable in 3 region(s), 16 map entries
-mem: direct map at 0xffff800000000000
+cpu: QEMU Virtual CPU version 2.5+
+cpu: x2APIC no, TSC deadline no, invariant TSC no, 1 GiB pages no, running under a hypervisor
+cpu: 2 core(s), bootstrap APIC id 0, APIC mode xAPIC
+mem: 0x000000001000-0x000000053000       328 KiB  bootloader reclaimable
+...
+mem: 253 MiB usable
+mem: kernel page tables at 0x100000: direct map 255 MiB (...)
+mem: kernel took 276 KiB for page tables and stacks of 2 core(s)
+cpu 0: online, APIC id 0 (bootstrap)
+time: TSC 2100.687 MHz (measured against the PIT), invariant: no
+time: this CPU has no TSC-deadline timer (plain emulation?); using the APIC one-shot timer
+cpu 1: online, APIC id 1
+smp: 2 of 2 cores online
+bkl: 2 core(s) x 20000 rounds under the big kernel lock, counter 40000: ok
+core 0: ready, APIC id 0, APIC one-shot timer, 20 ticks, worst lateness 288 us
+core 1: ready, APIC id 1, APIC one-shot timer, 20 ticks, worst lateness 293 us
 alaya: boot ok
 ```
+
+There is one `core N: ready` line per core; `alaya.sh test` passes only if
+all of them are there. A phone has no KVM, so QEMU emulates the CPU and the
+kernel uses the APIC one-shot timer instead of the TSC-deadline timer, and
+the timer lateness is in the hundreds of microseconds. On a PC with KVM
+(see [`testing-on-a-pc.md`](testing-on-a-pc.md)) it uses the real timer.
