@@ -64,6 +64,13 @@ cargo xtask run  --accel kvm --cpus "$(nproc)"          # watch it; Ctrl+A then 
 The first build downloads the pinned Rust version and Limine. To test a
 branch, add `--branch <name>` to `git clone`.
 
+The kernel fuzzer runs the boot checks, then has threads on every core
+throw random system calls at the kernel for the given number of seconds:
+
+```sh
+cargo xtask test --accel kvm --cpus "$(nproc)" --fuzz 300
+```
+
 The fault reports can be checked too: each of these crashes the kernel on
 purpose and passes when the report says the right thing.
 
@@ -93,13 +100,23 @@ init: ok  1 boot capabilities: own table and untyped memory
 init: revoked 16383 capabilities; the kernel interrupted the revoke ... times
 init: ok  8 a big revoke is interrupted and restarted, and completes
 ...
-init: all 12 checks passed (... restarted calls, ... capabilities revoked)
+init: ok 12 2 MiB pages are aligned
+init: ok 13 threads start, and a budgeted thread wakes every period
+...
+init: a 2 ms / 10 ms budget used ... µs of ... µs (20%)
+...
+init: ipc: call and reply round trip: ... cycles (... ns) between programs, ... cycles (... ns) inside one
+...
+init: ok 25 revoking takes back running threads, address spaces and all
+init: all 25 checks passed (... restarted calls, ... capabilities revoked)
 alaya: boot ok
 ```
 
 The exact CPU name, core count, TSC source and numbers depend on the
 machine. What matters: one `core N: ready` line for every core, the
-TSC-deadline timer in use, twelve `init: ok` lines from the first program,
-and `alaya: boot ok` at the end. If something
+TSC-deadline timer in use, twenty-five `init: ok` lines from the first program,
+and `alaya: boot ok` at the end. The `ipc:` line is the cost of a call and
+its answer between two programs; with KVM it is the real number. With
+`--fuzz`, `fuzz: done` comes before the end. If something
 fails, the last lines of the output (a fault report or panic message) say
 what and where.

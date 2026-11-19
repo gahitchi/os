@@ -43,13 +43,13 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
-          cargo clippy --package alaya-abi --package alaya-cap --all-targets -- -D warnings
+          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --all-targets -- -D warnings
           RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys \
             --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
 
-      - name: Host tests (capability code)
-        run: cargo test --package alaya-abi --package alaya-cap
+      - name: Host tests (capability code, time budgets)
+        run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched
 
       - name: Build image
         run: cargo xtask image
@@ -84,6 +84,13 @@ jobs:
           cargo xtask test --accel tcg --cpus 2 --fault invalid-opcode
           cargo xtask test --accel kvm --cpus 4 --fault other-core-page
 
+      # The kernel fuzzer: threads on every core make random system calls
+      # on a sandbox; the kernel must not crash and must still work after.
+      - name: Kernel fuzzer, TCG, 4 cores, 60 s
+        run: cargo xtask test --accel tcg --cpus 4 --fuzz 60
+      - name: Kernel fuzzer, KVM, 8 cores, 120 s
+        run: cargo xtask test --accel kvm --cpus 8 --fuzz 120
+
       - name: Boot with the Termux script
         run: |
           ALAYA_ACCEL=tcg ALAYA_CPUS=2 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
@@ -100,10 +107,10 @@ jobs:
             build/alaya-x86_64.iso.sha256
           if-no-files-found: error
 
-  # The TLA+ model of capabilities and revoke (formal/revoke): safety and
-  # liveness on 2 cores, safety on 3, and a must-fail check.
+  # The TLA+ models (formal/): capabilities and revoke, and the scheduler
+  # with time budgets and lent time. Each has must-fail checks too.
   tla:
-    name: TLA+ model of revoke
+    name: TLA+ models
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

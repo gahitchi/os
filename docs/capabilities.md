@@ -80,7 +80,9 @@ A program enters the kernel with the `syscall` instruction:
 | `rdx`, `r10`, `r8`, `r9`, `r12`, `r13` | arguments | results in `rdx`, `r10`, `r8`, `r9` |
 
 Milestone 2 has `call` on capability tables and untyped memory, `yield` and
-`debug`; the message calls (`send`, `recv` and the rest) come in milestone 3.
+`debug`. Milestone 3 adds the message calls and the operations on threads,
+time budgets, address spaces and pages: see
+[`threads-and-messages.md`](threads-and-messages.md).
 
 | Object | Operation | Arguments |
 | --- | --- | --- |
@@ -129,6 +131,7 @@ cargo xtask test --cpus 8       # the boot test
 ## Not yet
 
 Threads, address spaces and mapping pages, endpoints and notifications in
-use, scheduling contexts and interrupts are milestone 3 and 4. Device memory
-(untyped blocks for hardware registers) comes with the driver framework in
-milestone 4.
+use and scheduling contexts arrived in milestone 3
+([`threads-and-messages.md`](threads-and-messages.md)). Interrupts and
+device memory (untyped blocks for hardware registers) come with the driver
+framework in milestone 4.
