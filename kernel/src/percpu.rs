@@ -24,6 +24,8 @@ pub struct PerCpu {
     pub has_idt: AtomicBool,
     /// The core finished starting up.
     pub online: AtomicBool,
+    /// Big-lock self-test: how many times this core took the lock.
+    pub bkl_rounds: AtomicU64,
     /// Timer self-test results.
     pub timer_ticks: AtomicU32,
     pub timer_worst_late_ns: AtomicU64,
@@ -37,6 +39,7 @@ impl PerCpu {
             apic_id: AtomicU32::new(0),
             has_idt: AtomicBool::new(false),
             online: AtomicBool::new(false),
+            bkl_rounds: AtomicU64::new(0),
             timer_ticks: AtomicU32::new(0),
             timer_worst_late_ns: AtomicU64::new(0),
             timer_next_deadline: AtomicU64::new(0),

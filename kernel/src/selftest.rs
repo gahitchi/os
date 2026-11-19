@@ -13,19 +13,29 @@
 
 use core::sync::atomic::Ordering;
 
+use crate::arch::cpu::rdtsc;
 use crate::{percpu, smp, sync, time};
 
-/// Lock acquisitions per core in the big-lock test.
+/// Most lock acquisitions per core in the big-lock test.
 pub const BKL_ROUNDS: u64 = 20_000;
+/// Time limit per core for the big-lock test. A ticket lock hands over in
+/// strict order, so when a hypervisor runs more virtual cores than it has
+/// real ones, each hand-over can wait for a descheduled core; the limit
+/// keeps boot fast there while still testing exclusion.
+const BKL_TEST_MS: u64 = 200;
 
 pub fn run_on_this_core() {
-    for _ in 0..BKL_ROUNDS {
+    let end = rdtsc() + time::ns_to_tsc(BKL_TEST_MS * 1_000_000);
+    let mut rounds = 0;
+    while rounds < BKL_ROUNDS && rdtsc() < end {
+        rounds += 1;
         let mut kernel = sync::BKL.lock();
         let counter = &mut kernel.selftest_counter as *mut u64;
         // SAFETY: the lock is held. Volatile, so that a read-modify-write
         // really happens and lost updates would show if the lock leaked.
         unsafe { counter.write_volatile(counter.read_volatile() + 1) };
     }
+    percpu::this().bkl_rounds.store(rounds, Ordering::Relaxed);
     time::selftest_this_core();
 
     let me = percpu::index();

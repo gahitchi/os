@@ -62,6 +62,7 @@ jobs:
       # KVM with the host CPU, as on a PC: x2APIC and the TSC-deadline timer.
       - name: Boot, KVM, BIOS, 1, 2 and 8 cores (TSC-deadline timer)
         run: |
+          set -o pipefail
           for n in 1 2 8; do
             cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n | tee boot.log
             grep -q "timer is the TSC-deadline timer" boot.log

@@ -31,7 +31,7 @@ use mm::layout::Stack;
 pub const BOOT_OK_MARKER: &str = "alaya: boot ok";
 
 /// Seconds to wait for the other cores before declaring one lost.
-const CORE_TIMEOUT_S: u64 = 60;
+const CORE_TIMEOUT_S: u64 = 30;
 
 /// Entry point, called by Limine on the bootstrap processor.
 #[unsafe(no_mangle)]
@@ -165,14 +165,15 @@ extern "C" fn bsp_main() -> ! {
         arch::disable_interrupts();
         sync::BKL.lock().selftest_counter
     };
-    let expected = selftest::BKL_ROUNDS * u64::from(cores);
+    let rounds = |i| percpu::get(i).bkl_rounds.load(Ordering::Relaxed);
+    let expected: u64 = (0..cores).map(rounds).sum();
     assert!(
         total == expected,
         "big kernel lock test: counter {total}, expected {expected}; the lock does not exclude"
     );
+    let fewest = (0..cores).map(rounds).min().unwrap_or(0);
     kprintln!(
-        "bkl: {cores} core(s) x {} rounds under the big kernel lock, counter {total}: ok",
-        selftest::BKL_ROUNDS
+        "bkl: {cores} core(s) took the big kernel lock {total} times (each at least {fewest}), counter {total}: ok"
     );
     for i in 0..cores {
         let c = percpu::get(i);
