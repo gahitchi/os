@@ -1,0 +1,11 @@
+[package]
+name = "alaya-abi"
+description = "Numbers and layouts shared by the Alaya kernel and programs: calls, operations, errors, rights, object kinds and the boot information"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+test = true
+bench = false

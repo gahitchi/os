@@ -45,7 +45,7 @@ const USAGE: &str = "\
 usage: cargo xtask <command> [options]
 
 commands:
-  build             build the kernel
+  build             build the kernel and the first program
   image             build the kernel and the bootable ISO (build/alaya-x86_64.iso)
   run               build the image and boot it in QEMU, serial on this terminal
   test              boot in QEMU and pass if the kernel reports a clean boot
@@ -129,7 +129,9 @@ fn main() -> ExitCode {
     }
 
     let result = match command.as_str() {
-        "build" => build_kernel(opts.release).map(|_| ()),
+        "build" => build_kernel(opts.release)
+            .and_then(|_| build_init(opts.release))
+            .map(|_| ()),
         "image" => build_image(opts.release, None).map(|p| println!("image: {}", p.display())),
         "run" => image_for(&opts).and_then(|image| run(&image, &opts)),
         "test" => image_for(&opts).and_then(|image| test(&image, &opts)),
@@ -193,6 +195,39 @@ fn build_kernel(release: bool) -> Result<PathBuf, String> {
         .join("alaya-kernel"))
 }
 
+/// Build the first program. It lives in the lower half, so it is built
+/// without the kernel's code model (`.cargo/config.toml`), in a target
+/// directory of its own so the two builds do not invalidate each other.
+fn build_init(release: bool) -> Result<PathBuf, String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut cmd = Command::new(cargo);
+    cmd.current_dir(root())
+        .env("RUSTFLAGS", USER_RUSTFLAGS)
+        .args([
+            "build",
+            "--package",
+            "alaya-init",
+            "--target",
+            KERNEL_TARGET,
+        ])
+        .arg("--target-dir")
+        .arg(root().join("target").join("user"));
+    if release {
+        cmd.arg("--release");
+    }
+    sh(&mut cmd)?;
+    let profile = if release { "release" } else { "debug" };
+    Ok(root()
+        .join("target/user")
+        .join(KERNEL_TARGET)
+        .join(profile)
+        .join("init"))
+}
+
+/// Code generation flags for programs (the kernel's are in
+/// `.cargo/config.toml`).
+const USER_RUSTFLAGS: &str = "-C relocation-model=static";
+
 /// Fetch the pinned Limine binary release and build its host installer.
 fn limine() -> Result<PathBuf, String> {
     let dir = root().join("build").join(format!("limine-{LIMINE_TAG}"));
@@ -222,6 +257,7 @@ fn limine() -> Result<PathBuf, String> {
 /// command line is set, kept apart from the normal image.
 fn build_image(release: bool, cmdline: Option<&str>) -> Result<PathBuf, String> {
     let kernel = build_kernel(release)?;
+    let init = build_init(release)?;
     let limine = limine()?;
     let build = root().join("build");
     let iso_root = build.join("iso_root");
@@ -234,6 +270,7 @@ fn build_image(release: bool, cmdline: Option<&str>) -> Result<PathBuf, String> 
             .map_err(|e| format!("copy {} -> {}: {e}", from.display(), to.display()))
     };
     copy(&kernel, &iso_root.join("boot/alaya-kernel"))?;
+    copy(&init, &iso_root.join("boot/init"))?;
     let mut conf = fs::read_to_string(root().join("boot/limine.conf"))
         .map_err(|e| format!("read boot/limine.conf: {e}"))?;
     if let Some(cmdline) = cmdline {

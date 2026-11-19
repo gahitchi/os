@@ -13,3 +13,5 @@ test = false
 bench = false
 
 [dependencies]
+alaya-abi = { path = "../abi" }
+alaya-cap = { path = "../cap" }

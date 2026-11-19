@@ -179,8 +179,17 @@ pub struct KernelState {
     /// Incremented by every core in the boot self-test; checks that the
     /// lock really excludes (the increment is a plain, non-atomic one).
     pub selftest_counter: u64,
+    /// The purge list and counters of the capability code.
+    pub caps: alaya_cap::Globals,
+    /// The first program, once it runs.
+    pub init: Option<crate::user::Init>,
+    /// System calls restarted because an interruptible operation stopped.
+    pub restarts: u64,
 }
 
 pub static BKL: BigKernelLock<KernelState> = BigKernelLock::new(KernelState {
     selftest_counter: 0,
+    caps: alaya_cap::Globals::new(),
+    init: None,
+    restarts: 0,
 });

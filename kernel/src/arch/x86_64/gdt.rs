@@ -10,10 +10,9 @@ use core::mem::size_of;
 
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
-/// User selectors, laid out for SYSRET; used from milestone 2.
-#[allow(dead_code)]
+/// User selectors, laid out for SYSRET: it loads SS from STAR[63:48] + 8
+/// and CS from STAR[63:48] + 16, so user data comes right before user code.
 pub const USER_DATA: u16 = 0x18 | 3;
-#[allow(dead_code)]
 pub const USER_CODE: u16 = 0x20 | 3;
 const TSS_SELECTOR: u16 = 0x28;
 

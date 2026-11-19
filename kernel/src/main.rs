@@ -6,18 +6,27 @@
 //! on the serial port, finds the TSC frequency and drives the TSC-deadline
 //! timer, and brings up every core under the big kernel lock. Each core then
 //! runs a short self-test and the bootstrap core reports them all.
+//!
+//! Milestone 2: capabilities and memory. The kernel hands every free byte
+//! of memory to the first program as untyped capabilities and runs it in
+//! user mode. The program retypes, copies, moves, deletes and revokes
+//! capabilities through system calls (`caps.rs`, `syscall.rs`, and the
+//! `alaya-cap` crate), and reports whether all of its checks passed.
 
 #![no_std]
 #![no_main]
 
 mod arch;
+mod caps;
 mod limine;
 mod mm;
 mod percpu;
 mod selftest;
 mod smp;
 mod sync;
+mod syscall;
 mod time;
+mod user;
 #[macro_use]
 mod serial;
 
@@ -191,8 +200,8 @@ extern "C" fn bsp_main() -> ! {
         // The fault happens on another core; wait for it to stop us.
         smp::idle();
     }
-    kprintln!("{BOOT_OK_MARKER}");
-    smp::idle()
+    // The first program prints the boot marker once its checks pass.
+    user::start()
 }
 
 fn yes(b: bool) -> &'static str {

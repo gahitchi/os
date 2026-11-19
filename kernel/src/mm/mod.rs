@@ -44,6 +44,11 @@ const fn align_up(x: u64) -> u64 {
     align_down(x + PAGE_SIZE - 1)
 }
 
+/// Physical address of the kernel's top-level page table.
+pub fn kernel_root() -> u64 {
+    KERNEL_ROOT.load(Ordering::Acquire)
+}
+
 /// Print the physical memory map the firmware and bootloader handed over.
 pub fn print_memory_map() {
     let mut usable = 0;

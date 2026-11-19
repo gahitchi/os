@@ -19,6 +19,11 @@ pub const MAX_CPUS: usize = 256;
 pub struct PerCpu {
     /// Must stay first: [`index`] reads it at GS:0.
     index: u32,
+    /// Top of this core's kernel stack, where a system call switches to
+    /// (GS:8, read by the entry code in `syscall.rs`).
+    pub kernel_rsp: AtomicU64,
+    /// The user stack pointer while a system call runs (GS:16).
+    pub user_rsp: AtomicU64,
     pub apic_id: AtomicU32,
     /// The core has loaded the kernel's IDT and can take an NMI.
     pub has_idt: AtomicBool,
@@ -36,6 +41,8 @@ impl PerCpu {
     const fn new(index: u32) -> Self {
         Self {
             index,
+            kernel_rsp: AtomicU64::new(0),
+            user_rsp: AtomicU64::new(0),
             apic_id: AtomicU32::new(0),
             has_idt: AtomicBool::new(false),
             online: AtomicBool::new(false),
@@ -46,6 +53,12 @@ impl PerCpu {
         }
     }
 }
+
+/// Offsets the system call entry code relies on.
+pub const KERNEL_RSP_OFFSET: usize = 8;
+pub const USER_RSP_OFFSET: usize = 16;
+const _: () = assert!(core::mem::offset_of!(PerCpu, kernel_rsp) == KERNEL_RSP_OFFSET);
+const _: () = assert!(core::mem::offset_of!(PerCpu, user_rsp) == USER_RSP_OFFSET);
 
 static CPUS: [PerCpu; MAX_CPUS] = {
     let mut cpus = [const { PerCpu::new(0) }; MAX_CPUS];
@@ -97,11 +110,17 @@ pub fn this() -> &'static PerCpu {
 }
 
 /// Set up and load this core's GDT and TSS, with its interrupt stacks.
-pub fn load_gdt(ist_tops: [u64; crate::arch::gdt::IST_COUNT]) {
+/// `kernel_top` is where the CPU switches to when an interrupt or a system
+/// call arrives from user mode.
+pub fn load_gdt(ist_tops: [u64; crate::arch::gdt::IST_COUNT], kernel_top: u64) {
     let i = index() as usize;
+    CPUS[i].kernel_rsp.store(kernel_top, Ordering::Relaxed);
     // SAFETY: each core touches only its own slot, once, while starting.
     unsafe {
         let tss = &mut (*addr_of_mut!(TSSES))[i];
+        let mut rsp = tss.rsp;
+        rsp[0] = kernel_top;
+        tss.rsp = rsp;
         let mut ist = tss.ist;
         ist[..ist_tops.len()].copy_from_slice(&ist_tops);
         tss.ist = ist;

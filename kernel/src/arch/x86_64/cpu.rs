@@ -9,8 +9,16 @@ pub mod msr {
     pub const APIC_BASE: u32 = 0x1b;
     pub const TSC_DEADLINE: u32 = 0x6e0;
     pub const EFER: u32 = 0xc000_0080;
+    pub const STAR: u32 = 0xc000_0081;
+    pub const LSTAR: u32 = 0xc000_0082;
+    pub const FMASK: u32 = 0xc000_0084;
     pub const GS_BASE: u32 = 0xc000_0101;
+    /// Swapped with GS base by `swapgs`: the user's GS base while the
+    /// kernel runs, the kernel's while the user runs.
+    pub const KERNEL_GS_BASE: u32 = 0xc000_0102;
 }
+
+pub const EFER_SCE: u64 = 1 << 0;
 
 pub const EFER_NXE: u64 = 1 << 11;
 pub const CR0_WP: u64 = 1 << 16;

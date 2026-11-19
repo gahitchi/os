@@ -12,15 +12,22 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
-**Milestone 1: the kernel boots on every core.** The kernel boots through
-[Limine](https://github.com/limine-bootloader/limine) on BIOS and UEFI,
-builds its own page tables from the memory map (with 2 MiB and 1 GiB pages
-and guarded per-core stacks), catches every CPU exception with a full report
-on the serial port, measures the TSC and drives the TSC-deadline timer, and
-brings up every core under the big kernel lock. Each core then runs a short
-self-test, and the kernel prints `alaya: boot ok`. CI boots it on 1, 2 and 8
-virtual cores, both emulated and with KVM, and checks that every core
-reports in.
+**Milestone 2: capabilities and memory.** On top of milestone 1 (Limine boot
+on BIOS and UEFI, the kernel's own page tables, fault reports, the
+TSC-deadline timer, every core up under the big kernel lock), the kernel now
+hands every free byte of memory to the first program as untyped capabilities
+and runs it in user mode. The program retypes memory into capability tables,
+endpoints, notifications and pages, copies, mints, moves, deletes and
+revokes capabilities through system calls, and checks the results. Long
+revokes and retypes are interruptible: the kernel stops them after a short
+slice and the call restarts by itself. CI boots it on 1, 2 and 8 virtual
+cores, emulated and with KVM.
+
+The capability rules were checked before the code was written: a
+[TLA+ model](formal/revoke/Revoke.tla) of revoke on 2 and 3 cores (TLC checks
+that nothing names freed memory and that every revoke ends), and
+[Kani proofs](cap/src/proofs.rs) of the capability code itself. How it all
+works: [`docs/capabilities.md`](docs/capabilities.md).
 
 ## Try it
 
@@ -37,6 +44,9 @@ cargo xtask test --cpus 8    # boot and check every core came up
 cargo xtask run --uefi       # boot with UEFI firmware instead of BIOS
 cargo xtask test --fault page  # crash on purpose and check the fault report
 cargo xtask image            # only build build/alaya-x86_64.iso
+cargo test -p alaya-cap      # capability code tests on the host
+formal/check.sh              # TLA+ model checks (needs Java)
+cargo kani -p alaya-cap      # Kani proofs (needs cargo install kani-verifier)
 ```
 
 `cargo xtask --help` lists every option. Press Ctrl+A then x (lowercase) to leave QEMU.
@@ -59,6 +69,11 @@ bash alaya.sh run
 | Path | What it is |
 | --- | --- |
 | `kernel/` | The kernel (`no_std`, target `x86_64-unknown-none`) |
+| `cap/` | Capability tables, untyped memory, retype and revoke (used by the kernel; tested on the host and with Kani) |
+| `abi/` | Numbers and layouts shared by the kernel and programs |
+| `user/init/` | The first program |
+| `user/sys/` | System call wrappers for programs |
+| `formal/` | TLA+ models, checked with TLC (`formal/check.sh`) |
 | `xtask/` | Build, image and QEMU runner (`cargo xtask`) |
 | `boot/limine.conf` | Bootloader configuration |
 | `tools/termux/` | Script to boot a CI image from Termux or any Linux |
