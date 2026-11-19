@@ -91,7 +91,7 @@ accel_name() {
 qemu_args() {
     if [ "$ACCEL" = kvm ]; then
         # The host CPU as it is: TSC-deadline timer, x2APIC, invariant TSC.
-        printf '%s\n' -accel kvm -cpu host
+        printf '%s\n' -accel kvm -cpu host,+invtsc
     else
         printf '%s\n' -accel tcg
     fi

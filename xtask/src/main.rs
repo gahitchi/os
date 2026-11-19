@@ -344,8 +344,9 @@ fn qemu(image: &Path, opts: &Options, serial: &str) -> Result<Command, String> {
         .arg("-cdrom")
         .arg(image);
     if use_kvm(opts)? {
-        // The host CPU as it is: TSC-deadline timer, x2APIC, invariant TSC.
-        cmd.args(["-accel", "kvm", "-cpu", "host"]);
+        // The host CPU as it is: TSC-deadline timer, x2APIC. QEMU hides the
+        // invariant-TSC flag by default (it blocks live migration); show it.
+        cmd.args(["-accel", "kvm", "-cpu", "host,+invtsc"]);
     } else {
         cmd.args(["-accel", "tcg"]);
     }
