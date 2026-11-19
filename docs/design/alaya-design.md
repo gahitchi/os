@@ -60,7 +60,7 @@ Details: `kernel-interface.md`.
 - **Many cores from day one** (decision 10): one big kernel lock (kernel paths are short in a microkernel), a run queue per core, thread-safe servers.
 - **Fixed priorities plus time budgets** (decision 11): a scheduling context gives a thread X microseconds every Y milliseconds. A stuck thread uses its budget and waits; audio and frames get guaranteed time.
 - **Servers run on their caller's budget**, which ends priority inversion.
-- **Core types**: on hybrid CPUs (Archy's i7), budgeted frame and audio threads run on performance cores, background work on efficiency cores, guided by Intel's hardware feedback.
+- **Core types**: on hybrid CPUs (the reference laptop's i7), budgeted frame and audio threads run on performance cores, background work on efficiency cores, guided by Intel's hardware feedback.
 
 ## 7. Storage and history
 
@@ -103,8 +103,8 @@ Details: `timeline.md`.
 - **Each driver is its own restartable program** (decision 19). A GPU driver crash costs a black frame, not the session.
 - **Peripherals** (decision 49): Bluetooth first (wireless controllers, low-latency headsets, mice and keyboards), as its own restartable driver and server; pairing is a desktop action and apps reach devices only through grants. Printing and scanning later, driverless only (IPP Everywhere, eSCL).
 - **Order**: virtio in QEMU first, then the reference PC.
-- **Reference PC: Archy** (decision 23): a laptop with an Intel Core i7 13th gen and an NVIDIA RTX 4050. Needs NVMe, USB (xHCI and HID), the I2C touchpad, the Intel Iris Xe display, ACPI power, battery and suspend, HD Audio, Wi-Fi, TPM, and the NVIDIA GPU.
-- **Graphics on Archy**: hybrid. The Intel GPU drives the screen; the NVIDIA GPU renders and hands frames across as shared buffers. NVIDIA path: a kernel-side driver using NVIDIA's GSP firmware, plus Mesa's NVK Vulkan driver in user space. In QEMU, virtio-gpu with Venus.
+- **Reference PC** (decision 23): a laptop with an Intel Core i7 13th gen and an NVIDIA RTX 4050. Needs NVMe, USB (xHCI and HID), the I2C touchpad, the Intel Iris Xe display, ACPI power, battery and suspend, HD Audio, Wi-Fi, TPM, and the NVIDIA GPU.
+- **Graphics on the reference laptop**: hybrid. The Intel GPU drives the screen; the NVIDIA GPU renders and hands frames across as shared buffers. NVIDIA path: a kernel-side driver using NVIDIA's GSP firmware, plus Mesa's NVK Vulkan driver in user space. In QEMU, virtio-gpu with Venus.
 
 ## 12. Programs and compatibility
 
@@ -131,7 +131,7 @@ Details: `timeline.md`.
 
 ## 14. Testing
 
-Details: `test-plan.md`. TLA+ and Kani proofs of revocation, scheduling and commits; fuzzing of every kernel call and server protocol; power-cut injection at every write; driver-crash injection; hard gates on Archy under full load (99.9 % of frames within 16.7 ms at 60 fps, zero audio dropouts in an hour, under 20 ms input to screen, under 1 µs call and reply, 72-hour soak); timeline gates. CI boots every commit on 1, 2 and 8 virtual cores.
+Details: `test-plan.md`. TLA+ and Kani proofs of revocation, scheduling and commits; fuzzing of every kernel call and server protocol; power-cut injection at every write; driver-crash injection; hard gates on the reference laptop under full load (99.9 % of frames within 16.7 ms at 60 fps, zero audio dropouts in an hour, under 20 ms input to screen, under 1 µs call and reply, 72-hour soak); timeline gates. CI boots every commit on 1, 2 and 8 virtual cores.
 
 ## 15. License
 
