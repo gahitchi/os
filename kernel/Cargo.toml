@@ -1,0 +1,15 @@
+[package]
+name = "alaya-kernel"
+description = "The Alaya capability microkernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "alaya-kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
