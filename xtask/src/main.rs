@@ -284,11 +284,11 @@ fn qemu(image: &Path, opts: &Options, serial: &str) -> Result<Command, String> {
 
 fn run(image: &Path, opts: &Options) -> Result<(), String> {
     eprintln!(
-        "xtask: booting {} on {} core(s); press Ctrl+A then X to quit",
+        "xtask: booting {} on {} core(s); press Ctrl+A then x (lowercase) to quit",
         image.display(),
         opts.cpus
     );
-    // `mon:stdio` lets Ctrl+A X quit QEMU from the terminal.
+    // `mon:stdio` lets Ctrl+A x quit QEMU from the terminal.
     sh(&mut qemu(image, opts, "mon:stdio")?)
 }
 

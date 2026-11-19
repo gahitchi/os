@@ -5,7 +5,7 @@
 # any Linux with bash, curl and qemu-system-x86_64). Nothing is built here:
 # the image comes from the project's CI.
 #
-#   alaya.sh run  [image]   boot and show the serial console (Ctrl+A then X quits)
+#   alaya.sh run  [image]   boot and show the serial console (Ctrl+A then x quits)
 #   alaya.sh test [image]   boot, pass if the kernel reports a clean boot
 #   alaya.sh fetch          only download the latest image
 #
@@ -65,7 +65,9 @@ qemu_args() {
 
 run() {
     local image="$1"
-    say "booting $image on $CPUS core(s); press Ctrl+A then X to quit"
+    say "booting $image on $CPUS core(s)"
+    say "after 'alaya: boot ok' the kernel just waits; quit with Ctrl+A, then lowercase x"
+    say "(or Ctrl+A, then c, then type quit). 'alaya.sh test' exits on its own."
     mapfile -t args < <(qemu_args "$image")
     exec qemu-system-x86_64 "${args[@]}" -serial mon:stdio
 }

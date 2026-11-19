@@ -33,7 +33,7 @@ cargo xtask run --uefi       # boot with UEFI firmware instead of BIOS
 cargo xtask image            # only build build/alaya-x86_64.iso
 ```
 
-`cargo xtask --help` lists every option. Press Ctrl+A then X to leave QEMU.
+`cargo xtask --help` lists every option. Press Ctrl+A then x (lowercase) to leave QEMU.
 
 ### On an Android phone
 

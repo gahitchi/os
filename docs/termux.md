@@ -26,7 +26,16 @@ bash alaya.sh run
 This downloads the latest image from the
 [nightly release](https://github.com/gahitchi/os/releases/tag/nightly)
 into `~/alaya/` (checking its checksum), then boots it. Kernel output appears
-on the terminal. Press **Ctrl+A**, then **X**, to quit QEMU.
+on the terminal. When it prints `alaya: boot ok` the kernel has finished:
+it has nothing else to run yet, so it waits there.
+
+To quit QEMU, press **Ctrl+A**, let go, then press a lowercase **x**. In
+Termux, use CTRL from the extra-keys row, and make sure Shift is off.
+If that does not work, press **Ctrl+A** then **c** to reach the `(qemu)`
+prompt and type `quit`. As a last resort, open a new Termux session (swipe in
+from the left) and run `pkill -f qemu-system`.
+
+To boot and exit on its own instead, use `bash alaya.sh test`.
 
 Other commands:
 
