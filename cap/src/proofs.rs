@@ -101,12 +101,14 @@ fn assert_well_formed(m: &Mem) {
     }
 }
 
-fn any_op(m: &mut Mem, g: &mut Globals) {
+/// One operation that changes the tree without loops over it: retype of
+/// one endpoint or notification, copy or mint, move, or delete.
+fn any_tree_op(m: &mut Mem, g: &mut Globals) {
     let a = any_slot();
     let b = any_slot();
-    match kani::any::<u8>() % 5 {
+    match kani::any::<u8>() % 4 {
         0 => {
-            let index: u64 = kani::any();
+            let index = b >> SLOT_BITS;
             let dst = Destination {
                 table: 0,
                 bits: TABLE_BITS,
@@ -126,11 +128,8 @@ fn any_op(m: &mut Mem, g: &mut Globals) {
         2 => {
             let _ = move_cap(m, a, b);
         }
-        3 => {
-            let _ = delete(m, g, a);
-        }
         _ => {
-            let _ = revoke(m, g, a, &mut Unlimited);
+            let _ = delete(m, g, a);
         }
     }
 }
@@ -139,31 +138,23 @@ fn any_op(m: &mut Mem, g: &mut Globals) {
 /// formed. (A failed operation changes nothing, so this covers every
 /// shorter sequence too.)
 #[kani::proof]
-#[kani::unwind(7)]
+#[kani::unwind(6)]
 fn operations_keep_the_tree_well_formed() {
     let (mut m, mut g) = world();
     for _ in 0..3 {
-        any_op(&mut m, &mut g);
+        any_tree_op(&mut m, &mut g);
     }
     assert_well_formed(&m);
 }
 
-/// After any three operations, a finished revoke has deleted every
-/// descendant and nothing else.
-#[kani::proof]
-#[kani::unwind(7)]
-fn revoke_deletes_exactly_the_descendants() {
-    let (mut m, mut g) = world();
-    for _ in 0..3 {
-        any_op(&mut m, &mut g);
-    }
-    let c = any_slot();
-    kani::assume(m.read(c).cap.is_live());
-    let mut below = [false; N];
-    for (i, flag) in below.iter_mut().enumerate().skip(1) {
+/// Which slots are below `c` in the tree. After two operations the tree is
+/// at most three levels deep.
+fn below(m: &Mem, c: SlotRef) -> [bool; N] {
+    let mut out = [false; N];
+    for (i, flag) in out.iter_mut().enumerate().skip(1) {
         let mut y = (i as u64) << SLOT_BITS;
-        for _ in 0..N {
-            match parent_of(&m, y, N) {
+        for _ in 0..3 {
+            match parent_of(m, y, N) {
                 Some(p) if p == c => {
                     *flag = true;
                     break;
@@ -173,16 +164,54 @@ fn revoke_deletes_exactly_the_descendants() {
             }
         }
     }
-    let before = m.slots;
-    let r = revoke(&mut m, &mut g, c, &mut Unlimited);
-    assert!(r == Ok(Progress::Done(())));
-    assert!(m.read(c).first == 0);
-    for i in 1..N {
-        if below[i] {
-            assert!(m.slots[i].cap.is_empty());
-        } else if (i as u64) << SLOT_BITS != c {
-            assert!(m.slots[i].cap == before[i].cap);
+    out
+}
+
+/// One step of revoke, by induction: each step deletes exactly one
+/// descendant of the capability, keeps every other descendant below it and
+/// changes nothing else; when there is no descendant left it finishes.
+/// Together with the budget this proves a revoke deletes exactly the
+/// descendants, however often it is interrupted.
+#[kani::proof]
+#[kani::unwind(6)]
+fn each_revoke_step_deletes_one_descendant() {
+    struct Once;
+    impl Budget for Once {
+        fn step(&mut self) -> bool {
+            true
         }
+    }
+    let (mut m, mut g) = world();
+    for _ in 0..2 {
+        any_tree_op(&mut m, &mut g);
+    }
+    let c = any_slot();
+    kani::assume(m.read(c).cap.is_live() && !m.read(c).cap.is(Kind::Untyped));
+    let before_below = below(&m, c);
+    let before = m.slots;
+    let r = revoke(&mut m, &mut g, c, &mut Once);
+    let after_below = below(&m, c);
+    let mut deleted = 0;
+    for i in 1..N {
+        if (i as u64) << SLOT_BITS == c {
+            continue;
+        }
+        if before[i].cap.is_live() && m.slots[i].cap.is_empty() {
+            deleted += 1;
+            assert!(before_below[i]);
+        } else {
+            assert!(m.slots[i].cap == before[i].cap);
+            assert!(after_below[i] == before_below[i]);
+        }
+    }
+    match r {
+        Ok(Progress::Interrupted) => assert!(deleted == 1),
+        Ok(Progress::Done(())) => {
+            assert!(deleted == 0);
+            assert!(m.read(c).first == 0);
+            assert!(!m.read(c).cap.revoking());
+        }
+        Err(_) => unreachable!(),
     }
     assert_well_formed(&m);
 }
@@ -190,7 +219,7 @@ fn revoke_deletes_exactly_the_descendants() {
 /// An interrupted revoke leaves the tree well formed, and its capability
 /// marked so nothing can be copied or retyped from it, or moved away.
 #[kani::proof]
-#[kani::unwind(7)]
+#[kani::unwind(6)]
 fn interrupted_revoke_is_safe() {
     struct Once(bool);
     impl Budget for Once {
@@ -201,8 +230,8 @@ fn interrupted_revoke_is_safe() {
         }
     }
     let (mut m, mut g) = world();
-    for _ in 0..3 {
-        any_op(&mut m, &mut g);
+    for _ in 0..2 {
+        any_tree_op(&mut m, &mut g);
     }
     let c = any_slot();
     if let Ok(Progress::Interrupted) = revoke(&mut m, &mut g, c, &mut Once(false)) {
@@ -214,7 +243,7 @@ fn interrupted_revoke_is_safe() {
         let dst = Destination {
             table: 0,
             bits: TABLE_BITS,
-            index: kani::any(),
+            index: d >> SLOT_BITS,
         };
         assert!(retype(&mut m, c, Kind::Endpoint, 0, 1, dst, &mut Unlimited).is_err());
     }

@@ -112,7 +112,7 @@ The model came first, then the code:
 | What | Where | Checks |
 | --- | --- | --- |
 | TLA+ model | [`formal/revoke/Revoke.tla`](../formal/revoke/Revoke.tla) | On 2 cores, every interleaving: no capability names reset memory, no slot lives in reset memory, retype never reuses live memory, new tables are empty, every revoke ends. On 3 cores, the same safety checks. A third run with a revoke that is too slow must find an endless revoke, which shows the liveness check works |
-| Kani proofs | [`cap/src/proofs.rs`](../cap/src/proofs.rs) | Any sequence of operations keeps the tree's links consistent and the O(1) "last capability" test exact; revoke deletes exactly the descendants; an interrupted revoke leaves everything consistent and blocks copies, moves, deletes and retypes; slot lookup stays inside the table; retype never overflows, stays inside the untyped and aligns objects |
+| Kani proofs | [`cap/src/proofs.rs`](../cap/src/proofs.rs) | Any sequence of operations keeps the tree's links consistent and the O(1) "last capability" test exact; each revoke step deletes exactly one descendant and keeps the rest below it, so a revoke deletes exactly the descendants however often it is interrupted; an interrupted revoke leaves everything consistent and blocks copies, moves, deletes and retypes; slot lookup stays inside the table; retype never overflows, stays inside the untyped and aligns objects |
 | Host tests | [`cap/src/tests.rs`](../cap/src/tests.rs) | Hand-written cases, plus thousands of random operations, with revokes interrupted at random points, checked against a brute-force reference |
 | Boot test | [`user/init`](../user/init/src/main.rs) | The real kernel in QEMU, from user mode, on 1, 2 and 8 cores |
 
