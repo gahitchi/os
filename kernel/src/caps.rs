@@ -4,26 +4,29 @@
 //! operations on capability tables and untyped memory.
 
 use alaya_abi::{Error, Kind, flags, op, rights};
-use alaya_cap::{self as cap, Budget, Destination, Memory, Progress, Slot, SlotRef};
+use alaya_cap::{self as cap, Budget, Cap, Destination, Globals, Memory, Progress, Slot, SlotRef};
 
 use crate::arch::cpu::rdtsc;
-use crate::sync::KernelState;
-use crate::{percpu, time};
+use crate::sched::Sys;
+use crate::{ipc, objects, percpu, time};
 
-/// Physical memory through the kernel's direct map.
-pub struct Phys {
+/// Physical memory through the kernel's direct map, plus the scheduling
+/// state the delete hook needs.
+pub struct Phys<'a> {
     hhdm: u64,
+    pub sys: &'a mut Sys,
 }
 
-impl Phys {
-    pub fn new() -> Self {
+impl<'a> Phys<'a> {
+    pub fn new(sys: &'a mut Sys) -> Self {
         Phys {
             hhdm: crate::limine::hhdm_offset().unwrap(),
+            sys,
         }
     }
 }
 
-impl Memory for Phys {
+impl Memory for Phys<'_> {
     fn read(&self, at: SlotRef) -> Slot {
         // SAFETY: slots live in table objects or the boot table, which are
         // usable RAM covered by the direct map; the caller holds the big
@@ -40,6 +43,10 @@ impl Memory for Phys {
         // SAFETY: retype zeroes only memory of an untyped above its
         // watermark, which no object uses.
         unsafe { core::ptr::write_bytes((at + self.hhdm) as *mut u8, 0, len as usize) }
+    }
+
+    fn on_delete(&mut self, g: &mut Globals, at: SlotRef, cap: &Cap, last: bool) -> bool {
+        objects::on_delete(self, g, at, cap, last)
     }
 }
 
@@ -77,36 +84,31 @@ impl Budget for Slice {
     }
 }
 
-/// The first program's own table: where its handles point.
-#[derive(Clone, Copy, Debug)]
-pub struct RootTable {
-    pub table: u64,
-    pub bits: u8,
-}
-
 /// What a `call` returns: results, or a request to restart the call.
 pub enum Outcome {
     Done([u64; 4]),
+    /// A message call: the thread's registers were already set (or it
+    /// waits, and they are set when it wakes).
+    Message,
     Restart,
 }
 
-/// Run operation `label` on the capability behind `handle`.
+/// Run operation `label` on the capability behind `handle` in thread
+/// `me`'s table.
 pub fn invoke(
-    k: &mut KernelState,
-    root: RootTable,
+    g: &mut Globals,
+    sys: &mut Sys,
+    me: u64,
     handle: u64,
     label: u64,
     args: [u64; 6],
 ) -> Result<Outcome, Error> {
-    let mut m = Phys::new();
-    let at = cap::table_slot(root.table, root.bits, handle)?;
+    let mut m = Phys::new(sys);
+    let at = ipc::lookup(&m, me, handle)?;
     let c = m.read(at).cap;
-    if !c.is_live() {
-        return Err(Error::InvalidHandle);
-    }
     // A slot of another table, named by a handle to that table and an index.
     let resolve = |m: &Phys, table: u64, index: u64, need: u8| {
-        let t = cap::table_slot(root.table, root.bits, table)?;
+        let t = ipc::lookup(m, me, table)?;
         cap::slot_in(m, t, index, need)
     };
     let done = |r: [u64; 4]| Ok(Outcome::Done(r));
@@ -144,12 +146,14 @@ pub fn invoke(
         }
         (Some(Kind::Table), op::DELETE) => {
             let s = cap::slot_in(&m, at, args[0], rights::WRITE)?;
-            cap::delete(&mut m, &mut k.caps, s)?;
-            done([0; 4])
+            match cap::delete(&mut m, g, s)? {
+                Progress::Done(()) => done([0; 4]),
+                Progress::Interrupted => Ok(Outcome::Restart),
+            }
         }
         (Some(Kind::Table), op::REVOKE) => {
             let s = cap::slot_in(&m, at, args[0], rights::WRITE)?;
-            match cap::revoke(&mut m, &mut k.caps, s, &mut Slice::new())? {
+            match cap::revoke(&mut m, g, s, &mut Slice::new())? {
                 Progress::Done(()) => done([0; 4]),
                 Progress::Interrupted => Ok(Outcome::Restart),
             }
@@ -160,11 +164,8 @@ pub fn invoke(
                 .and_then(Kind::from_u8)
                 .ok_or(Error::InvalidArgument)?;
             let bits = u8::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
-            let t = cap::table_slot(root.table, root.bits, args[3])?;
+            let t = ipc::lookup(&m, me, args[3])?;
             let tc = m.read(t).cap;
-            if !tc.is_live() {
-                return Err(Error::InvalidHandle);
-            }
             if !tc.is(Kind::Table) {
                 return Err(Error::WrongKind);
             }
@@ -182,6 +183,11 @@ pub fn invoke(
             }
         }
         (Some(Kind::Table | Kind::Untyped), _) => Err(Error::NoSuchCall),
+        (Some(Kind::Thread), _) => objects::thread(&mut m, g, me, c, label, args),
+        (Some(Kind::SchedContext), _) => objects::sched_context(&mut m, me, c, label, args),
+        (Some(Kind::SchedControl), _) => objects::sched_control(&mut m, me, label, args),
+        (Some(Kind::AddressSpace), _) => objects::space(&mut m, me, c, label, args),
+        (Some(Kind::Page), _) => objects::page(&mut m, me, at, c, label, args),
         _ => Err(Error::WrongKind),
     }
 }

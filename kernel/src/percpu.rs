@@ -35,6 +35,8 @@ pub struct PerCpu {
     pub timer_ticks: AtomicU32,
     pub timer_worst_late_ns: AtomicU64,
     pub timer_next_deadline: AtomicU64,
+    /// Another core asks this one to flush its TLB.
+    pub flush: AtomicBool,
 }
 
 impl PerCpu {
@@ -50,6 +52,7 @@ impl PerCpu {
             timer_ticks: AtomicU32::new(0),
             timer_worst_late_ns: AtomicU64::new(0),
             timer_next_deadline: AtomicU64::new(0),
+            flush: AtomicBool::new(false),
         }
     }
 }

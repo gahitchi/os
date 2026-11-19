@@ -1,53 +1,66 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The first program: loading it, giving it all free memory as untyped
-//! capabilities, and entering user mode.
+//! capabilities, and starting it as the first thread.
 //!
 //! Like seL4's root task, the first program starts with:
 //!
 //! - its own capability table (`2^ROOT_BITS` slots), whose capability is
 //!   in slot 1;
-//! - one untyped capability per block of free memory, from slot 2 on;
-//! - a read-only page of [`BootInfo`] at [`BOOT_INFO_ADDRESS`], whose
-//!   address it also gets in `rdi`.
+//! - its own thread (slot 2), scheduling context (slot 3: a round-robin
+//!   one, any core), address space (slot 4, with 1 MiB of page-table
+//!   memory) and the scheduling control capability (slot 5);
+//! - one untyped capability per block of free memory, from slot 6 on;
+//! - a read-only [`BootInfo`] at [`BOOT_INFO_ADDRESS`], whose address it
+//!   also gets in `rdi`.
 //!
-//! Its code, stack, table and boot information come from the kernel's
-//! boot allocator. Everything else is untyped memory it hands out itself.
+//! Its code, stack, table, objects and boot information come from the
+//! kernel's boot allocator. Everything else is untyped memory it hands out
+//! itself.
 
 use alaya_abi::{
-    BOOT_INFO_ADDRESS, BOOT_INFO_MAGIC, BootInfo, BootUntyped, INIT_STACK_BYTES, INIT_STACK_TOP,
-    Kind, MAX_BOOT_UNTYPED, SLOT_BITS, UNTYPED_MAX_BITS, UNTYPED_MIN_BITS,
+    BOOT_INFO_ADDRESS, BOOT_INFO_BYTES, BOOT_INFO_MAGIC, BootInfo, BootUntyped, INIT_STACK_BYTES,
+    INIT_STACK_TOP, Kind, MAX_BOOT_UNTYPED, MAX_CORES, MAX_PRIORITY, SLOT_BITS, SPACE_BITS,
+    THREAD_BITS, UNTYPED_MAX_BITS, UNTYPED_MIN_BITS, boot_flags,
 };
-use alaya_cap::{self as cap, Cap};
+use alaya_cap::{self as cap, Cap, INTERNAL, Memory};
 
-use crate::arch::cpu::{self, msr};
-use crate::arch::gdt::{USER_CODE, USER_DATA};
-use crate::caps::{Phys, RootTable};
+use crate::arch::cpu::{self, rdtsc};
+use crate::caps::Phys;
 use crate::mm::layout::PAGE_SIZE;
 use crate::mm::paging::{AddressSpace, NO_EXECUTE, USER, WRITABLE};
 use crate::mm::{self, frames};
-use crate::{kprintln, limine, percpu, sync};
+use crate::obj::{self, SLOT_SPACE, SLOT_TABLE, SPACE_META, Sc, Tcb, internal, state};
+use crate::{kprintln, limine, percpu, sched, sync, time};
 
 /// The first program's table has 4096 slots.
 pub const ROOT_BITS: u8 = 12;
 
-/// The first program, as the kernel keeps it.
-#[derive(Clone, Copy)]
-pub struct Init {
-    pub root: RootTable,
-    pub space: AddressSpace,
-}
+/// Page-table memory for the first program's address space.
+const POOL_BITS: u8 = 20;
+
+/// Priority of the first program's thread. It may give out any priority.
+const INIT_PRIORITY: u8 = 200;
+
+/// Time slice of the first program's round-robin budget.
+const INIT_PERIOD_NS: u64 = 10_000_000;
 
 /// Load the first program from the boot module, give it its capabilities
-/// and run it on this core. Never returns.
+/// and run it. Never returns.
 pub fn start() -> ! {
     let module = limine::modules()
         .find(|m| m.path().ends_with("/init"))
         .expect("no first program: the boot image lacks boot/init");
     let elf = module.bytes();
     let hhdm = limine::hhdm_offset().unwrap();
-    let mut space = AddressSpace::new_user(hhdm, cpu::features().gib_pages, mm::kernel_root());
 
-    let entry = load_elf(&mut space, elf, hhdm);
+    let space_obj = frames::alloc_contiguous(1 << SPACE_BITS, 1 << SPACE_BITS);
+    let mut space = AddressSpace::with_root(
+        space_obj,
+        hhdm,
+        cpu::features().gib_pages,
+        mm::kernel_root(),
+    );
+    let (entry, image_start, image_end) = load_elf(&mut space, elf, hhdm);
     for page in (INIT_STACK_TOP - INIT_STACK_BYTES..INIT_STACK_TOP).step_by(PAGE_SIZE as usize) {
         space.map(
             page,
@@ -56,28 +69,102 @@ pub fn start() -> ! {
             USER | WRITABLE | NO_EXECUTE,
         );
     }
-    let info_frame = frames::alloc_zeroed();
-    space.map(BOOT_INFO_ADDRESS, info_frame, PAGE_SIZE, USER | NO_EXECUTE);
-
-    // The table, then all the memory nobody took.
-    let table_bytes = 1u64 << (ROOT_BITS + SLOT_BITS);
-    let table = frames::alloc_contiguous(table_bytes, table_bytes);
-    let mut m = Phys::new();
-    cap::init_table(&mut m, table, ROOT_BITS);
-    cap::insert_root(
-        &mut m,
-        table + (1 << SLOT_BITS),
-        Cap::new(Kind::Table, table, ROOT_BITS),
+    let info_frames = frames::alloc_contiguous(BOOT_INFO_BYTES, PAGE_SIZE);
+    space.map(
+        BOOT_INFO_ADDRESS,
+        info_frames,
+        BOOT_INFO_BYTES,
+        USER | NO_EXECUTE,
     );
 
-    // SAFETY: the frame was just allocated for this and is reached through
-    // the direct map.
-    let info = unsafe { &mut *((info_frame + hhdm) as *mut BootInfo) };
+    let thread = frames::alloc_contiguous(1 << THREAD_BITS, 1 << THREAD_BITS);
+    let sc_obj = frames::alloc_zeroed();
+    let pool = frames::alloc_contiguous(1 << POOL_BITS, 1 << POOL_BITS);
+    let table_bytes = 1u64 << (ROOT_BITS + SLOT_BITS);
+    let table = frames::alloc_contiguous(table_bytes, table_bytes);
+
+    let mut k = sync::BKL.lock();
+    let mut m = Phys::new(&mut k.sys);
+    let slot = |h: u64| table + (h << SLOT_BITS);
+    cap::init_table(&mut m, table, ROOT_BITS);
+    cap::insert_root(&mut m, slot(1), Cap::new(Kind::Table, table, ROOT_BITS));
+    cap::insert_root(&mut m, slot(2), Cap::new(Kind::Thread, thread, THREAD_BITS));
+    cap::insert_root(
+        &mut m,
+        slot(3),
+        Cap::new(Kind::SchedContext, sc_obj, alaya_abi::SCHED_BITS),
+    );
+    cap::insert_root(
+        &mut m,
+        slot(4),
+        Cap::new(Kind::AddressSpace, space_obj, SPACE_BITS),
+    );
+    cap::insert_root(&mut m, slot(5), Cap::new(Kind::SchedControl, 0, 0));
+
+    // The address space: its page-table memory and its id.
+    let pool_slot = space_obj + SPACE_META;
+    let mut pool_cap = Cap::new(Kind::Untyped, pool, POOL_BITS);
+    pool_cap.flags = INTERNAL;
+    pool_cap._reserved = internal::SPACE_POOL;
+    cap::insert_root(&mut m, pool_slot, pool_cap);
+    m.sys.spaces[0].space = space_obj;
+    obj::space_meta(space_obj).id = 1;
+
+    // The thread holds copies of its table and address space.
+    for (i, src, tag) in [
+        (SLOT_TABLE, slot(1), internal::THREAD_TABLE),
+        (SLOT_SPACE, slot(4), internal::THREAD_SPACE),
+    ] {
+        let dst = thread + i as u64 * 64;
+        cap::copy(&mut m, src, dst, alaya_abi::rights::ALL, None).unwrap();
+        let mut s = m.read(dst);
+        s.cap.flags |= INTERNAL;
+        s.cap._reserved = tag;
+        m.write(dst, &s);
+    }
+
+    let t = obj::get::<Tcb>(thread);
+    t.prio = INIT_PRIORITY;
+    t.mcp = MAX_PRIORITY as u8;
+    t.regs.rip = entry;
+    t.regs.rsp = INIT_STACK_TOP;
+    t.regs.rdi = BOOT_INFO_ADDRESS;
+    t.regs.rflags = cpu::RFLAGS_IF | 2;
+    t.state = state::READY;
+    let period = time::ns_to_tsc(INIT_PERIOD_NS);
+    let s = obj::get::<Sc>(sc_obj);
+    s.budget.configure(period, period, rdtsc());
+    s.home = thread;
+    s.thread = thread;
+    t.sc = sc_obj;
+    t.home_sc = sc_obj;
+
+    // SAFETY: the frames were just allocated for this and are reached
+    // through the direct map.
+    let info = unsafe { &mut *((info_frames + hhdm) as *mut BootInfo) };
     info.magic = BOOT_INFO_MAGIC;
     info.table = 1;
     info.table_bits = u64::from(ROOT_BITS);
+    info.thread = 2;
+    info.sched = 3;
+    info.space = 4;
+    info.sched_control = 5;
     info.cores = u64::from(percpu::count());
-    let mut handle = 2u64;
+    info.tsc_hz = time::tsc_hz();
+    info.image_start = image_start;
+    info.image_end = image_end;
+    for word in limine::cmdline().split_whitespace() {
+        if let Some(secs) = word.strip_prefix("fuzz=") {
+            info.flags |= boot_flags::FUZZ;
+            info.fuzz_seconds = secs.parse().unwrap_or(10);
+        } else if word == "long" {
+            info.flags |= boot_flags::LONG;
+        }
+    }
+    for c in 0..(percpu::count() as usize).min(MAX_CORES) {
+        info.core_types[c] = m.sys.cores[c].ctype;
+    }
+    let mut handle = 6u64;
     let mut total = 0u64;
     frames::freeze(|start, end| {
         let mut at = start;
@@ -94,8 +181,11 @@ pub fn start() -> ! {
                 kprintln!("init: more than {MAX_BOOT_UNTYPED} memory blocks; the rest is unused");
                 return;
             }
-            let slot = table + (handle << SLOT_BITS);
-            cap::insert_root(&mut m, slot, Cap::new(Kind::Untyped, at, bits as u8));
+            cap::insert_root(
+                &mut m,
+                slot(handle),
+                Cap::new(Kind::Untyped, at, bits as u8),
+            );
             info.untyped[n] = BootUntyped {
                 handle,
                 base: at,
@@ -114,23 +204,32 @@ pub fn start() -> ! {
         info.untyped_count,
         total >> 20
     );
-
-    {
-        sync::BKL.lock().init = Some(Init {
-            root: RootTable {
-                table,
-                bits: ROOT_BITS,
-            },
-            space,
-        });
+    let (kind, mask, size) = crate::fpu::describe();
+    kprintln!("fpu: {kind}, state components {mask:#x}, {size} bytes per thread");
+    let types = &m.sys.cores[..percpu::count() as usize];
+    let perf = types
+        .iter()
+        .filter(|c| u64::from(c.ctype) == alaya_abi::core_type::PERFORMANCE)
+        .count();
+    let eff = types
+        .iter()
+        .filter(|c| u64::from(c.ctype) == alaya_abi::core_type::EFFICIENCY)
+        .count();
+    if m.sys.hybrid {
+        kprintln!("sched: {perf} performance and {eff} efficiency cores");
+    } else {
+        kprintln!("sched: {} cores of one type", types.len());
     }
-    // SAFETY: the address space maps the kernel's upper half as well.
-    unsafe { cpu::write_cr3(space.root()) };
-    enter(entry, INIT_STACK_TOP, BOOT_INFO_ADDRESS)
+
+    k.sys.first_thread = thread;
+    k.sys.started = true;
+    sched::make_ready(&mut k.sys, thread);
+    crate::syscall::idle(k, percpu::index() as usize)
 }
 
-/// Load the program's segments and return its entry point.
-fn load_elf(space: &mut AddressSpace, elf: &[u8], hhdm: u64) -> u64 {
+/// Load the program's segments; return its entry point and where its
+/// image starts and ends.
+fn load_elf(space: &mut AddressSpace, elf: &[u8], hhdm: u64) -> (u64, u64, u64) {
     let u16_at = |o: usize| u16::from_le_bytes([elf[o], elf[o + 1]]);
     let u32_at = |o: usize| u32::from_le_bytes(elf[o..o + 4].try_into().unwrap());
     let u64_at = |o: usize| u64::from_le_bytes(elf[o..o + 8].try_into().unwrap());
@@ -141,6 +240,7 @@ fn load_elf(space: &mut AddressSpace, elf: &[u8], hhdm: u64) -> u64 {
     assert!(u16_at(18) == 62, "the first program is not for x86-64");
     let entry = u64_at(24);
     let (phoff, phentsize, phnum) = (u64_at(32) as usize, u16_at(54) as usize, u16_at(56));
+    let (mut lowest, mut highest) = (u64::MAX, 0);
     for i in 0..phnum as usize {
         let ph = phoff + i * phentsize;
         if u32_at(ph) != 1 {
@@ -167,6 +267,8 @@ fn load_elf(space: &mut AddressSpace, elf: &[u8], hhdm: u64) -> u64 {
             flags |= NO_EXECUTE;
         }
         let first = vaddr & !(PAGE_SIZE - 1);
+        lowest = lowest.min(first);
+        highest = highest.max((vaddr + memsz).next_multiple_of(PAGE_SIZE));
         let mut page = first;
         while page < vaddr + memsz {
             let frame = frames::alloc_zeroed();
@@ -188,47 +290,5 @@ fn load_elf(space: &mut AddressSpace, elf: &[u8], hhdm: u64) -> u64 {
             page += PAGE_SIZE;
         }
     }
-    entry
-}
-
-/// Drop to user mode at `rip` with stack `rsp` and `rdi` = `arg`.
-fn enter(rip: u64, rsp: u64, arg: u64) -> ! {
-    // The program's GS base starts at zero; `swapgs` below parks the
-    // kernel's in KERNEL_GS_BASE until the next entry.
-    // SAFETY: only this core's GS bases change.
-    unsafe { cpu::wrmsr(msr::KERNEL_GS_BASE, 0) };
-    // SAFETY: the frame describes user mode with interrupts on; every
-    // general register is cleared so no kernel data reaches the program.
-    unsafe {
-        core::arch::asm!(
-            "swapgs",
-            "push {ss}",
-            "push {rsp}",
-            "push {rflags}",
-            "push {cs}",
-            "push {rip}",
-            "xor eax, eax",
-            "xor ebx, ebx",
-            "xor ecx, ecx",
-            "xor edx, edx",
-            "xor esi, esi",
-            "xor ebp, ebp",
-            "xor r8d, r8d",
-            "xor r9d, r9d",
-            "xor r10d, r10d",
-            "xor r11d, r11d",
-            "xor r12d, r12d",
-            "xor r13d, r13d",
-            "xor r14d, r14d",
-            "xor r15d, r15d",
-            "iretq",
-            ss = in(reg) u64::from(USER_DATA),
-            rsp = in(reg) rsp,
-            rflags = in(reg) cpu::RFLAGS_IF | 2,
-            cs = in(reg) u64::from(USER_CODE),
-            rip = in(reg) rip,
-            in("rdi") arg,
-            options(noreturn),
-        )
-    }
+    (entry, lowest, highest)
 }

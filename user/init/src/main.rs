@@ -13,8 +13,11 @@
 
 use core::fmt::{self, Write};
 
-use alaya_sys::abi::{BOOT_INFO_MAGIC, BootInfo, call, op};
+use alaya_sys::abi::{BOOT_INFO_MAGIC, BootInfo, boot_flags, call, op};
 use alaya_sys::{At, Error, Kind, rights};
+
+mod fuzz;
+mod m3;
 
 core::arch::global_asm!(
     ".section .text._start, \"ax\"",
@@ -41,7 +44,7 @@ impl Write for Line {
     }
 }
 
-fn say(args: fmt::Arguments) {
+pub(crate) fn say_line(args: fmt::Arguments) {
     let mut line = Line {
         buf: [0; 200],
         len: 0,
@@ -52,8 +55,9 @@ fn say(args: fmt::Arguments) {
 }
 
 macro_rules! say {
-    ($($arg:tt)*) => (say(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::say_line(format_args!($($arg)*)));
 }
+pub(crate) use say;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -69,7 +73,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// Check that `r` is the error `e`.
 #[track_caller]
-fn expect_err<T: fmt::Debug>(r: Result<T, Error>, e: Error) {
+pub(crate) fn expect_err<T: fmt::Debug>(r: Result<T, Error>, e: Error) {
     match r {
         Err(got) if got == e => {}
         other => panic!("expected {e:?}, got {other:?}"),
@@ -177,10 +181,9 @@ extern "C" fn main(info: &'static BootInfo) -> ! {
     let (e, _) = alaya_sys::syscall(77, 0, 0, [0; 6]);
     assert!(e == Error::NoSuchCall as u64);
     let (e, _) = alaya_sys::syscall(call::SEND, 0, 0, [0; 6]);
-    assert!(
-        e == Error::NoSuchCall as u64,
-        "messages come in milestone 3"
-    );
+    assert!(e == Error::InvalidHandle as u64);
+    let (e, _) = alaya_sys::syscall(call::SEND, root, 0, [0; 6]);
+    assert!(e == Error::WrongKind as u64);
     pass("bad handles, kinds, sizes and calls are refused");
 
     // A 16 MiB untyped from the big block, a table of 1024 slots from it,
@@ -359,6 +362,11 @@ extern "C" fn main(info: &'static BootInfo) -> ! {
             .is_multiple_of(1 << 21)
     );
     pass("2 MiB pages are aligned");
+
+    slots.next = m3::run(info, u, slots.next, &mut pass);
+    if info.flags & boot_flags::FUZZ != 0 {
+        fuzz::run(info, u, slots.next, info.fuzz_seconds);
+    }
 
     let (restarts, revoked) = alaya_sys::counters();
     say!("all {checks} checks passed ({restarts} restarted calls, {revoked} capabilities revoked)");

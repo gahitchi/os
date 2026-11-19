@@ -30,6 +30,7 @@ pub fn init_this_core(index: u32) {
         Stack::Kernel.top(index),
     );
     crate::syscall::init_this_core();
+    crate::fpu::init_this_core();
     const _: () = assert!(gdt::IST_DOUBLE_FAULT == 1 && gdt::IST_NMI == 2);
     idt::load();
     let me = percpu::get(index);
@@ -83,6 +84,7 @@ extern "C" fn ap_entry(info: &'static MpInfo) -> ! {
 extern "C" fn ap_main(index: u32) -> ! {
     init_this_core(index);
     time::init_this_core();
+    crate::sched::init_this_core(&mut crate::sync::BKL.lock().sys);
     let me = percpu::this();
     me.online.store(true, Ordering::Release);
     kprintln!(
@@ -94,7 +96,7 @@ extern "C" fn ap_main(index: u32) -> ! {
         core::hint::spin_loop();
     }
     crate::selftest::run_on_this_core();
-    idle()
+    crate::syscall::idle_this_core()
 }
 
 /// Nothing to run yet: sleep until an interrupt, forever.

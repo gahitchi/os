@@ -12,22 +12,27 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
-**Milestone 2: capabilities and memory.** On top of milestone 1 (Limine boot
-on BIOS and UEFI, the kernel's own page tables, fault reports, the
-TSC-deadline timer, every core up under the big kernel lock), the kernel now
-hands every free byte of memory to the first program as untyped capabilities
-and runs it in user mode. The program retypes memory into capability tables,
-endpoints, notifications and pages, copies, mints, moves, deletes and
-revokes capabilities through system calls, and checks the results. Long
-revokes and retypes are interruptible: the kernel stops them after a short
-slice and the call restarts by itself. CI boots it on 1, 2 and 8 virtual
-cores, emulated and with KVM.
+**Milestone 3: threads, time budgets and messages.** Programs now run as
+threads on every core, each on a *time budget* ("this much time in every
+period") that it cannot overrun, so a busy program can never steal a game's
+or an audio thread's time. Threads of separate programs talk through fast
+messages; a server with no time of its own runs on its caller's time, so
+each caller pays for its own requests. A crash in a program becomes a
+message to whoever looks after it, not a crash of the system. Each program
+has its own private memory map, and pages can be shared on purpose. On
+hybrid CPUs (performance and efficiency cores) the kernel knows each core's
+type and places threads accordingly.
 
-The capability rules were checked before the code was written: a
-[TLA+ model](formal/revoke/Revoke.tla) of revoke on 2 and 3 cores (TLC checks
-that nothing names freed memory and that every revoke ends), and
-[Kani proofs](cap/src/proofs.rs) of the capability code itself. How it all
-works: [`docs/capabilities.md`](docs/capabilities.md).
+Before the code: a [TLA+ model](formal/sched/Sched.tla) of the scheduler,
+checked in every ordering of events on 2 and 3 cores (budgets hold, no
+wake-up is lost, lent time always comes back). After it: 25 boot checks on
+1 to 8 cores, and a fuzzer that throws random system calls at the kernel
+from every core. How it all works:
+[`docs/threads-and-messages.md`](docs/threads-and-messages.md).
+
+Milestone 2 (capabilities and memory) is described in
+[`docs/capabilities.md`](docs/capabilities.md), with its own
+[TLA+ model](formal/revoke/Revoke.tla) and [Kani proofs](cap/src/proofs.rs).
 
 ## Try it
 
@@ -44,7 +49,8 @@ cargo xtask test --cpus 8    # boot and check every core came up
 cargo xtask run --uefi       # boot with UEFI firmware instead of BIOS
 cargo xtask test --fault page  # crash on purpose and check the fault report
 cargo xtask image            # only build build/alaya-x86_64.iso
-cargo test -p alaya-cap      # capability code tests on the host
+cargo xtask test --fuzz 60   # boot checks, then a minute of kernel fuzzing
+cargo test -p alaya-cap -p alaya-sched  # capability and time-budget tests on the host
 formal/check.sh              # TLA+ model checks (needs Java)
 cargo kani -p alaya-cap      # Kani proofs (needs cargo install kani-verifier)
 ```
@@ -70,8 +76,9 @@ bash alaya.sh run
 | --- | --- |
 | `kernel/` | The kernel (`no_std`, target `x86_64-unknown-none`) |
 | `cap/` | Capability tables, untyped memory, retype and revoke (used by the kernel; tested on the host and with Kani) |
+| `sched/` | Time budgets with sporadic refills (used by the kernel; tested on the host) |
 | `abi/` | Numbers and layouts shared by the kernel and programs |
-| `user/init/` | The first program |
+| `user/init/` | The first program: the boot checks and the kernel fuzzer |
 | `user/sys/` | System call wrappers for programs |
 | `formal/` | TLA+ models, checked with TLC (`formal/check.sh`) |
 | `xtask/` | Build, image and QEMU runner (`cargo xtask`) |

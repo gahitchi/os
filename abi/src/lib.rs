@@ -20,11 +20,26 @@
 //! Each program has one flat table of capabilities (decision 51). A handle
 //! is an index into it. Handle 0 is never valid. Slots of *other* tables are
 //! named by a handle to that table plus an index.
+//!
+//! # Messages
+//!
+//! `call`, `send` and `try_send` on an endpoint, `recv` and `reply_recv`
+//! use more registers:
+//!
+//! | Register | In | Out |
+//! | --- | --- | --- |
+//! | `rdi` | endpoint, notification or reply handle | badge of the sender |
+//! | `rsi` | [`Info`] word: label, length, capability | [`Info`] word received |
+//! | `rdx`, `r10`, `r8`, `r9`, `r12`, `r13` | data words 0 to 5 | data words received |
+//! | `r14` | bits 0-31: handle of a capability to send; bits 32-63: slot of the own table to receive one in (0: none) | |
+//! | `r15` | reply object (`recv`, `reply_recv`) | |
+//!
+//! `call` on any other kind of object is an operation on it (`rsi` is the
+//! operation, [`op`]); `send` on a reply object answers the caller.
 
 #![no_std]
 
-/// Call numbers (`rax`). Milestone 2 has `call` (on kernel objects),
-/// `yield` and `debug`; the message calls arrive in milestone 3.
+/// Call numbers (`rax`).
 pub mod call {
     pub const CALL: u64 = 0;
     pub const SEND: u64 = 1;
@@ -45,8 +60,11 @@ pub mod debug {
     /// Report the result of the boot tests: `rsi` = 0 for success.
     pub const REPORT: u64 = 1;
     /// Read kernel counters: returns restarts of interrupted calls in
-    /// result 0, capabilities deleted by revokes in result 1.
+    /// result 0, capabilities deleted by revokes in result 1, threads moved
+    /// between cores in result 2, thread switches in result 3.
     pub const COUNTERS: u64 = 2;
+    /// The core the caller runs on, in result 0.
+    pub const CORE: u64 = 3;
     pub const MAX_PRINT: usize = 256;
 }
 
@@ -74,7 +92,122 @@ pub mod op {
     /// Retype: args = kind, size bits, count, dst table, dst index.
     /// Makes at most [`super::RETYPE_BATCH`] objects; result 0 is how many.
     pub const RETYPE: u64 = 16;
+
+    // On a thread.
+    /// Configure: args = table handle, address space handle, fault endpoint
+    /// handle (0: none). Copies them into the thread; 0 for the table or
+    /// space leaves that one as it is.
+    pub const THREAD_CONFIGURE: u64 = 32;
+    /// Set priority: args = priority, highest priority it may give others.
+    /// Neither may exceed the caller's own limit.
+    pub const THREAD_PRIORITY: u64 = 33;
+    /// Set registers of a stopped thread: args = rip, rsp, rdi, rsi, fs base.
+    pub const THREAD_WRITE: u64 = 34;
+    /// Read registers: results = rip, rsp, rax, state ([`super::state`]).
+    pub const THREAD_READ: u64 = 35;
+    /// Start a stopped thread.
+    pub const THREAD_START: u64 = 36;
+    /// Stop a thread, cancelling any message it waits for.
+    pub const THREAD_STOP: u64 = 37;
+    /// Bind a notification: arg 0 = notification handle (0: unbind). A
+    /// thread waiting in `recv` then also wakes for its signals.
+    pub const THREAD_BIND: u64 = 38;
+
+    // On a scheduling context.
+    /// Bind to a thread: arg 0 = thread handle.
+    pub const SC_BIND: u64 = 48;
+    pub const SC_UNBIND: u64 = 49;
+    /// Results = budget ns, period ns, time used in total ns, core it last
+    /// ran on.
+    pub const SC_INFO: u64 = 50;
+
+    // On the scheduling control capability.
+    /// Configure a scheduling context: args = its handle, budget µs, period
+    /// µs, core type ([`super::core_type`]), core + 1 to keep it on one
+    /// core (0: any core of that type).
+    pub const SC_CONFIGURE: u64 = 56;
+
+    // On an address space.
+    /// Give it page-table memory: arg 0 = handle of an untyped nothing was
+    /// made from. The untyped moves into the address space.
+    pub const SPACE_ASSIGN: u64 = 64;
+
+    // On a page.
+    /// Map: args = address space handle, address, [`super::map`] flags.
+    pub const PAGE_MAP: u64 = 72;
+    pub const PAGE_UNMAP: u64 = 73;
+    /// Physical address, in result 0 (for drivers).
+    pub const PAGE_ADDRESS: u64 = 74;
 }
+
+/// Flags of [`op::PAGE_MAP`].
+pub mod map {
+    pub const WRITE: u64 = 1 << 0;
+    pub const EXECUTE: u64 = 1 << 1;
+}
+
+/// Thread states, as [`op::THREAD_READ`] reports them.
+pub mod state {
+    pub const STOPPED: u64 = 0;
+    pub const READY: u64 = 1;
+    pub const SENDING: u64 = 2;
+    pub const RECEIVING: u64 = 3;
+    pub const WAITING_REPLY: u64 = 4;
+    pub const WAITING_SIGNAL: u64 = 5;
+}
+
+/// Core types (decision 54).
+pub mod core_type {
+    pub const ANY: u64 = 0;
+    pub const PERFORMANCE: u64 = 1;
+    pub const EFFICIENCY: u64 = 2;
+}
+
+/// The message word in `rsi`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Info(pub u64);
+
+impl Info {
+    /// Most data words in one message.
+    pub const MAX_WORDS: u64 = 6;
+    /// The message carries a capability (handle in `r14`).
+    pub const CAP: u64 = 1 << 4;
+    /// Received: this is a notification's signal bits (in `rdi`), not a
+    /// message.
+    pub const SIGNAL: u64 = 1 << 5;
+    /// Received: a capability was sent but could not be stored.
+    pub const CAP_LOST: u64 = 1 << 6;
+    /// Received: the message was a call, so the reply object holds the
+    /// caller.
+    pub const CALLED: u64 = 1 << 7;
+
+    pub const fn new(label: u64, words: u64) -> Info {
+        Info(label << 8 | words)
+    }
+
+    pub const fn label(self) -> u64 {
+        self.0 >> 8
+    }
+
+    pub const fn words(self) -> u64 {
+        self.0 & 7
+    }
+
+    pub const fn with_cap(self) -> Info {
+        Info(self.0 | Self::CAP)
+    }
+
+    pub const fn has(self, flag: u64) -> bool {
+        self.0 & flag != 0
+    }
+}
+
+/// Label of a fault message, sent for a thread that faulted to its fault
+/// endpoint. Words: vector, error code, faulting address, rip, rsp.
+pub const FAULT_LABEL: u64 = 0xfa_17;
+
+/// Highest priority.
+pub const MAX_PRIORITY: u64 = 255;
 
 /// Most objects one retype makes. Programs loop for more.
 pub const RETYPE_BATCH: u64 = 16;
@@ -108,6 +241,11 @@ pub enum Error {
     NoMemory = 7,
     /// An argument is out of range.
     InvalidArgument = 8,
+    /// The wait was cancelled: the object went away or the thread was
+    /// stopped.
+    Cancelled = 9,
+    /// `try_send` found nobody waiting.
+    WouldBlock = 10,
 }
 
 impl Error {
@@ -121,6 +259,8 @@ impl Error {
             5 => Error::SlotInUse,
             6 => Error::Busy,
             7 => Error::NoMemory,
+            9 => Error::Cancelled,
+            10 => Error::WouldBlock,
             _ => Error::InvalidArgument,
         }
     }
@@ -145,6 +285,12 @@ pub enum Kind {
     Endpoint = 3,
     Notification = 4,
     Page = 5,
+    Thread = 6,
+    SchedContext = 7,
+    Reply = 8,
+    AddressSpace = 9,
+    /// The right to give out time (configure scheduling contexts).
+    SchedControl = 10,
 }
 
 impl Kind {
@@ -156,6 +302,11 @@ impl Kind {
             3 => Kind::Endpoint,
             4 => Kind::Notification,
             5 => Kind::Page,
+            6 => Kind::Thread,
+            7 => Kind::SchedContext,
+            8 => Kind::Reply,
+            9 => Kind::AddressSpace,
+            10 => Kind::SchedControl,
             _ => return None,
         })
     }
@@ -167,8 +318,14 @@ pub const SLOT_BITS: u8 = 6;
 pub const SLOT_BYTES: u64 = 1 << SLOT_BITS;
 pub const TABLE_MIN_BITS: u8 = 2;
 pub const TABLE_MAX_BITS: u8 = 16;
-/// Endpoints and notifications take 64 bytes each.
+/// Endpoints, notifications and replies take 64 bytes each.
 pub const SMALL_OBJECT_BITS: u8 = 6;
+/// A thread takes 4 KiB: registers, links and the saved FPU/vector state.
+pub const THREAD_BITS: u8 = 12;
+/// A scheduling context takes 256 bytes.
+pub const SCHED_BITS: u8 = 8;
+/// An address space takes 8 KiB: its top page table and its bookkeeping.
+pub const SPACE_BITS: u8 = 13;
 /// Pages: 4 KiB, 2 MiB, 1 GiB.
 pub const PAGE_BITS: [u8; 3] = [12, 21, 30];
 /// Untyped memory made by retype: 4 KiB up to the parent's size.
@@ -177,6 +334,10 @@ pub const UNTYPED_MAX_BITS: u8 = 47;
 
 /// Where the first program finds its boot information (read only).
 pub const BOOT_INFO_ADDRESS: u64 = 0x7fff_f000_0000;
+/// Bytes of boot information mapped there.
+pub const BOOT_INFO_BYTES: u64 = 16 * 1024;
+/// Most cores the boot information describes.
+pub const MAX_CORES: usize = 256;
 /// Top of the first program's stack.
 pub const INIT_STACK_TOP: u64 = 0x7fff_e000_0000;
 pub const INIT_STACK_BYTES: u64 = 64 * 1024;
@@ -205,6 +366,33 @@ pub struct BootInfo {
     pub first_free: u64,
     /// Online cores.
     pub cores: u64,
+    /// Handles of the program's own thread, scheduling context, address
+    /// space, and the scheduling control capability.
+    pub thread: u64,
+    pub sched: u64,
+    pub space: u64,
+    pub sched_control: u64,
+    /// TSC ticks per second.
+    pub tsc_hz: u64,
+    /// Where the program's image lies, for programs that copy it.
+    pub image_start: u64,
+    pub image_end: u64,
+    /// Kernel command-line flags ([`boot_flags`]).
+    pub flags: u64,
+    /// `fuzz=<seconds>`: how long to run the kernel fuzzer.
+    pub fuzz_seconds: u64,
+    /// Each core's type ([`core_type`]).
+    pub core_types: [u8; MAX_CORES],
     pub untyped_count: u64,
     pub untyped: [BootUntyped; MAX_BOOT_UNTYPED],
+}
+
+const _: () = assert!(core::mem::size_of::<BootInfo>() as u64 <= BOOT_INFO_BYTES);
+
+/// Flags in [`BootInfo::flags`], from the kernel command line.
+pub mod boot_flags {
+    /// `fuzz=<seconds>`: run the kernel fuzzer.
+    pub const FUZZ: u64 = 1 << 0;
+    /// `long`: run longer stress tests.
+    pub const LONG: u64 = 1 << 1;
 }

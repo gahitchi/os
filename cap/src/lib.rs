@@ -49,8 +49,8 @@ extern crate std;
 
 pub use alaya_abi::{Error, Kind, rights};
 use alaya_abi::{
-    PAGE_BITS, RETYPE_BATCH, SLOT_BITS, SLOT_BYTES, SMALL_OBJECT_BITS, TABLE_MAX_BITS,
-    TABLE_MIN_BITS, UNTYPED_MAX_BITS, UNTYPED_MIN_BITS,
+    PAGE_BITS, RETYPE_BATCH, SCHED_BITS, SLOT_BITS, SLOT_BYTES, SMALL_OBJECT_BITS, SPACE_BITS,
+    TABLE_MAX_BITS, TABLE_MIN_BITS, THREAD_BITS, UNTYPED_MAX_BITS, UNTYPED_MIN_BITS,
 };
 
 #[cfg(kani)]
@@ -66,6 +66,11 @@ pub const UP: u64 = 1;
 
 /// Internal flag: a revoke of this capability is in progress.
 pub const REVOKING: u8 = alaya_abi::flags::REVOKING;
+
+/// Internal flag: the capability sits in a slot inside a kernel object (a
+/// thread's table, address space or fault endpoint; an address space's
+/// page-table memory). `_reserved` says which ([`Cap::_reserved`]).
+pub const INTERNAL: u8 = 1 << 2;
 
 /// The kind byte of a table's header slot (slot 0).
 pub const HEADER: u8 = 0xff;
@@ -83,14 +88,18 @@ pub struct Cap {
     /// Table: log2 of its slot count. Untyped and pages: log2 of bytes.
     pub size_bits: u8,
     pub flags: u8,
+    /// For [`INTERNAL`] capabilities, which slot of the object holds it.
+    /// Page: unused.
     pub _reserved: u32,
     /// Physical address of the object.
     pub object: u64,
     /// Endpoint and notification: badge. Untyped: free offset (watermark).
-    /// Header: next table on the purge list.
+    /// Header: next table on the purge list. Page: address it is mapped
+    /// at, with map flags in the low bits (0: not mapped).
     pub a: u64,
     /// Untyped: clean offset; memory between `a` and `b` is known to be
-    /// zero. Header: purge cursor.
+    /// zero. Header: purge cursor. Page: the address space it is mapped
+    /// in (its id).
     pub b: u64,
 }
 
@@ -178,6 +187,19 @@ pub trait Memory {
     fn write(&mut self, at: SlotRef, slot: &Slot);
     /// Set `len` bytes at physical address `at` to zero.
     fn zero(&mut self, at: u64, len: u64);
+
+    /// Called before the capability in `at` is deleted; `last` says it is
+    /// the last capability to its object. The kernel uses it to detach
+    /// objects from everything that points at them (a thread from its run
+    /// queue, a page from the address space it is mapped in), so their
+    /// memory can be reused once their untyped is revoked.
+    ///
+    /// Returns false if that cannot finish now (another core must first
+    /// stop running a thread); the delete then does nothing and is retried.
+    /// Each call must make progress towards returning true.
+    fn on_delete(&mut self, _g: &mut Globals, _at: SlotRef, _cap: &Cap, _last: bool) -> bool {
+        true
+    }
 }
 
 /// Decides when an interruptible operation must stop. `step` is called
@@ -444,6 +466,12 @@ pub fn copy<M: Memory>(
     let mut cap = s.cap;
     cap.rights &= mask;
     cap.flags = 0;
+    cap._reserved = 0;
+    if cap.is(Kind::Page) {
+        // A copy of a page is not mapped anywhere yet.
+        cap.a = 0;
+        cap.b = 0;
+    }
     if let Some(badge) = badge {
         if !(cap.is(Kind::Endpoint) || cap.is(Kind::Notification)) {
             return Err(Error::WrongKind);
@@ -484,8 +512,16 @@ pub fn move_cap<M: Memory>(m: &mut M, src: SlotRef, dst: SlotRef) -> Result<(), 
 }
 
 /// Delete the capability in `at`, whatever it is. If it was the last one
-/// to a table, the table goes on the purge list.
-fn delete_any<M: Memory>(m: &mut M, g: &mut Globals, at: SlotRef) {
+/// to a table, the table goes on the purge list. Returns false if the
+/// kernel could not detach the object yet (see [`Memory::on_delete`]); then
+/// nothing changed.
+pub fn delete_any<M: Memory>(m: &mut M, g: &mut Globals, at: SlotRef) -> bool {
+    let s = m.read(at);
+    let last = is_final(m, at);
+    if !m.on_delete(g, at, &s.cap, last) {
+        return false;
+    }
+    // The hook may have deleted capabilities held inside the object.
     let s = m.read(at);
     let orphan = s.cap.is(Kind::Table) && is_final(m, at);
     unlink(m, at);
@@ -497,16 +533,21 @@ fn delete_any<M: Memory>(m: &mut M, g: &mut Globals, at: SlotRef) {
         m.write(table, &h);
         g.orphans = table;
     }
+    true
 }
 
-/// Delete the capability in `at` (a program asked for it).
-pub fn delete<M: Memory>(m: &mut M, g: &mut Globals, at: SlotRef) -> Result<(), Error> {
+/// Delete the capability in `at` (a program asked for it). Interrupted
+/// when the kernel must wait for another core (see [`Memory::on_delete`]).
+pub fn delete<M: Memory>(m: &mut M, g: &mut Globals, at: SlotRef) -> Result<Progress<()>, Error> {
     let s = live(m, at)?;
     if s.cap.revoking() {
         return Err(Error::Busy);
     }
-    delete_any(m, g, at);
-    Ok(())
+    if delete_any(m, g, at) {
+        Ok(Progress::Done(()))
+    } else {
+        Ok(Progress::Interrupted)
+    }
 }
 
 /// One step of emptying the purge list. Returns false when it is empty.
@@ -529,7 +570,9 @@ fn purge_step<M: Memory>(m: &mut M, g: &mut Globals, watch: SlotRef) -> Result<b
     }
     let at = table + (index << SLOT_BITS);
     if m.read(at).cap.is_live() {
-        delete_any(m, g, at);
+        if !delete_any(m, g, at) {
+            return Ok(true); // try this slot again
+        }
         g.revoked += 1;
     }
     // Re-read: deleting may have touched other headers, never this one
@@ -562,8 +605,9 @@ pub fn revoke<M: Memory, B: Budget>(
         if first == 0 {
             break;
         }
-        delete_any(m, g, first);
-        g.revoked += 1;
+        if delete_any(m, g, first) {
+            g.revoked += 1;
+        }
         if budget.step() {
             return Ok(Progress::Interrupted);
         }
@@ -597,7 +641,12 @@ pub fn object_bits(kind: Kind, bits: u8, untyped_bits: u8) -> Result<(u8, u8), E
         Kind::Table if (TABLE_MIN_BITS..=TABLE_MAX_BITS).contains(&bits) => {
             Ok((bits + SLOT_BITS, bits))
         }
-        Kind::Endpoint | Kind::Notification => Ok((SMALL_OBJECT_BITS, SMALL_OBJECT_BITS)),
+        Kind::Endpoint | Kind::Notification | Kind::Reply => {
+            Ok((SMALL_OBJECT_BITS, SMALL_OBJECT_BITS))
+        }
+        Kind::Thread => Ok((THREAD_BITS, THREAD_BITS)),
+        Kind::SchedContext => Ok((SCHED_BITS, SCHED_BITS)),
+        Kind::AddressSpace => Ok((SPACE_BITS, SPACE_BITS)),
         Kind::Page if PAGE_BITS.contains(&bits) => Ok((bits, bits)),
         Kind::Untyped
             if (UNTYPED_MIN_BITS..=UNTYPED_MAX_BITS).contains(&bits) && bits < untyped_bits =>

@@ -16,6 +16,7 @@ SECTIONS
     . = 0x400000;
     .text : { *(.text .text.*) } :text
     . = ALIGN(4096);
+    __text_end = .;
     .rodata : { *(.rodata .rodata.*) } :rodata
     . = ALIGN(4096);
     .data : { *(.data .data.*) } :data
