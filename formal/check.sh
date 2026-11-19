@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Check the TLA+ models with TLC.
 #
-#   formal/check.sh            run every check CI runs
-#   formal/check.sh <cfg>...   run only these configurations of the revoke model
+#   formal/check.sh                  run every check CI runs
+#   formal/check.sh <model>/<cfg>... run only these, e.g. sched/Small.cfg
 #
 # Needs Java 11 or newer. Downloads the pinned TLA+ tools once, into build/.
 set -euo pipefail
@@ -31,26 +31,41 @@ tlc() {
 }
 
 if [ $# -gt 0 ]; then
-    for cfg in "$@"; do tlc revoke "$cfg"; done
+    for arg in "$@"; do tlc "${arg%%/*}" "${arg#*/}"; done
     exit 0
 fi
 
-# Must pass: safety and liveness on two cores, safety on three.
+# A check that must fail, and for the expected reason: it shows the model
+# has teeth.
+must_fail() {
+    local dir=$1 cfg=$2 reason=$3 out
+    echo "== $dir/$cfg (expected to fail)"
+    if out=$(tlc "$dir" "$cfg" 2>&1); then
+        echo "$out"
+        echo "$dir/$cfg passed, but it must fail" >&2
+        exit 1
+    fi
+    if ! grep -q "$reason" <<<"$out"; then
+        echo "$out"
+        echo "$dir/$cfg failed for the wrong reason" >&2
+        exit 1
+    fi
+    echo "$dir/$cfg: failed as expected ($reason)"
+}
+
+# Revoke: safety and liveness on two cores, safety on three. With a revoke
+# that does only one step per turn, other cores can keep it busy for ever.
 tlc revoke Small.cfg
 tlc revoke ThreeCores.cfg
+must_fail revoke TooSlow.cfg "Temporal properties were violated"
 
-# Must fail: with a revoke that does only one step per turn, other cores
-# can keep it busy for ever. This shows the liveness check has teeth.
-echo "== revoke/TooSlow.cfg (expected to fail)"
-if out=$(tlc revoke TooSlow.cfg 2>&1); then
-    echo "$out"
-    echo "TooSlow.cfg passed, but it must find the endless revoke" >&2
-    exit 1
-fi
-if ! grep -q "Temporal properties were violated" <<<"$out"; then
-    echo "$out"
-    echo "TooSlow.cfg failed for the wrong reason" >&2
-    exit 1
-fi
-echo "TooSlow.cfg: endless revoke found, as expected"
+# The scheduler: safety and liveness on two cores, safety on three. A
+# refill that forgets its thread loses a wake-up; lent time not given back
+# when its caller was stopped is lost.
+tlc sched Small.cfg
+tlc sched Medium.cfg
+tlc sched Bigger.cfg
+must_fail sched LostWakeup.cfg "Invariant NoLostWakeups is violated"
+must_fail sched LostLoan.cfg "Invariant LoansAccounted is violated"
+
 echo "formal: all checks passed"
