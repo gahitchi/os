@@ -95,7 +95,7 @@ This adds one kernel object, the scheduling context. It is the single most impor
 
 ### 12. Native API now, POSIX later: keep with rules
 
-- Rule: the POSIX layer offers `posix_spawn` but not `fork()`, which does not fit capabilities.
+- Rule: the POSIX layer offers `posix_spawn` as the normal way to start programs. Changed by decision 52: `fork()` is also offered, because bash needs it; the child gets exactly the parent's grants and handles, never more.
 - Rule: threads, futex-style waiting, high-resolution clocks and memory mapping are in the native API from the start. Game engines and Vulkan drivers need all four.
 - Games depend on which compatibility target we choose. See question 1.
 
