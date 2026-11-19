@@ -12,10 +12,15 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
-**Milestone 0: repository and tools.** The kernel boots through
-[Limine](https://github.com/limine-bootloader/limine) in QEMU, on BIOS and
-UEFI, reports the cores and memory it was given, and prints `alaya: boot ok`
-on the serial port. CI builds it and boots it on 1, 2 and 8 virtual cores.
+**Milestone 1: the kernel boots on every core.** The kernel boots through
+[Limine](https://github.com/limine-bootloader/limine) on BIOS and UEFI,
+builds its own page tables from the memory map (with 2 MiB and 1 GiB pages
+and guarded per-core stacks), catches every CPU exception with a full report
+on the serial port, measures the TSC and drives the TSC-deadline timer, and
+brings up every core under the big kernel lock. Each core then runs a short
+self-test, and the kernel prints `alaya: boot ok`. CI boots it on 1, 2 and 8
+virtual cores, both emulated and with KVM, and checks that every core
+reports in.
 
 ## Try it
 
@@ -28,12 +33,16 @@ Debian or Ubuntu:
 ```sh
 sudo apt install build-essential git xorriso qemu-system-x86 ovmf
 cargo xtask run              # build the image and boot it, serial on this terminal
-cargo xtask test --cpus 8    # boot and check the kernel came up
+cargo xtask test --cpus 8    # boot and check every core came up
 cargo xtask run --uefi       # boot with UEFI firmware instead of BIOS
+cargo xtask test --fault page  # crash on purpose and check the fault report
 cargo xtask image            # only build build/alaya-x86_64.iso
 ```
 
 `cargo xtask --help` lists every option. Press Ctrl+A then x (lowercase) to leave QEMU.
+QEMU uses KVM when `/dev/kvm` is usable (`--accel kvm|tcg|auto` to choose).
+Testing with KVM on a PC, including without building anything:
+[`docs/testing-on-a-pc.md`](docs/testing-on-a-pc.md).
 
 ### On an Android phone
 

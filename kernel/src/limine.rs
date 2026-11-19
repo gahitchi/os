@@ -95,7 +95,47 @@ pub struct MpResponse {
     pub flags: u32,
     pub bsp_lapic_id: u32,
     pub cpu_count: u64,
-    cpus: *const *const u8,
+    cpus: *const *mut MpInfo,
+}
+
+/// Set in [`MpResponse::flags`] when Limine switched every core to x2APIC.
+pub const MP_X2APIC: u32 = 1;
+
+impl MpResponse {
+    /// One entry per core, the bootstrap core included.
+    pub fn cpus(&self) -> impl Iterator<Item = &'static MpInfo> {
+        // SAFETY: Limine provides `cpu_count` valid pointers that stay mapped.
+        (0..self.cpu_count as usize).map(|i| unsafe { &**self.cpus.add(i) })
+    }
+}
+
+/// A core as Limine reports it. Each core except the bootstrap one spins on
+/// `goto_address` until the kernel writes an entry point there.
+#[repr(C)]
+pub struct MpInfo {
+    pub processor_id: u32,
+    pub lapic_id: u32,
+    reserved: u64,
+    goto_address: core::sync::atomic::AtomicU64,
+    extra_argument: core::sync::atomic::AtomicU64,
+}
+
+impl MpInfo {
+    /// Start this core at `entry`, which receives a pointer to this
+    /// structure; `argument` can be read back with [`MpInfo::argument`].
+    pub fn start(&self, entry: extern "C" fn(&'static MpInfo) -> !, argument: u64) {
+        use core::sync::atomic::Ordering;
+        self.extra_argument.store(argument, Ordering::Relaxed);
+        // The parked core polls this word; the release store publishes the
+        // argument (and everything the kernel set up) before it starts.
+        self.goto_address
+            .store(entry as usize as u64, Ordering::Release);
+    }
+
+    pub fn argument(&self) -> u64 {
+        self.extra_argument
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
 }
 
 #[repr(C)]
@@ -106,13 +146,44 @@ pub struct MemmapResponse {
 }
 
 #[repr(C)]
-struct MemmapEntry {
-    base: u64,
-    length: u64,
-    kind: u64,
+pub struct MemmapEntry {
+    pub base: u64,
+    pub length: u64,
+    pub kind: u64,
 }
 
-const MEMMAP_USABLE: u64 = 0;
+pub const MEMMAP_USABLE: u64 = 0;
+pub const MEMMAP_RESERVED: u64 = 1;
+pub const MEMMAP_BAD_MEMORY: u64 = 4;
+pub const MEMMAP_FRAMEBUFFER: u64 = 7;
+
+/// A readable name for a memory map entry type.
+pub fn memmap_kind_name(kind: u64) -> &'static str {
+    match kind {
+        0 => "usable",
+        1 => "reserved",
+        2 => "ACPI reclaimable",
+        3 => "ACPI NVS",
+        4 => "bad memory",
+        5 => "bootloader reclaimable",
+        6 => "kernel and modules",
+        7 => "framebuffer",
+        _ => "unknown",
+    }
+}
+
+#[repr(C)]
+pub struct ExecutableAddressResponse {
+    revision: u64,
+    pub physical_base: u64,
+    pub virtual_base: u64,
+}
+
+#[repr(C)]
+pub struct CmdlineResponse {
+    revision: u64,
+    cmdline: *const c_char,
+}
 
 #[used]
 #[unsafe(link_section = ".limine_requests_start")]
@@ -140,10 +211,22 @@ static BOOTLOADER_INFO: Request<BootloaderInfoResponse> =
 static HHDM: Request<HhdmResponse> = Request::new([0x48dcf1cb8ad2b852, 0x63984e959a98244b], ());
 
 /// Ask Limine to start every core and park it until the kernel wants it.
-/// The extra word is the request flags; 0 means "do not enable x2APIC".
+/// The extra word is the request flags: switch to x2APIC where the CPU has
+/// it, which machines with many cores need.
 #[used]
 #[unsafe(link_section = ".limine_requests")]
-static MP: Request<MpResponse, u64> = Request::new([0x95a67b819a1b857e, 0xa0b61b723b6a73e0], 0);
+static MP: Request<MpResponse, u64> =
+    Request::new([0x95a67b819a1b857e, 0xa0b61b723b6a73e0], MP_X2APIC as u64);
+
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static EXECUTABLE_ADDRESS: Request<ExecutableAddressResponse> =
+    Request::new([0x71ba76863cc55f63, 0xb2644a48c516a487], ());
+
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static CMDLINE: Request<CmdlineResponse> =
+    Request::new([0x4b161536e598651e, 0xb390ad4a2f1f303a], ());
 
 #[used]
 #[unsafe(link_section = ".limine_requests")]
@@ -174,27 +257,28 @@ pub fn mp() -> Option<&'static MpResponse> {
     MP.response()
 }
 
-pub struct MemorySummary {
-    pub entries: u64,
-    pub usable_regions: u64,
-    pub usable_bytes: u64,
+/// The physical memory map, sorted by address.
+pub fn memmap() -> Option<impl Iterator<Item = &'static MemmapEntry>> {
+    let resp = MEMMAP.response()?;
+    // SAFETY: Limine provides `entry_count` valid entry pointers.
+    Some((0..resp.entry_count as usize).map(move |i| unsafe { &**resp.entries.add(i) }))
 }
 
-/// Totals from the physical memory map.
-pub fn memory_summary() -> Option<MemorySummary> {
-    let resp = MEMMAP.response()?;
-    let mut summary = MemorySummary {
-        entries: resp.entry_count,
-        usable_regions: 0,
-        usable_bytes: 0,
+/// Where Limine loaded the kernel, physically and virtually.
+pub fn executable_address() -> Option<&'static ExecutableAddressResponse> {
+    EXECUTABLE_ADDRESS.response()
+}
+
+/// The kernel command line from `limine.conf` (`cmdline:`), if any.
+pub fn cmdline() -> &'static str {
+    let Some(resp) = CMDLINE.response() else {
+        return "";
     };
-    for i in 0..resp.entry_count as usize {
-        // SAFETY: Limine provides `entry_count` valid entry pointers.
-        let entry = unsafe { &**resp.entries.add(i) };
-        if entry.kind == MEMMAP_USABLE {
-            summary.usable_regions += 1;
-            summary.usable_bytes += entry.length;
-        }
+    if resp.cmdline.is_null() {
+        return "";
     }
-    Some(summary)
+    // SAFETY: Limine provides a NUL-terminated string that stays mapped.
+    unsafe { CStr::from_ptr(resp.cmdline) }
+        .to_str()
+        .unwrap_or("")
 }

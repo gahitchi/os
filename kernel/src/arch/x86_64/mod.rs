@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! x86-64 support.
 
+pub mod apic;
+pub mod cpu;
+pub mod gdt;
+pub mod idt;
+pub mod legacy;
 pub mod port;
+pub mod trap;
 
 pub const NAME: &str = "x86-64";
 
@@ -22,7 +28,8 @@ pub fn spin_hint() {
 pub fn halt_forever() -> ! {
     disable_interrupts();
     loop {
-        // SAFETY: `hlt` with interrupts off simply stops the core.
+        // SAFETY: `hlt` with interrupts off simply stops the core (an NMI
+        // can still wake it, and the loop halts it again).
         unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
     }
 }

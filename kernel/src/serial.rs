@@ -4,7 +4,7 @@
 use core::fmt::{self, Write};
 
 use crate::arch::port::{inb, outb};
-use crate::sync::SpinLock;
+use crate::sync::{SpinLock, SpinLockGuard};
 
 const COM1: u16 = 0x3f8;
 
@@ -55,13 +55,44 @@ pub fn init() {
 }
 
 pub fn print(args: fmt::Arguments) {
+    // Interrupts stay off while the lock is held, so an interrupt handler
+    // on this core that prints cannot deadlock against it.
+    let was_on = crate::arch::cpu::interrupts_enabled();
+    crate::arch::disable_interrupts();
     let _ = SERIAL.lock().write_fmt(args);
+    if was_on {
+        crate::arch::cpu::enable_interrupts();
+    }
 }
 
-/// Print without the lock, for the panic handler only.
-pub fn emergency_print(args: fmt::Arguments) {
-    // SAFETY: called only on the way to halting this core for good.
-    let _ = unsafe { SERIAL.force_get() }.write_fmt(args);
+/// Exclusive use of the serial port for a fault report or panic message.
+///
+/// Waits a little for the lock; if another core still holds it (it may have
+/// been stopped mid-line), the report is printed anyway.
+pub struct FaultWriter {
+    guard: Option<SpinLockGuard<'static, Uart>>,
+}
+
+impl FaultWriter {
+    pub fn begin() -> Self {
+        let mut writer = Self {
+            guard: SERIAL.lock_bounded(50_000_000),
+        };
+        if writer.guard.is_none() {
+            // A stopped core may have been mid-line; start on a fresh one.
+            writer.line(format_args!(""));
+        }
+        writer
+    }
+
+    pub fn line(&mut self, args: fmt::Arguments) {
+        let uart = match &mut self.guard {
+            Some(guard) => &mut **guard,
+            // SAFETY: only used on the way to stopping the machine.
+            None => unsafe { SERIAL.force_get() },
+        };
+        let _ = uart.write_fmt(format_args!("{args}\n"));
+    }
 }
 
 #[macro_export]
