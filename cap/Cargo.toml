@@ -1,0 +1,16 @@
+[package]
+name = "alaya-cap"
+description = "Capability tables, the derivation tree, untyped memory, retype and interruptible revoke for the Alaya kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+alaya-abi = { path = "../abi" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -84,11 +84,32 @@ smp: 2 of 2 cores online
 bkl: 2 core(s) x 20000 rounds under the big kernel lock, counter 40000: ok
 core 0: ready, APIC id 0, APIC one-shot timer, 20 ticks, worst lateness 288 us
 core 1: ready, APIC id 1, APIC one-shot timer, 20 ticks, worst lateness 293 us
+init: 904 KiB program, 23 untyped blocks, 251 MiB of untyped memory
+init: hello from user mode
+init: 23 untyped blocks, 251 MiB, largest 64 MiB, on 2 cores
+init: ok  1 boot capabilities: own table and untyped memory
+init: ok  2 bad handles, kinds, sizes and calls are refused
+init: ok  3 retype: untyped, a table, 100 endpoints in batches
+init: ok  4 copy and mint: rights only shrink, one badge, grant needed
+init: ok  5 move
+init: ok  6 revoke deletes every copy and keeps the original
+init: ok  7 delete keeps what was derived revocable
+init: revoked 16383 capabilities; the kernel interrupted the revoke 27 times
+init: ok  8 a big revoke is interrupted and restarted, and completes
+init: revoking the 16 MiB untyped restarted 19 times
+init: ok  9 revoking untyped empties unreachable tables, then resets it
+init: ok 10 revoked memory is reused, and new tables are empty
+init: ok 11 untyped memory runs out, and comes back after revoke
+init: ok 12 2 MiB pages are aligned
+init: all 12 checks passed (47 restarted calls, 16492 capabilities revoked)
 alaya: boot ok
 ```
 
 There is one `core N: ready` line per core; `alaya.sh test` passes only if
-all of them are there. A phone has no KVM, so QEMU emulates the CPU and the
+all of them are there. The `init:` lines come from the first program, which
+runs in user mode and checks capabilities and memory through system calls;
+the kernel prints `alaya: boot ok` only when all of its checks passed. The
+numbers of interruptions vary from run to run. A phone has no KVM, so QEMU emulates the CPU and the
 kernel uses the APIC one-shot timer instead of the TSC-deadline timer, and
 the timer lateness is in the hundreds of microseconds. On a PC with KVM
 (see [`testing-on-a-pc.md`](testing-on-a-pc.md)) it uses the real timer.

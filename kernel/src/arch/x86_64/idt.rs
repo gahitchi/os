@@ -5,6 +5,10 @@
 //! CPU does not push one) and the vector number, then jumps to a common path
 //! that saves all general registers into a [`TrapFrame`] and calls
 //! [`super::trap::dispatch`]. One IDT is shared by all cores.
+//!
+//! An interrupt from user mode swaps GS base on the way in and out, so the
+//! kernel always finds its per-core data at GS and a program's own GS base
+//! is kept.
 
 use core::arch::{asm, global_asm};
 use core::mem::size_of;
@@ -63,6 +67,12 @@ alaya_trap_stubs:
 
 alaya_trap_common:
     cld
+    // From user mode (CS RPL 3), swap in the kernel's GS base. The frame
+    // holds the vector, the error code, then RIP and CS.
+    test byte ptr [rsp + 24], 3
+    jz 1f
+    swapgs
+1:
     push rax
     push rbx
     push rcx
@@ -100,6 +110,10 @@ alaya_trap_common:
     pop rbx
     pop rax
     add rsp, 16
+    test byte ptr [rsp + 8], 3
+    jz 2f
+    swapgs
+2:
     iretq
     "#,
     dispatch = sym super::trap::dispatch,

@@ -43,7 +43,13 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
+          cargo clippy --package alaya-abi --package alaya-cap --all-targets -- -D warnings
+          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys \
+            --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
+
+      - name: Host tests (capability code)
+        run: cargo test --package alaya-abi --package alaya-cap
 
       - name: Build image
         run: cargo xtask image
@@ -94,9 +100,30 @@ jobs:
             build/alaya-x86_64.iso.sha256
           if-no-files-found: error
 
+  # The TLA+ model of capabilities and revoke (formal/revoke): safety and
+  # liveness on 2 cores, safety on 3, and a must-fail check.
+  tla:
+    name: TLA+ model of revoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the models with TLC
+        run: formal/check.sh
+
+  # Kani proofs of the capability code (cap/src/proofs.rs).
+  kani:
+    name: Kani proofs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: "0.68.0"
+          args: --package alaya-cap
+
   publish:
     name: Publish image
-    needs: build
+    needs: [build, tla, kani]
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:

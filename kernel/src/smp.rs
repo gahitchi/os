@@ -21,11 +21,15 @@ pub static DONE: AtomicU32 = AtomicU32::new(0);
 
 /// Set up the calling core: segments, interrupt stacks, IDT, local APIC.
 pub fn init_this_core(index: u32) {
-    percpu::load_gdt([
-        Stack::DoubleFault.top(index),
-        Stack::Nmi.top(index),
-        Stack::MachineCheck.top(index),
-    ]);
+    percpu::load_gdt(
+        [
+            Stack::DoubleFault.top(index),
+            Stack::Nmi.top(index),
+            Stack::MachineCheck.top(index),
+        ],
+        Stack::Kernel.top(index),
+    );
+    crate::syscall::init_this_core();
     const _: () = assert!(gdt::IST_DOUBLE_FAULT == 1 && gdt::IST_NMI == 2);
     idt::load();
     let me = percpu::get(index);

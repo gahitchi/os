@@ -1,0 +1,17 @@
+[package]
+name = "alaya-init"
+description = "The first Alaya program: checks capabilities and memory at boot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+alaya-sys = { path = "../sys" }

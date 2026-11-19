@@ -185,6 +185,37 @@ pub struct CmdlineResponse {
     cmdline: *const c_char,
 }
 
+#[repr(C)]
+pub struct ModuleResponse {
+    revision: u64,
+    module_count: u64,
+    modules: *const *const File,
+}
+
+/// A file Limine loaded (a module from `limine.conf`).
+#[repr(C)]
+pub struct File {
+    revision: u64,
+    address: *const u8,
+    size: u64,
+    path: *const c_char,
+    string: *const c_char,
+}
+
+impl File {
+    /// The file's contents, mapped in the direct map.
+    pub fn bytes(&self) -> &'static [u8] {
+        // SAFETY: Limine loaded `size` bytes there, in memory it marks as
+        // kernel and modules, which the kernel never reuses.
+        unsafe { core::slice::from_raw_parts(self.address, self.size as usize) }
+    }
+
+    pub fn path(&self) -> &'static str {
+        // SAFETY: Limine provides a NUL-terminated string that stays mapped.
+        unsafe { CStr::from_ptr(self.path) }.to_str().unwrap_or("?")
+    }
+}
+
 #[used]
 #[unsafe(link_section = ".limine_requests_start")]
 static REQUESTS_START: [u64; 4] = [
@@ -231,6 +262,11 @@ static CMDLINE: Request<CmdlineResponse> =
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 static MEMMAP: Request<MemmapResponse> = Request::new([0x67cf3d9d378a806f, 0xe304acdfc50c3c62], ());
+
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static MODULES: Request<ModuleResponse> =
+    Request::new([0x3e7e279702be32af, 0xca1c4f3bd1280cee], ());
 
 #[used]
 #[unsafe(link_section = ".limine_requests_end")]
@@ -281,4 +317,14 @@ pub fn cmdline() -> &'static str {
     unsafe { CStr::from_ptr(resp.cmdline) }
         .to_str()
         .unwrap_or("")
+}
+
+/// The modules Limine loaded, in `limine.conf` order.
+pub fn modules() -> impl Iterator<Item = &'static File> {
+    let (count, list) = match MODULES.response() {
+        Some(r) => (r.module_count as usize, r.modules),
+        None => (0, ptr::null()),
+    };
+    // SAFETY: Limine provides `module_count` valid file pointers.
+    (0..count).map(move |i| unsafe { &**list.add(i) })
 }

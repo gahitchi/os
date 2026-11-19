@@ -87,11 +87,19 @@ smp: 20 of 20 cores online
 bkl: 20 core(s) x 20000 rounds under the big kernel lock, counter 400000: ok
 core 0: ready, APIC id 0, TSC deadline timer, 20 ticks, worst lateness ... us
 ...
+init: hello from user mode
+init: ok  1 boot capabilities: own table and untyped memory
+...
+init: revoked 16383 capabilities; the kernel interrupted the revoke ... times
+init: ok  8 a big revoke is interrupted and restarted, and completes
+...
+init: all 12 checks passed (... restarted calls, ... capabilities revoked)
 alaya: boot ok
 ```
 
 The exact CPU name, core count, TSC source and numbers depend on the
 machine. What matters: one `core N: ready` line for every core, the
-TSC-deadline timer in use, and `alaya: boot ok` at the end. If something
+TSC-deadline timer in use, twelve `init: ok` lines from the first program,
+and `alaya: boot ok` at the end. If something
 fails, the last lines of the output (a fault report or panic message) say
 what and where.

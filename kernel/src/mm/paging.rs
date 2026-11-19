@@ -9,6 +9,8 @@ use super::layout::PAGE_SIZE;
 
 pub const PRESENT: u64 = 1 << 0;
 pub const WRITABLE: u64 = 1 << 1;
+/// Reachable from user mode.
+pub const USER: u64 = 1 << 2;
 const WRITE_THROUGH: u64 = 1 << 3;
 const CACHE_DISABLE: u64 = 1 << 4;
 const HUGE: u64 = 1 << 7;
@@ -26,6 +28,7 @@ const fn level_size(level: u32) -> u64 {
     PAGE_SIZE << (9 * (level - 1))
 }
 
+#[derive(Clone, Copy)]
 pub struct AddressSpace {
     root: u64,
     hhdm: u64,
@@ -44,6 +47,36 @@ impl AddressSpace {
         }
     }
 
+    /// A new address space for a program: the lower half is empty and the
+    /// upper half shares the kernel's tables (`kernel_root`).
+    pub fn new_user(hhdm: u64, gib_pages: bool, kernel_root: u64) -> Self {
+        let space = Self::new(hhdm, gib_pages);
+        let kernel = space.table(kernel_root);
+        let entries = space.table(space.root);
+        entries[256..].copy_from_slice(&kernel[256..]);
+        space
+    }
+
+    /// The physical address and leaf flags `virt` maps to, if mapped.
+    pub fn translate(&self, virt: u64) -> Option<(u64, u64)> {
+        let mut table = self.root;
+        let mut level = 4;
+        loop {
+            let index = (virt >> (12 + 9 * (level - 1))) as usize & 511;
+            let entry = self.table(table)[index];
+            if entry & PRESENT == 0 {
+                return None;
+            }
+            if level == 1 || entry & HUGE != 0 {
+                let size = level_size(level);
+                let phys = (entry & ADDRESS_MASK & !(size - 1)) + (virt & (size - 1));
+                return Some((phys, entry));
+            }
+            table = entry & ADDRESS_MASK;
+            level -= 1;
+        }
+    }
+
     /// Physical address of the top-level table, for CR3.
     pub fn root(&self) -> u64 {
         self.root
@@ -51,8 +84,8 @@ impl AddressSpace {
 
     fn table(&self, phys: u64) -> &'static mut [u64; 512] {
         // SAFETY: page tables are whole frames reached through the direct
-        // map, and only the bootstrap core edits them, before other cores
-        // use them.
+        // map. The kernel's are edited only by the bootstrap core before
+        // other cores use them; a program's only under the big kernel lock.
         unsafe { &mut *((phys + self.hhdm) as *mut [u64; 512]) }
     }
 
@@ -93,10 +126,11 @@ impl AddressSpace {
             if entry & PRESENT == 0 {
                 let next = frames::alloc_zeroed();
                 // Upper levels allow everything; the leaf decides.
-                entries[index] = next | PRESENT | WRITABLE;
+                entries[index] = next | PRESENT | WRITABLE | (flags & USER);
                 table = next;
             } else {
                 assert!(entry & HUGE == 0, "mapping {virt:#x} overlaps a huge page");
+                entries[index] = entry | (flags & USER);
                 table = entry & ADDRESS_MASK;
             }
             level -= 1;
