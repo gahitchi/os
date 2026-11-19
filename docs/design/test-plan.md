@@ -24,7 +24,7 @@
 - **Disk errors and a full disk.** Injected bad blocks and a 100 % full disk. Gate: errors reported, nothing corrupted, deletion still works.
 - **Memory exhaustion.** Apps allocate until memory runs out. Gate: decision 24 order is followed; the foreground app and the compositor survive.
 
-## 4. Stress on Archy: numbers that must hold
+## 4. Stress on the reference laptop: numbers that must hold
 
 All measured while a background load keeps every core busy, memory at 90 %, and the disk writing continuously.
 
@@ -51,7 +51,7 @@ All measured while a background load keeps every core busy, memory at 90 %, and 
 ## 5. Every day
 
 - CI boots every commit in QEMU on 1, 2 and 8 virtual cores and runs the full test set.
-- A weekly run on Archy itself measures section 4 and stores the numbers, so any slowdown shows up as a trend, not a surprise.
+- A weekly run on the reference laptop itself measures section 4 and stores the numbers, so any slowdown shows up as a trend, not a surprise.
 
 ## Not covered yet
 
