@@ -150,6 +150,15 @@ pub fn set_deadline(tsc: u64) {
     }
 }
 
+/// Stop this core's timer.
+pub fn disarm() {
+    if DEADLINE_MODE.load(Ordering::Relaxed) {
+        apic::set_tsc_deadline(0);
+    } else {
+        apic::set_one_shot(0);
+    }
+}
+
 /// Self-test: how many timer interrupts each core takes, and their period.
 pub const SELFTEST_TICKS: u32 = 20;
 pub const SELFTEST_PERIOD_NS: u64 = 1_000_000;
@@ -158,7 +167,13 @@ pub const SELFTEST_PERIOD_NS: u64 = 1_000_000;
 /// and takes the big kernel lock.
 pub fn interrupt() {
     let now = rdtsc();
-    let _kernel = sync::BKL.lock();
+    let mut kernel = sync::BKL.lock();
+    if kernel.sys.started {
+        let core = percpu::index() as usize;
+        crate::sched::timer(&mut kernel.sys, core);
+        crate::sched::arm(&kernel.sys, core, now);
+        return;
+    }
     let me = percpu::this();
     let deadline = me.timer_next_deadline.load(Ordering::Relaxed);
     let late = tsc_to_ns(now.saturating_sub(deadline));

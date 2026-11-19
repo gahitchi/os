@@ -25,6 +25,8 @@ const IMAGE_NAME: &str = "alaya-x86_64.iso";
 /// (`main.rs`, `selftest.rs` and `arch/x86_64/trap.rs`).
 const BOOT_OK_MARKER: &str = "alaya: boot ok";
 const PANIC_MARKER: &str = "alaya: panic";
+/// The kernel fuzzer prints this when its run ended without a crash.
+const FUZZ_DONE_MARKER: &str = "fuzz: done";
 const FAULT_MARKER: &str = "alaya: fault: ";
 /// One line per core once it passed its self-tests: `core <n>: ready, ...`.
 const CORE_READY: (&str, &str) = ("core ", ": ready");
@@ -58,7 +60,10 @@ options:
   --memory <size>   guest memory, QEMU syntax (default 256M)
   --fault <kind>    test only: crash on purpose and check the fault report;
                     kinds: page, stack, invalid-opcode, other-core-page
-  --timeout <secs>  give up after this long (test only, default 60)
+  --fuzz <secs>     test only: after the boot checks, run the kernel fuzzer
+                    for this long (random calls from several cores)
+  --timeout <secs>  give up after this long (test only, default 60, or
+                    the fuzz time plus 120)
   --image <path>    boot this image instead of building one (run and test)
 
 environment:
@@ -74,6 +79,7 @@ struct Options {
     accel: String,
     memory: String,
     fault: Option<String>,
+    fuzz: Option<u64>,
 }
 
 fn main() -> ExitCode {
@@ -91,7 +97,9 @@ fn main() -> ExitCode {
         accel: "auto".into(),
         memory: "256M".into(),
         fault: None,
+        fuzz: None,
     };
+    let mut timeout_set = false;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| {
             args.next()
@@ -106,9 +114,17 @@ fn main() -> ExitCode {
                     .unwrap_or_else(|_| fail("bad --cpus"))
             }
             "--timeout" => {
+                timeout_set = true;
                 opts.timeout = value("--timeout")
                     .parse()
                     .unwrap_or_else(|_| fail("bad --timeout"))
+            }
+            "--fuzz" => {
+                opts.fuzz = Some(
+                    value("--fuzz")
+                        .parse()
+                        .unwrap_or_else(|_| fail("bad --fuzz")),
+                )
             }
             "--image" => opts.image = Some(PathBuf::from(value("--image"))),
             "--accel" => opts.accel = value("--accel"),
@@ -126,6 +142,10 @@ fn main() -> ExitCode {
             }
             other => fail(&format!("unknown option {other}\n\n{USAGE}")),
         }
+    }
+
+    if let (Some(secs), false) = (opts.fuzz, timeout_set) {
+        opts.timeout = secs + 120;
     }
 
     let result = match command.as_str() {
@@ -330,6 +350,12 @@ fn image_for(opts: &Options) -> Result<PathBuf, String> {
         }
         return build_image(opts.release, Some(&format!("test-fault={kind}")));
     }
+    if let Some(secs) = opts.fuzz {
+        if opts.image.is_some() {
+            return Err("--fuzz builds its own image; leave out --image".into());
+        }
+        return build_image(opts.release, Some(&format!("fuzz={secs}")));
+    }
     match &opts.image {
         Some(path) => Ok(path.clone()),
         None => build_image(opts.release, None),
@@ -421,7 +447,10 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
     let accel = if use_kvm(opts)? { "KVM" } else { "TCG" };
     let what = match &opts.fault {
         Some(kind) => format!("fault test '{kind}'"),
-        None => "boot test".into(),
+        None => match opts.fuzz {
+            Some(secs) => format!("boot test with {secs}s of fuzzing"),
+            None => "boot test".into(),
+        },
     };
     eprintln!(
         "xtask: {what}, {mode}, {accel}, {} core(s), timeout {}s",
@@ -456,6 +485,7 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
     };
     let mut ready = vec![false; opts.cpus as usize];
     let mut fault_report = String::new();
+    let mut fuzz_done = false;
 
     let deadline = Instant::now() + Duration::from_secs(opts.timeout);
     let outcome = loop {
@@ -483,9 +513,15 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     fault_report.push_str(line);
                     fault_report.push('\n');
                 }
+                if line.contains(FUZZ_DONE_MARKER) {
+                    fuzz_done = true;
+                }
                 if line.contains(BOOT_OK_MARKER) {
                     if opts.fault.is_some() {
                         break Err("the kernel booted instead of faulting".into());
+                    }
+                    if opts.fuzz.is_some() && !fuzz_done {
+                        break Err("the fuzzer never finished".into());
                     }
                     let missing: Vec<String> = ready
                         .iter()

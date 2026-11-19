@@ -47,34 +47,20 @@ impl AddressSpace {
         }
     }
 
-    /// A new address space for a program: the lower half is empty and the
-    /// upper half shares the kernel's tables (`kernel_root`).
-    pub fn new_user(hhdm: u64, gib_pages: bool, kernel_root: u64) -> Self {
-        let space = Self::new(hhdm, gib_pages);
+    /// An address space for a program whose top table is the zeroed page
+    /// at `root`: the lower half is empty and the upper half shares the
+    /// kernel's tables (`kernel_root`).
+    pub fn with_root(root: u64, hhdm: u64, gib_pages: bool, kernel_root: u64) -> Self {
+        let space = Self {
+            root,
+            hhdm,
+            gib_pages,
+            mapped: [0; 3],
+        };
         let kernel = space.table(kernel_root);
         let entries = space.table(space.root);
         entries[256..].copy_from_slice(&kernel[256..]);
         space
-    }
-
-    /// The physical address and leaf flags `virt` maps to, if mapped.
-    pub fn translate(&self, virt: u64) -> Option<(u64, u64)> {
-        let mut table = self.root;
-        let mut level = 4;
-        loop {
-            let index = (virt >> (12 + 9 * (level - 1))) as usize & 511;
-            let entry = self.table(table)[index];
-            if entry & PRESENT == 0 {
-                return None;
-            }
-            if level == 1 || entry & HUGE != 0 {
-                let size = level_size(level);
-                let phys = (entry & ADDRESS_MASK & !(size - 1)) + (virt & (size - 1));
-                return Some((phys, entry));
-            }
-            table = entry & ADDRESS_MASK;
-            level -= 1;
-        }
     }
 
     /// Physical address of the top-level table, for CR3.

@@ -13,6 +13,9 @@ use crate::{percpu, sync};
 
 /// The timer interrupt of every core.
 pub const TIMER_VECTOR: u8 = 0x40;
+/// Sent by another core: look at the run queue again (and flush the TLB
+/// if asked).
+pub const RESCHED_VECTOR: u8 = 0x41;
 
 const NAMES: [(&str, &str); 32] = [
     ("#DE", "divide error"),
@@ -52,6 +55,10 @@ const NAMES: [(&str, &str); 32] = [
 /// Called from the assembly stubs in `idt.rs` with interrupts off.
 pub extern "C" fn dispatch(frame: &mut TrapFrame) {
     let vector = frame.vector as u8;
+    crate::vspace::poll_flush();
+    if frame.cs & 3 == 3 && !matches!(vector, 2 | 8 | 18) {
+        return from_user(frame);
+    }
     match vector {
         2 => nmi(frame),
         0..=31 => fault(frame),
@@ -59,6 +66,7 @@ pub extern "C" fn dispatch(frame: &mut TrapFrame) {
             crate::time::interrupt();
             apic::eoi();
         }
+        RESCHED_VECTOR => apic::eoi(),
         apic::SPURIOUS_VECTOR => {} // no EOI for spurious interrupts
         v if v == legacy::PIC_BASE + 7 || v == legacy::PIC_BASE + 15 => {} // PIC spurious
         _ => {
@@ -70,6 +78,32 @@ pub extern "C" fn dispatch(frame: &mut TrapFrame) {
             apic::eoi();
         }
     }
+}
+
+/// An interrupt or exception while a thread ran in user mode: save the
+/// thread, handle it, and go back to user mode with whatever runs next.
+fn from_user(frame: &mut TrapFrame) {
+    let vector = frame.vector as u8;
+    let is_fault = vector < 32;
+    if !is_fault && vector != apic::SPURIOUS_VECTOR {
+        apic::eoi();
+    }
+    let mut k = sync::BKL.lock();
+    let core = percpu::index() as usize;
+    let me = k.sys.cores[core].current;
+    if me != 0 {
+        crate::syscall::save(me, frame, false);
+    }
+    match vector {
+        TIMER_VECTOR => crate::sched::timer(&mut k.sys, core),
+        0..=31 if me != 0 => {
+            let addr = if vector == 14 { cpu::cr2() } else { 0 };
+            let mut m = crate::caps::Phys::new(&mut k.sys);
+            crate::ipc::fault(&mut m, me, u64::from(vector), frame.error, addr);
+        }
+        _ => {}
+    }
+    crate::syscall::leave(k, core, frame);
 }
 
 fn nmi(frame: &TrapFrame) {

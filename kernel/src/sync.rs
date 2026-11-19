@@ -133,6 +133,8 @@ impl<T> BigKernelLock<T> {
         }
         let ticket = self.next.fetch_add(1, Ordering::Relaxed);
         while self.serving.load(Ordering::Acquire) != ticket {
+            // The holder may be waiting for this core to flush its TLB.
+            crate::vspace::poll_flush();
             arch::spin_hint();
         }
         self.owner.store(me, Ordering::Relaxed);
@@ -181,15 +183,45 @@ pub struct KernelState {
     pub selftest_counter: u64,
     /// The purge list and counters of the capability code.
     pub caps: alaya_cap::Globals,
-    /// The first program, once it runs.
-    pub init: Option<crate::user::Init>,
+    /// Threads, cores and address spaces.
+    pub sys: Sys,
+}
+
+/// The kernel's scheduling and address-space state. Kept apart from the
+/// capability globals so that both can be borrowed at once.
+pub struct Sys {
+    pub cores: [crate::sched::CoreState; crate::percpu::MAX_CPUS],
+    /// The CPU has performance and efficiency cores.
+    pub hybrid: bool,
+    /// The scheduler runs (the boot self-tests are over).
+    pub started: bool,
+    /// Address spaces by id.
+    pub spaces: [crate::vspace::SpaceEntry; crate::vspace::MAX_SPACES],
     /// System calls restarted because an interruptible operation stopped.
     pub restarts: u64,
+    /// Threads that started running on another core than before.
+    pub migrations: u64,
+    /// Switches between threads.
+    pub switches: u64,
+    /// Threads stopped by a fault with no fault endpoint.
+    pub faults: u64,
+    /// The first program's thread: the only one whose boot report counts,
+    /// so a stray call from a fuzzed thread cannot end the boot tests.
+    pub first_thread: u64,
 }
 
 pub static BKL: BigKernelLock<KernelState> = BigKernelLock::new(KernelState {
     selftest_counter: 0,
     caps: alaya_cap::Globals::new(),
-    init: None,
-    restarts: 0,
+    sys: Sys {
+        cores: [crate::sched::CoreState::EMPTY; crate::percpu::MAX_CPUS],
+        hybrid: false,
+        started: false,
+        first_thread: 0,
+        spaces: [crate::vspace::SpaceEntry::EMPTY; crate::vspace::MAX_SPACES],
+        restarts: 0,
+        migrations: 0,
+        switches: 0,
+        faults: 0,
+    },
 });

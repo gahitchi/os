@@ -275,7 +275,10 @@ fn deleting_a_middle_capability_keeps_its_children_revocable() {
     copy(&mut w.ram, slot(2), slot(3), rights::ALL, None).unwrap();
     copy(&mut w.ram, slot(3), slot(4), rights::ALL, None).unwrap();
     copy(&mut w.ram, slot(3), slot(5), rights::ALL, None).unwrap();
-    delete(&mut w.ram, &mut w.g, slot(3)).unwrap();
+    assert_eq!(
+        delete(&mut w.ram, &mut w.g, slot(3)),
+        Ok(Progress::Done(()))
+    );
     assert!(!is_final(&w.ram, slot(2)));
     w.revoke(slot(2));
     assert!(w.cap(slot(4)).is_empty() && w.cap(slot(5)).is_empty());
@@ -295,7 +298,10 @@ fn unreachable_tables_are_emptied_before_reset() {
     copy(&mut w.ram, slot(4), inner, rights::ALL, None).unwrap();
     assert!(inspect(&w.ram, slot(4)).1, "the endpoint has a child");
     // Drop the only capability to the table: it goes on the purge list.
-    delete(&mut w.ram, &mut w.g, slot(3)).unwrap();
+    assert_eq!(
+        delete(&mut w.ram, &mut w.g, slot(3)),
+        Ok(Progress::Done(()))
+    );
     assert_eq!(w.g.orphans, table);
     assert!(w.ram.read(inner).cap.is_live());
     // Revoking the sub-untyped empties it, then resets.

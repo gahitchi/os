@@ -18,7 +18,7 @@ use super::gdt::{IST_DOUBLE_FAULT, IST_MACHINE_CHECK, IST_NMI, KERNEL_CODE};
 
 /// Registers saved on entry, in the order the common stub pushes them.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct TrapFrame {
     pub r15: u64,
     pub r14: u64,

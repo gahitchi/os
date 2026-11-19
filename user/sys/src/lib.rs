@@ -179,3 +179,246 @@ pub fn retype(ut: u64, kind: Kind, bits: u8, count: u64, dst: At) -> Result<(), 
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Messages
+
+pub use abi::Info as MsgInfo;
+
+/// A message: its info word (label, length, flags), the sender's badge (or
+/// a notification's bits) and up to six data words.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Msg {
+    pub info: MsgInfo,
+    pub badge: u64,
+    pub words: [u64; 6],
+}
+
+impl Msg {
+    pub fn new(label: u64, words: &[u64]) -> Msg {
+        let mut w = [0; 6];
+        w[..words.len()].copy_from_slice(words);
+        Msg {
+            info: MsgInfo::new(label, words.len() as u64),
+            badge: 0,
+            words: w,
+        }
+    }
+
+    pub fn label(&self) -> u64 {
+        self.info.label()
+    }
+}
+
+/// Capabilities a message call sends and receives.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Caps {
+    /// Handle of a capability to send (with [`MsgInfo::CAP`] in the info).
+    pub send: u64,
+    /// Slot of the own table to receive a capability in (0: none).
+    pub recv: u64,
+    /// Reply object for `recv` and `reply_recv`.
+    pub reply: u64,
+}
+
+/// A message call: the full register set of the message ABI.
+#[inline]
+pub fn msg_call(nr: u64, handle: u64, m: &Msg, caps: Caps) -> Result<Msg, Error> {
+    let (err, badge, info, w0, w1, w2, w3, w4, w5);
+    // SAFETY: the kernel keeps every register but rcx, r11 and the outputs.
+    unsafe {
+        asm!(
+            "syscall",
+            inout("rax") nr => err,
+            inout("rdi") handle => badge,
+            inout("rsi") m.info.0 => info,
+            inout("rdx") m.words[0] => w0,
+            inout("r10") m.words[1] => w1,
+            inout("r8") m.words[2] => w2,
+            inout("r9") m.words[3] => w3,
+            inout("r12") m.words[4] => w4,
+            inout("r13") m.words[5] => w5,
+            in("r14") caps.send | caps.recv << 32,
+            in("r15") caps.reply,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    match err {
+        0 => Ok(Msg {
+            info: MsgInfo(info),
+            badge,
+            words: [w0, w1, w2, w3, w4, w5],
+        }),
+        e => Err(Error::from_u64(e)),
+    }
+}
+
+/// Send `m` on endpoint `ep` and wait for the answer.
+pub fn ipc_call(ep: u64, m: &Msg, caps: Caps) -> Result<Msg, Error> {
+    msg_call(abi::call::CALL, ep, m, caps)
+}
+
+/// Send and wait until the message is taken.
+pub fn send(ep: u64, m: &Msg) -> Result<(), Error> {
+    msg_call(abi::call::SEND, ep, m, Caps::default()).map(|_| ())
+}
+
+/// Send only if someone is waiting now.
+pub fn try_send(ep: u64, m: &Msg) -> Result<(), Error> {
+    msg_call(abi::call::TRY_SEND, ep, m, Caps::default()).map(|_| ())
+}
+
+/// Answer the caller held by reply object `reply`.
+pub fn reply(reply: u64, m: &Msg) -> Result<(), Error> {
+    msg_call(abi::call::SEND, reply, m, Caps::default()).map(|_| ())
+}
+
+/// Wait for a message on `ep` (or a signal of the bound notification).
+pub fn recv(ep: u64, reply: u64) -> Result<Msg, Error> {
+    msg_call(
+        abi::call::RECV,
+        ep,
+        &Msg::default(),
+        Caps {
+            reply,
+            ..Caps::default()
+        },
+    )
+}
+
+/// Answer the last caller and wait for the next message, in one call.
+pub fn reply_recv(ep: u64, reply: u64, m: &Msg) -> Result<Msg, Error> {
+    msg_call(
+        abi::call::REPLY_RECV,
+        ep,
+        m,
+        Caps {
+            reply,
+            ..Caps::default()
+        },
+    )
+}
+
+/// Raise `bits` (plus the capability's badge) on a notification.
+pub fn signal(ntfn: u64, bits: u64) -> Result<(), Error> {
+    let m = Msg {
+        words: [bits, 0, 0, 0, 0, 0],
+        ..Msg::default()
+    };
+    msg_call(abi::call::SIGNAL, ntfn, &m, Caps::default()).map(|_| ())
+}
+
+/// Wait for signals; returns the bits, cleared.
+pub fn wait(ntfn: u64) -> Result<u64, Error> {
+    msg_call(abi::call::WAIT, ntfn, &Msg::default(), Caps::default()).map(|m| m.badge)
+}
+
+/// Take the signals without waiting (0: none).
+pub fn poll(ntfn: u64) -> Result<u64, Error> {
+    msg_call(abi::call::POLL, ntfn, &Msg::default(), Caps::default()).map(|m| m.badge)
+}
+
+// ---------------------------------------------------------------------------
+// Threads, time, memory
+
+pub fn thread_configure(t: u64, table: u64, space: u64, fault: u64) -> Result<(), Error> {
+    call(t, abi::op::THREAD_CONFIGURE, [table, space, fault, 0, 0, 0]).map(|_| ())
+}
+
+pub fn thread_priority(t: u64, prio: u64, mcp: u64) -> Result<(), Error> {
+    call(t, abi::op::THREAD_PRIORITY, [prio, mcp, 0, 0, 0, 0]).map(|_| ())
+}
+
+/// Set a stopped thread's registers: where it starts, its stack, two
+/// arguments and its thread-local storage base.
+pub fn thread_write(
+    t: u64,
+    rip: u64,
+    rsp: u64,
+    arg0: u64,
+    arg1: u64,
+    fs: u64,
+) -> Result<(), Error> {
+    call(t, abi::op::THREAD_WRITE, [rip, rsp, arg0, arg1, fs, 0]).map(|_| ())
+}
+
+/// rip, rsp, rax and state ([`abi::state`]).
+pub fn thread_read(t: u64) -> Result<[u64; 4], Error> {
+    call(t, abi::op::THREAD_READ, [0; 6])
+}
+
+pub fn thread_start(t: u64) -> Result<(), Error> {
+    call(t, abi::op::THREAD_START, [0; 6]).map(|_| ())
+}
+
+pub fn thread_stop(t: u64) -> Result<(), Error> {
+    call(t, abi::op::THREAD_STOP, [0; 6]).map(|_| ())
+}
+
+pub fn thread_bind(t: u64, ntfn: u64) -> Result<(), Error> {
+    call(t, abi::op::THREAD_BIND, [ntfn, 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+pub fn sc_bind(sc: u64, thread: u64) -> Result<(), Error> {
+    call(sc, abi::op::SC_BIND, [thread, 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+pub fn sc_unbind(sc: u64) -> Result<(), Error> {
+    call(sc, abi::op::SC_UNBIND, [0; 6]).map(|_| ())
+}
+
+/// Budget ns, period ns, time used ns, core it last ran on.
+pub fn sc_info(sc: u64) -> Result<[u64; 4], Error> {
+    call(sc, abi::op::SC_INFO, [0; 6])
+}
+
+/// Give scheduling context `sc` `budget_us` every `period_us`, on cores of
+/// `core_type`, or only on core `pin - 1` if `pin` is not 0.
+pub fn sc_configure(
+    control: u64,
+    sc: u64,
+    budget_us: u64,
+    period_us: u64,
+    core_type: u64,
+    pin: u64,
+) -> Result<(), Error> {
+    call(
+        control,
+        abi::op::SC_CONFIGURE,
+        [sc, budget_us, period_us, core_type, pin, 0],
+    )
+    .map(|_| ())
+}
+
+pub fn space_assign(space: u64, pool: u64) -> Result<(), Error> {
+    call(space, abi::op::SPACE_ASSIGN, [pool, 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+pub fn page_map(page: u64, space: u64, at: u64, flags: u64) -> Result<(), Error> {
+    call(page, abi::op::PAGE_MAP, [space, at, flags, 0, 0, 0]).map(|_| ())
+}
+
+pub fn page_unmap(page: u64) -> Result<(), Error> {
+    call(page, abi::op::PAGE_UNMAP, [0; 6]).map(|_| ())
+}
+
+/// The core this thread runs on.
+pub fn this_core() -> u64 {
+    let (_, r) = syscall(abi::call::DEBUG, abi::debug::CORE, 0, [0; 6]);
+    r[0]
+}
+
+/// Kernel counters: restarted calls, capabilities revoked, threads moved
+/// between cores, thread switches.
+pub fn all_counters() -> [u64; 4] {
+    syscall(abi::call::DEBUG, abi::debug::COUNTERS, 0, [0; 6]).1
+}
+
+/// The time-stamp counter.
+#[inline]
+pub fn rdtsc() -> u64 {
+    // SAFETY: reading the TSC has no side effects.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}

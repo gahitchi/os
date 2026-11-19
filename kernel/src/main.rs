@@ -12,21 +12,34 @@
 //! user mode. The program retypes, copies, moves, deletes and revokes
 //! capabilities through system calls (`caps.rs`, `syscall.rs`, and the
 //! `alaya-cap` crate), and reports whether all of its checks passed.
+//!
+//! Milestone 3: threads, time budgets and messages. Threads run on every
+//! core under time budgets with sporadic refills (`sched.rs`, the
+//! `alaya-sched` crate), placed by the kernel within a core type; they
+//! talk through endpoints and notifications, and passive servers run on
+//! their callers' time (`ipc.rs`). Programs get their own address spaces
+//! (`vspace.rs`).
 
 #![no_std]
 #![no_main]
 
 mod arch;
 mod caps;
+mod fpu;
+mod ipc;
 mod limine;
 mod mm;
+mod obj;
+mod objects;
 mod percpu;
+mod sched;
 mod selftest;
 mod smp;
 mod sync;
 mod syscall;
 mod time;
 mod user;
+mod vspace;
 #[macro_use]
 mod serial;
 
@@ -139,6 +152,7 @@ extern "C" fn bsp_main() -> ! {
     kprintln!("cpu 0: online, APIC id {} (bootstrap)", apic::id());
     time::calibrate();
     time::init_this_core();
+    sched::init_this_core(&mut sync::BKL.lock().sys);
     percpu::get(0).online.store(true, Ordering::Release);
 
     let cores = percpu::count();

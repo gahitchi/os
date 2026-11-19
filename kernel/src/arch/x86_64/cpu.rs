@@ -12,6 +12,7 @@ pub mod msr {
     pub const STAR: u32 = 0xc000_0081;
     pub const LSTAR: u32 = 0xc000_0082;
     pub const FMASK: u32 = 0xc000_0084;
+    pub const FS_BASE: u32 = 0xc000_0100;
     pub const GS_BASE: u32 = 0xc000_0101;
     /// Swapped with GS base by `swapgs`: the user's GS base while the
     /// kernel runs, the kernel's while the user runs.

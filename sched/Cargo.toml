@@ -1,0 +1,13 @@
+[package]
+name = "alaya-sched"
+description = "Time budgets (sporadic refills) for the Alaya kernel's scheduling contexts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
