@@ -268,6 +268,29 @@ static MEMMAP: Request<MemmapResponse> = Request::new([0x67cf3d9d378a806f, 0xe30
 static MODULES: Request<ModuleResponse> =
     Request::new([0x3e7e279702be32af, 0xca1c4f3bd1280cee], ());
 
+#[repr(C)]
+pub struct RsdpResponse {
+    revision: u64,
+    /// Physical address of the ACPI RSDP (base revision 3).
+    address: u64,
+}
+
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static RSDP: Request<RsdpResponse> = Request::new([0xc5e77b6b397e7b43, 0x27637845accdcf3c], ());
+
+/// Physical address of the ACPI root pointer, if the firmware has one.
+pub fn rsdp() -> Option<u64> {
+    let r = RSDP.response()?;
+    let hhdm = hhdm_offset().unwrap_or(0);
+    // Older base revisions gave a direct-map address.
+    Some(if r.address >= hhdm && hhdm != 0 {
+        r.address - hhdm
+    } else {
+        r.address
+    })
+}
+
 #[used]
 #[unsafe(link_section = ".limine_requests_end")]
 static REQUESTS_END: [u64; 2] = [0xadc0e0531bb10d03, 0x9572709f31764c62];

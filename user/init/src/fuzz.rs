@@ -52,8 +52,11 @@ mod slot {
     pub const VICTIMS: u64 = 24; // 2
     pub const VICTIM_SCS: u64 = 26; // 2
     pub const FUZZERS: u64 = 28; // up to 8
+    /// Send-only endpoints of the system's helpers: the registry, the
+    /// memory helper, the disk keeper.
+    pub const HELPERS: u64 = 36; // 3
     /// Slots from here on are free for the threads to fill.
-    pub const FREE: u64 = 36;
+    pub const FREE: u64 = 39;
     pub const BITS: u8 = 8;
     pub const COUNT: u64 = 1 << BITS;
 }
@@ -234,7 +237,34 @@ fn one_call(r: &mut Rng) {
             };
             raw(nr, h, info, a, r14, r.handle());
         }
-        90..=94 => {
+        // Aimed at the helpers: calls with labels and words they know,
+        // or nearly.
+        90..=92 => {
+            let h = slot::HELPERS + r.below(3);
+            let label = if r.below(4) == 0 {
+                r.below(1 << 12)
+            } else {
+                r.below(20)
+            };
+            let words = r.below(7);
+            let info = label << 8 | words | if r.below(4) == 0 { 1 << 4 } else { 0 };
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = match r.below(4) {
+                    0 => r.next(),
+                    1 => r.below(30),
+                    2 if i == 0 => 0x6b736964, // "disk"
+                    _ => r.below(4096),
+                };
+            }
+            let r14 = r.handle() | (slot::FREE + r.below(slot::COUNT - slot::FREE)) << 32;
+            let nr = if r.below(4) == 0 {
+                call::TRY_SEND
+            } else {
+                call::CALL
+            };
+            raw(nr, h, info, a, r14, 0);
+        }
+        93..=94 => {
             raw(call::YIELD, 0, 0, a, 0, 0);
         }
         // Debug calls, but never printing: a report must be refused,
@@ -314,6 +344,51 @@ fn sleep_ms(ms: u64) {
     while alaya_sys::rdtsc() < end {
         alaya_sys::wait(TICK.load(SeqCst)).unwrap();
     }
+}
+
+/// After the attack: the registry still finds the disk, the keeper still
+/// reads it, and the memory helper still keeps its books.
+fn keeper_jobs() -> u64 {
+    let ctl = crate::m4b::HELPERS[4].load(SeqCst);
+    alaya_sys::ipc_call(
+        ctl,
+        &alaya_sys::Msg::new(alaya_programs::keeper::MORE, &[]),
+        alaya_sys::Caps::default(),
+    )
+    .map_or(0, |m| m.words[3])
+}
+
+fn check_helpers(jobs_before: u64) {
+    use alaya_programs::{keeper as kp, memory, registry, status};
+    use alaya_sys::{Caps, Msg};
+    let h: [u64; 6] = core::array::from_fn(|i| crate::m4b::HELPERS[i].load(SeqCst));
+    let (client, reg, ctl, mem) = (h[2], h[3], h[4], h[5]);
+    let call = |ep: u64, label: u64, words: &[u64]| {
+        alaya_sys::ipc_call(ep, &Msg::new(label, words), Caps::default()).unwrap()
+    };
+    let n = registry::name("disk");
+    assert!(
+        call(reg, registry::LOOKUP, &n).words[0] == 0,
+        "the registry lost the disk"
+    );
+    let s = call(ctl, kp::STATS, &[]).words;
+    assert!(s[5] != kp::state::OFF, "the fuzzer switched the disk off");
+    for sector in 0..8 {
+        let r = call(client, kp::READ, &[sector, 0]).words;
+        assert!(
+            r[0] == status::OK,
+            "the keeper failed a read after the fuzzer: {r:?}"
+        );
+    }
+    let u = call(mem, memory::USAGE, &[]).words;
+    assert!(
+        u[1] == 2 << 20 && u[0] <= u[1],
+        "the memory helper lost its books: {u:?}"
+    );
+    say!(
+        "fuzz: the registry, the memory helper and the disk keeper still answer correctly (the keeper did {} disk jobs for the fuzzer)",
+        keeper_jobs() - jobs_before - 8
+    );
 }
 
 /// Run the fuzzer for `seconds`; `first_free` is the first free slot of
@@ -411,6 +486,17 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
     into(&k, Kind::Reply, 0, 4, slot::REPLIES);
     into(&k, Kind::Page, 12, 8, slot::PAGES);
     into(&k, Kind::Page, 21, 1, slot::BIG_PAGE);
+    let helpers: [u64; 3] = core::array::from_fn(|i| crate::m4b::HELPERS[i].load(SeqCst));
+    for (i, &h) in helpers.iter().enumerate() {
+        if h != 0 {
+            alaya_sys::copy(
+                sb(slot::HELPERS + i as u64),
+                k.at(h),
+                rights::WRITE | rights::GRANT,
+            )
+            .unwrap();
+        }
+    }
 
     // The threads: fuzzers pinned one per core, and two victims that start
     // the same way but which nobody restarts.
@@ -449,6 +535,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
         }
         handles[i as usize] = (t, sc);
     }
+    let jobs_before = if helpers[0] != 0 { keeper_jobs() } else { 0 };
     for &(t, _) in &handles[..threads as usize] {
         alaya_sys::thread_start(t).unwrap();
     }
@@ -504,6 +591,11 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
     let [r1, v1, _, _] = alaya_sys::all_counters();
     for &(t, _) in &handles[..threads as usize] {
         crate::expect_err(alaya_sys::thread_read(t), Error::InvalidHandle);
+    }
+
+    // The helpers still answer, and answer right.
+    if helpers[0] != 0 {
+        check_helpers(jobs_before);
     }
 
     // The kernel still works.

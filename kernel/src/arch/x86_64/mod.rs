@@ -7,6 +7,7 @@ pub mod gdt;
 pub mod idt;
 pub mod legacy;
 pub mod port;
+pub mod protect;
 pub mod trap;
 
 pub const NAME: &str = "x86-64";

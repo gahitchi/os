@@ -38,9 +38,9 @@ const ICR_DELIVERY_PENDING: u32 = 1 << 12;
 const ICR_NMI: u32 = 0b100 << 8;
 const ICR_ASSERT: u32 = 1 << 14;
 
-static X2APIC: AtomicBool = AtomicBool::new(false);
+pub(crate) static X2APIC: AtomicBool = AtomicBool::new(false);
 /// Virtual address of the xAPIC registers (unused in x2APIC mode).
-static MMIO: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MMIO: AtomicU64 = AtomicU64::new(0);
 
 /// Physical address of this core's xAPIC registers.
 pub fn mmio_physical_base() -> u64 {

@@ -28,9 +28,9 @@ const ECHO: u64 = 4;
 /// A slot of the server's own table where it receives a capability.
 const RECV_SLOT: u64 = 4000;
 
-static TICKS: AtomicU64 = AtomicU64::new(0);
-static TICK: AtomicU64 = AtomicU64::new(0);
-static HZ: AtomicU64 = AtomicU64::new(1);
+pub(crate) static TICKS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TICK: AtomicU64 = AtomicU64::new(0);
+pub(crate) static HZ: AtomicU64 = AtomicU64::new(1);
 static COUNT_L: AtomicU64 = AtomicU64::new(0);
 static COUNT_H: AtomicU64 = AtomicU64::new(0);
 static RESULT: AtomicU64 = AtomicU64::new(0);
@@ -45,41 +45,41 @@ unsafe extern "C" {
 }
 
 /// Kernel objects and stacks for the checks, from one untyped block.
-struct Kit<'a> {
-    info: &'a BootInfo,
-    ut: u64,
-    next: u64,
-    stacks: u64,
+pub(crate) struct Kit<'a> {
+    pub info: &'a BootInfo,
+    pub ut: u64,
+    pub next: u64,
+    pub stacks: u64,
 }
 
 impl Kit<'_> {
-    fn slot(&mut self) -> u64 {
+    pub(crate) fn slot(&mut self) -> u64 {
         let h = self.next;
         self.next += 1;
         h
     }
 
-    fn at(&self, index: u64) -> At {
+    pub(crate) fn at(&self, index: u64) -> At {
         At {
             table: self.info.table,
             index,
         }
     }
 
-    fn make(&mut self, kind: Kind, bits: u8) -> u64 {
+    pub(crate) fn make(&mut self, kind: Kind, bits: u8) -> u64 {
         let h = self.slot();
         alaya_sys::retype(self.ut, kind, bits, 1, self.at(h)).unwrap();
         h
     }
 
-    fn page_at(&mut self, space: u64, at: u64, flags: u64) -> u64 {
+    pub(crate) fn page_at(&mut self, space: u64, at: u64, flags: u64) -> u64 {
         let p = self.make(Kind::Page, 12);
         alaya_sys::page_map(p, space, at, flags).unwrap();
         p
     }
 
     /// A 16 KiB stack in the first program; returns its top.
-    fn stack(&mut self) -> u64 {
+    pub(crate) fn stack(&mut self) -> u64 {
         let base = STACKS + self.stacks * 0x10000;
         self.stacks += 1;
         for i in 0..4 {
@@ -90,7 +90,7 @@ impl Kit<'_> {
 
     /// A thread in the first program running `entry(arg)` at `prio`, with
     /// `budget` µs every `period` µs on `ctype` cores (`pin`: core + 1).
-    fn thread(
+    pub(crate) fn thread(
         &mut self,
         entry: extern "C" fn(u64) -> !,
         arg: u64,
@@ -120,16 +120,16 @@ impl Kit<'_> {
     }
 }
 
-fn ms_to_tsc(ms: u64) -> u64 {
+pub(crate) fn ms_to_tsc(ms: u64) -> u64 {
     ms * HZ.load(SeqCst) / 1000
 }
 
-fn tsc_to_us(t: u64) -> u64 {
+pub(crate) fn tsc_to_us(t: u64) -> u64 {
     t * 1_000_000 / HZ.load(SeqCst)
 }
 
 /// Sleep for about `ms`: wait for the ticker thread's signals.
-fn sleep_ms(ms: u64) {
+pub(crate) fn sleep_ms(ms: u64) {
     let end = alaya_sys::rdtsc() + ms_to_tsc(ms);
     while alaya_sys::rdtsc() < end {
         alaya_sys::wait(TICK.load(SeqCst)).unwrap();
@@ -137,7 +137,7 @@ fn sleep_ms(ms: u64) {
 }
 
 /// Wait (sleeping) until `done` holds, at most `ms`.
-fn sleep_until(ms: u64, done: impl Fn() -> bool) -> bool {
+pub(crate) fn sleep_until(ms: u64, done: impl Fn() -> bool) -> bool {
     let end = alaya_sys::rdtsc() + ms_to_tsc(ms);
     while !done() {
         if alaya_sys::rdtsc() > end {
@@ -150,7 +150,7 @@ fn sleep_until(ms: u64, done: impl Fn() -> bool) -> bool {
 
 /// Run for `ms` of this thread's own time: gaps while it was not running
 /// do not count.
-fn work_ms(ms: u64) {
+pub(crate) fn work_ms(ms: u64) {
     let (target, gap) = (ms_to_tsc(ms), ms_to_tsc(1) / 4);
     let mut ran = 0;
     let mut last = alaya_sys::rdtsc();
@@ -167,7 +167,7 @@ fn work_ms(ms: u64) {
 // Thread bodies
 
 /// Wakes once per period of its budget and signals the first program.
-extern "C" fn ticker(ntfn: u64) -> ! {
+pub(crate) extern "C" fn ticker(ntfn: u64) -> ! {
     loop {
         TICKS.fetch_add(1, SeqCst);
         let _ = alaya_sys::signal(ntfn, 1);
@@ -335,7 +335,7 @@ extern "C" fn bad_read(_: u64) -> ! {
 // ---------------------------------------------------------------------------
 
 /// Wait until thread `t` is in `state`.
-fn until_state(t: u64, s: u64) {
+pub(crate) fn until_state(t: u64, s: u64) {
     assert!(
         sleep_until(2000, || alaya_sys::thread_read(t).unwrap()[3] == s),
         "thread never reached state {s}"

@@ -93,6 +93,8 @@ pub struct Info {
     pub rights: u8,
     pub size_bits: u8,
     pub flags: u8,
+    /// The object's format label (`abi::format`; 0 for kinds without one).
+    pub format: u8,
     pub object: u64,
     pub badge_or_free: u64,
     pub clean: u64,
@@ -152,6 +154,7 @@ pub fn inspect(at: At) -> Result<Info, Error> {
         rights: (r[0] >> 8) as u8,
         size_bits: (r[0] >> 16) as u8,
         flags: (r[0] >> 24) as u8,
+        format: (r[0] >> 32) as u8,
         object: r[1],
         badge_or_free: r[2],
         clean: r[3],
@@ -416,9 +419,95 @@ pub fn all_counters() -> [u64; 4] {
     syscall(abi::call::DEBUG, abi::debug::COUNTERS, 0, [0; 6]).1
 }
 
+/// Big kernel lock use since boot: taken, waited, ticks waiting, ticks held.
+pub fn lock_stats() -> [u64; 4] {
+    syscall(abi::call::DEBUG, abi::debug::LOCK_STATS, 0, [0; 6]).1
+}
+
 /// The time-stamp counter.
 #[inline]
 pub fn rdtsc() -> u64 {
     // SAFETY: reading the TSC has no side effects.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
+
+/// Physical address of a page (drivers).
+pub fn page_address(page: u64) -> Result<u64, Error> {
+    call(page, abi::op::PAGE_ADDRESS, [0; 6]).map(|r| r[0])
+}
+
+// ---------------------------------------------------------------------------
+// Devices
+
+/// Let the devices of I/O space `io` reach `page` at device address `at`.
+pub fn page_iomap(page: u64, io: u64, at: u64, flags: u64) -> Result<(), Error> {
+    call(page, abi::op::PAGE_IOMAP, [io, at, flags, 0, 0, 0]).map(|_| ())
+}
+
+pub fn iospace_assign(io: u64, pool: u64) -> Result<(), Error> {
+    call(io, abi::op::IOSPACE_ASSIGN, [pool, 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+/// A page capability for device registers at `phys` (`bits`: 12 or 21).
+pub fn device_page(control: u64, phys: u64, bits: u8, dst: At) -> Result<(), Error> {
+    call(
+        control,
+        abi::op::DEVICE_PAGE,
+        [phys, u64::from(bits), dst.table, dst.index, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// Attach PCI function `bdf` to I/O space `io`.
+pub fn device_bind(control: u64, io: u64, bdf: u16) -> Result<(), Error> {
+    call(
+        control,
+        abi::op::DEVICE_BIND,
+        [io, u64::from(bdf), 0, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// Device accesses the IOMMU blocked since boot.
+pub fn device_faults(control: u64) -> Result<u64, Error> {
+    call(control, abi::op::DEVICE_FAULTS, [0; 6]).map(|r| r[0])
+}
+
+/// Take an interrupt vector delivered to `core`; returns the vector.
+pub fn irq_get(control: u64, core: u64, dst: At) -> Result<u64, Error> {
+    call(
+        control,
+        abi::op::IRQ_GET,
+        [core, dst.table, dst.index, 0, 0, 0],
+    )
+    .map(|r| r[0])
+}
+
+/// Deliver interrupt `irq` as `bits` on notification `ntfn` (0: stop).
+pub fn irq_set(irq: u64, ntfn: u64, bits: u64) -> Result<(), Error> {
+    call(irq, abi::op::IRQ_SET, [ntfn, bits, 0, 0, 0, 0]).map(|_| ())
+}
+
+/// MSI address and data for `irq`, and how many times it fired.
+pub fn irq_msi(irq: u64) -> Result<(u64, u64, u64), Error> {
+    call(irq, abi::op::IRQ_MSI, [0; 6]).map(|r| (r[0], r[1], r[2]))
+}
+
+/// Set the deadline of the work `sc` pays for, in time-stamp counter
+/// ticks (0: none). Returns deadlines missed in total, the thread object
+/// that held the context when the last one passed, and whether the
+/// deadline it replaces was missed.
+pub fn sc_deadline(sc: u64, tsc: u64) -> Result<(u64, u64, bool), Error> {
+    call(sc, abi::op::SC_DEADLINE, [tsc, 0, 0, 0, 0, 0]).map(|r| (r[0], r[1], r[2] != 0))
+}
+
+/// Ask for a timeout message (to the fault endpoint) when time lent to
+/// thread `t` by a caller runs out.
+pub fn thread_timeouts(t: u64, on: bool) -> Result<(), Error> {
+    call(t, abi::op::THREAD_TIMEOUTS, [u64::from(on), 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+pub mod cores;
+pub mod elf;
+pub mod program;
+pub mod rt;

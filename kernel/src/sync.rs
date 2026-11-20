@@ -132,11 +132,23 @@ impl<T> BigKernelLock<T> {
             panic!("big kernel lock taken twice on cpu {me}");
         }
         let ticket = self.next.fetch_add(1, Ordering::Relaxed);
-        while self.serving.load(Ordering::Acquire) != ticket {
-            // The holder may be waiting for this core to flush its TLB.
-            crate::vspace::poll_flush();
-            arch::spin_hint();
+        let stats = crate::percpu::get(me);
+        let mut now = arch::cpu::rdtsc();
+        if self.serving.load(Ordering::Acquire) != ticket {
+            let start = now;
+            while self.serving.load(Ordering::Acquire) != ticket {
+                // The holder may be waiting for this core to flush its TLB.
+                crate::vspace::poll_flush();
+                arch::spin_hint();
+            }
+            now = arch::cpu::rdtsc();
+            stats.lock_waits.fetch_add(1, Ordering::Relaxed);
+            stats
+                .lock_wait_ticks
+                .fetch_add(now.wrapping_sub(start), Ordering::Relaxed);
         }
+        stats.lock_takes.fetch_add(1, Ordering::Relaxed);
+        stats.lock_since.store(now, Ordering::Relaxed);
         self.owner.store(me, Ordering::Relaxed);
         BklGuard { lock: self }
     }
@@ -171,6 +183,9 @@ impl<T> DerefMut for BklGuard<'_, T> {
 
 impl<T> Drop for BklGuard<'_, T> {
     fn drop(&mut self) {
+        let stats = crate::percpu::this();
+        let held = arch::cpu::rdtsc().wrapping_sub(stats.lock_since.load(Ordering::Relaxed));
+        stats.lock_held_ticks.fetch_add(held, Ordering::Relaxed);
         self.lock.owner.store(NO_OWNER, Ordering::Relaxed);
         self.lock.serving.fetch_add(1, Ordering::Release);
     }
@@ -197,6 +212,12 @@ pub struct Sys {
     pub started: bool,
     /// Address spaces by id.
     pub spaces: [crate::vspace::SpaceEntry; crate::vspace::MAX_SPACES],
+    /// TLB tags each core must flush before loading them again.
+    pub stale: crate::vspace::Stale,
+    /// The IOMMU (device memory guard).
+    pub iommu: crate::iommu::State,
+    /// Device interrupts by vector.
+    pub irqs: [crate::device::IrqEntry; 256],
     /// System calls restarted because an interruptible operation stopped.
     pub restarts: u64,
     /// Threads that started running on another core than before.
@@ -219,6 +240,9 @@ pub static BKL: BigKernelLock<KernelState> = BigKernelLock::new(KernelState {
         started: false,
         first_thread: 0,
         spaces: [crate::vspace::SpaceEntry::EMPTY; crate::vspace::MAX_SPACES],
+        stale: crate::vspace::Stale::EMPTY,
+        iommu: crate::iommu::State::EMPTY,
+        irqs: [crate::device::IrqEntry::EMPTY; 256],
         restarts: 0,
         migrations: 0,
         switches: 0,

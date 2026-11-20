@@ -44,7 +44,7 @@ jobs:
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
           cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --all-targets -- -D warnings
-          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys \
+          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs \
             --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
 
@@ -83,6 +83,10 @@ jobs:
           cargo xtask test --accel tcg --cpus 2 --fault stack
           cargo xtask test --accel tcg --cpus 2 --fault invalid-opcode
           cargo xtask test --accel kvm --cpus 4 --fault other-core-page
+          cargo xtask test --accel tcg --cpus 2 --fault smap
+          cargo xtask test --accel tcg --cpus 2 --fault smep
+          cargo xtask test --accel kvm --cpus 2 --fault smap
+          cargo xtask test --accel kvm --cpus 2 --fault smep
 
       # The kernel fuzzer: threads on every core make random system calls
       # on a sandbox; the kernel must not crash and must still work after.
@@ -90,6 +94,11 @@ jobs:
         run: cargo xtask test --accel tcg --cpus 4 --fuzz 60
       - name: Kernel fuzzer, KVM, 8 cores, 120 s
         run: cargo xtask test --accel kvm --cpus 8 --fuzz 120
+
+      # Milestone 4: the driver is killed at random for 10 minutes while the
+      # test app uses the disk; no wrong answer may reach it.
+      - name: Driver chaos, KVM, 8 cores, 10 minutes
+        run: cargo xtask test --accel kvm --cpus 8 --long
 
       - name: Boot with the Termux script
         run: |
@@ -107,8 +116,9 @@ jobs:
             build/alaya-x86_64.iso.sha256
           if-no-files-found: error
 
-  # The TLA+ models (formal/): capabilities and revoke, and the scheduler
-  # with time budgets and lent time. Each has must-fail checks too.
+  # The TLA+ models (formal/): capabilities and revoke, the scheduler with
+  # time budgets and lent time, and the driver keeper's crash-and-resend
+  # rule. Each has must-fail checks too.
   tla:
     name: TLA+ models
     runs-on: ubuntu-24.04

@@ -48,6 +48,10 @@ impl Memory for Phys<'_> {
     fn on_delete(&mut self, g: &mut Globals, at: SlotRef, cap: &Cap, last: bool) -> bool {
         objects::on_delete(self, g, at, cap, last)
     }
+
+    fn on_create(&mut self, kind: Kind, object: u64) {
+        crate::obj::stamp(kind, object);
+    }
 }
 
 /// How long one kernel entry may run an interruptible operation before it
@@ -120,11 +124,13 @@ pub fn invoke(
                 return Err(Error::InvalidHandle);
             }
             let fl = c.flags & flags::REVOKING | if children { flags::HAS_CHILDREN } else { 0 };
+            let format = c.kind().map_or(0, |k| crate::obj::format_of(k, c.object));
             done([
                 u64::from(c.kind)
                     | u64::from(c.rights) << 8
                     | u64::from(c.size_bits) << 16
-                    | u64::from(fl) << 24,
+                    | u64::from(fl) << 24
+                    | u64::from(format) << 32,
                 c.object,
                 c.a,
                 c.b,
@@ -188,6 +194,18 @@ pub fn invoke(
         (Some(Kind::SchedControl), _) => objects::sched_control(&mut m, me, label, args),
         (Some(Kind::AddressSpace), _) => objects::space(&mut m, me, c, label, args),
         (Some(Kind::Page), _) => objects::page(&mut m, me, at, c, label, args),
+        (Some(Kind::IoSpace), op::IOSPACE_ASSIGN) => {
+            if c.rights & rights::WRITE == 0 {
+                return Err(Error::NoRights);
+            }
+            let pool = ipc::lookup(&m, me, args[0])?;
+            crate::iommu::assign(&mut m, c.object, pool)?;
+            done([0; 4])
+        }
+        (Some(Kind::IoSpace), _) => Err(Error::NoSuchCall),
+        (Some(Kind::DeviceControl), _) => crate::device::device_control(&mut m, me, label, args),
+        (Some(Kind::IrqControl), _) => crate::device::irq_control(&mut m, me, label, args),
+        (Some(Kind::Irq), _) => crate::device::irq(&mut m, me, c, label, args),
         _ => Err(Error::WrongKind),
     }
 }

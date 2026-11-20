@@ -37,6 +37,14 @@ pub struct PerCpu {
     pub timer_next_deadline: AtomicU64,
     /// Another core asks this one to flush its TLB.
     pub flush: AtomicBool,
+    /// Big kernel lock use on this core (decision 77: measured under load):
+    /// times taken, times it had to wait, TSC ticks spent waiting and
+    /// holding, and when it was last taken.
+    pub lock_takes: AtomicU64,
+    pub lock_waits: AtomicU64,
+    pub lock_wait_ticks: AtomicU64,
+    pub lock_held_ticks: AtomicU64,
+    pub lock_since: AtomicU64,
 }
 
 impl PerCpu {
@@ -53,6 +61,11 @@ impl PerCpu {
             timer_worst_late_ns: AtomicU64::new(0),
             timer_next_deadline: AtomicU64::new(0),
             flush: AtomicBool::new(false),
+            lock_takes: AtomicU64::new(0),
+            lock_waits: AtomicU64::new(0),
+            lock_wait_ticks: AtomicU64::new(0),
+            lock_held_ticks: AtomicU64::new(0),
+            lock_since: AtomicU64::new(0),
         }
     }
 }
@@ -63,7 +76,7 @@ pub const USER_RSP_OFFSET: usize = 16;
 const _: () = assert!(core::mem::offset_of!(PerCpu, kernel_rsp) == KERNEL_RSP_OFFSET);
 const _: () = assert!(core::mem::offset_of!(PerCpu, user_rsp) == USER_RSP_OFFSET);
 
-static CPUS: [PerCpu; MAX_CPUS] = {
+pub(crate) static CPUS: [PerCpu; MAX_CPUS] = {
     let mut cpus = [const { PerCpu::new(0) }; MAX_CPUS];
     let mut i = 0;
     while i < MAX_CPUS {
@@ -73,11 +86,11 @@ static CPUS: [PerCpu; MAX_CPUS] = {
     cpus
 };
 
-static mut GDTS: [Gdt; MAX_CPUS] = [const { Gdt::new() }; MAX_CPUS];
-static mut TSSES: [Tss; MAX_CPUS] = [const { Tss::new() }; MAX_CPUS];
+pub(crate) static mut GDTS: [Gdt; MAX_CPUS] = [const { Gdt::new() }; MAX_CPUS];
+pub(crate) static mut TSSES: [Tss; MAX_CPUS] = [const { Tss::new() }; MAX_CPUS];
 
 /// How many cores the bootloader reported (set once by the bootstrap core).
-static COUNT: AtomicU32 = AtomicU32::new(1);
+pub(crate) static COUNT: AtomicU32 = AtomicU32::new(1);
 
 pub fn set_count(n: u32) {
     COUNT.store(n, Ordering::Relaxed);

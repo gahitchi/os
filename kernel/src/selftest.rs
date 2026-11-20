@@ -9,7 +9,8 @@
 //! With `test-fault=<kind>` on the kernel command line, the kernel instead
 //! crashes on purpose after the self-tests, so CI can check the report:
 //! `page` (write to an unmapped address), `stack` (kernel stack overflow),
-//! `invalid-opcode`, or `other-core-page` (a page fault on the last core).
+//! `invalid-opcode`, `other-core-page` (a page fault on the last core),
+//! `smap` (the kernel reads a user page) or `smep` (it runs code in one).
 
 use core::sync::atomic::Ordering;
 
@@ -63,9 +64,49 @@ pub fn fault_on_bootstrap_core() {
             // SAFETY: deliberately raises #UD.
             unsafe { core::arch::asm!("ud2") };
         }
+        Some("smap") => touch_user_page(false),
+        Some("smep") => touch_user_page(true),
         Some(other) => panic!("unknown test-fault={other}"),
     }
 }
+
+/// Map a program-style (user) page and read it, or run code in it, from
+/// the kernel: the safety switches (SMAP, SMEP) must stop both.
+fn touch_user_page(execute: bool) {
+    use crate::arch::cpu;
+    use crate::mm::paging::{AddressSpace, NO_EXECUTE, USER, WRITABLE};
+    let hhdm = crate::limine::hhdm_offset().unwrap();
+    let mut space = AddressSpace::with_root(
+        crate::mm::frames::alloc_zeroed(),
+        hhdm,
+        cpu::features().gib_pages,
+        crate::mm::kernel_root(),
+    );
+    let page = crate::mm::frames::alloc_zeroed();
+    // `ret`, so that without SMEP the call would simply come back.
+    // SAFETY: a fresh frame, reached through the direct map.
+    unsafe { *((page + hhdm) as *mut u8) = 0xc3 };
+    let flags = if execute {
+        USER
+    } else {
+        USER | WRITABLE | NO_EXECUTE
+    };
+    space.map(USER_PAGE, page, 4096, flags);
+    // SAFETY: the new tables map the kernel's half like the kernel's own.
+    unsafe { cpu::write_cr3(space.root()) };
+    if execute {
+        crate::kprintln!("selftest: running code in a user page on purpose");
+        // SAFETY: deliberately faults with SMEP on.
+        unsafe { core::arch::asm!("call {}", in(reg) USER_PAGE, clobber_abi("C")) };
+    } else {
+        crate::kprintln!("selftest: reading a user page from the kernel on purpose");
+        // SAFETY: deliberately faults with SMAP on.
+        unsafe { core::ptr::read_volatile(USER_PAGE as *const u64) };
+    }
+    crate::kprintln!("selftest: the kernel touched a user page and nothing stopped it");
+}
+
+const USER_PAGE: u64 = 0x10000;
 
 fn page_fault() {
     crate::kprintln!("selftest: writing to an unmapped address on purpose");

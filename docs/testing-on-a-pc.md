@@ -81,6 +81,15 @@ cargo xtask test --accel kvm --cpus 4 --fault invalid-opcode
 cargo xtask test --accel kvm --cpus 4 --fault other-core-page
 ```
 
+Milestone 4 adds a long run: the boot checks, then the disk driver is
+crashed or frozen at random every half second or so for ten minutes while
+an app reads and writes the disk through the driver's keeper. It passes
+when the app never got a wrong answer:
+
+```sh
+cargo xtask test --accel kvm --cpus "$(nproc)" --long
+```
+
 ## What a good run looks like
 
 With KVM on an Intel CPU the kernel should report, among other lines:
@@ -108,15 +117,81 @@ init: a 2 ms / 10 ms budget used ... µs of ... µs (20%)
 init: ipc: call and reply round trip: ... cycles (... ns) between programs, ... cycles (... ns) inside one
 ...
 init: ok 25 revoking takes back running threads, address spaces and all
-init: all 25 checks passed (... restarted calls, ... capabilities revoked)
+...
+init: chaos: ... restarts, ... right answers, 0 wrong
+...
+init: ok 43 the core-type helper puts games on performance cores and background work on efficiency cores
+init: all 43 checks passed (...)
 alaya: boot ok
 ```
 
 The exact CPU name, core count, TSC source and numbers depend on the
 machine. What matters: one `core N: ready` line for every core, the
-TSC-deadline timer in use, twenty-five `init: ok` lines from the first program,
+TSC-deadline timer in use, forty-three `init: ok` lines from the first program,
 and `alaya: boot ok` at the end. The `ipc:` line is the cost of a call and
 its answer between two programs; with KVM it is the real number. With
 `--fuzz`, `fuzz: done` comes before the end. If something
 fails, the last lines of the output (a fault report or panic message) say
-what and where.
+what and where. Lines from the keeper such as `keeper: driver version 1
+crashed` are expected: the tests crash the driver on purpose.
+
+## On a Windows PC (WSL2)
+
+A Windows PC can run the same tests inside WSL2, Windows' built-in Linux.
+WSL2 passes the processor's virtualization through, so QEMU there can use
+KVM too. This is a helpful second machine; the reference laptop's runs stay
+the official ones.
+
+### Setup
+
+1. Turn on virtualization (Intel VT-x) in the PC's firmware settings, if
+   it is not already on. Task Manager, Performance, CPU shows
+   "Virtualization: Enabled" when it is.
+2. In PowerShell as administrator:
+
+   ```powershell
+   wsl --install -d Ubuntu
+   ```
+
+   Restart when asked, then open Ubuntu from the Start menu and choose a
+   user name and password.
+3. Tell WSL2 to pass virtualization through. In Windows, create (or edit)
+   the file `%UserProfile%\.wslconfig` with:
+
+   ```ini
+   [wsl2]
+   nestedVirtualization=true
+   ```
+
+   Then in PowerShell: `wsl --shutdown`, and open Ubuntu again.
+4. In Ubuntu:
+
+   ```sh
+   sudo apt update
+   sudo apt install qemu-system-x86 ovmf curl git build-essential xorriso
+   sudo usermod -aG kvm "$USER"
+   ```
+
+   Close Ubuntu, run `wsl --shutdown` in PowerShell, open Ubuntu again, and
+   check with `ls -l /dev/kvm`.
+
+After that, Option 1 and Option 2 above work the same way (for Option 2,
+install Rust with the command on [rustup.rs](https://rustup.rs) instead of
+pacman). Keep the clone inside Ubuntu's own home folder (`~/os`), not under
+`/mnt/c`: building on the Windows drive is many times slower.
+
+### VirtualBox and WSL2 together
+
+WSL2 runs on Windows' own virtualization layer (Hyper-V). Once it is on,
+VirtualBox can no longer use the processor's virtualization directly and
+runs its machines through Hyper-V instead, which is slower and sometimes
+shows a green turtle icon in the VirtualBox window. Both keep working, just
+VirtualBox more slowly.
+
+For Alaya, use WSL2, not VirtualBox: QEMU inside WSL2 gets KVM, and the
+tests use QEMU's device memory guard and virtual disk, which a VirtualBox
+machine does not offer in the same way. If you need VirtualBox at full
+speed for something else, Hyper-V can be switched off for a while
+(`bcdedit /set hypervisorlaunchtype off` as administrator and a restart;
+`auto` instead of `off` turns it back on), but WSL2 does not run while it
+is off.
