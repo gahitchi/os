@@ -1,7 +1,6 @@
 /* Linker script for the first Alaya program: a static executable in the
  * lower half, each part on its own pages. */
 
-OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(_start)
 
 PHDRS

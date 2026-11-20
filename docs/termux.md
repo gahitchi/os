@@ -37,6 +37,23 @@ from the left) and run `pkill -f qemu-system`.
 
 To boot and exit on its own instead, use `bash alaya.sh test`.
 
+## The ARM64 version
+
+Alaya also runs on ARM processors, the kind in phones (milestone 4b). To
+boot the ARM64 image instead of the PC one, put `ALAYA_ARCH=aarch64` in
+front of the command:
+
+```sh
+pkg install qemu-system-aarch64-headless
+ALAYA_ARCH=aarch64 bash alaya.sh test
+```
+
+It runs in QEMU too, never on the phone itself: QEMU pretends to be a
+small ARM computer (its "virt" board) with the same virtual disk and
+device memory guard as on a PC. Everything else works the same; the image
+is `alaya-aarch64.iso` from the same nightly release. Plain emulation of
+ARM is slower than of a PC, so give `test` a few minutes.
+
 Other commands:
 
 | Command | What it does |
@@ -49,6 +66,7 @@ Settings, given in front of the command:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `ALAYA_ARCH` | x86_64 | `aarch64` boots the ARM64 image (in QEMU) instead of the PC one |
 | `ALAYA_CPUS` | 1 | Number of virtual cores, for example `ALAYA_CPUS=4 bash alaya.sh run`; `all` uses as many as the device has |
 | `ALAYA_ACCEL` | auto | `kvm`, `tcg` (plain emulation) or `auto` (KVM if `/dev/kvm` is usable, which it is not on a phone) |
 | `ALAYA_TIMEOUT` | 300 | Seconds before `test` gives up |
@@ -57,8 +75,8 @@ Settings, given in front of the command:
 
 ## Images from a pull request
 
-Every CI run, including pull requests, uploads the image as the
-`alaya-x86_64` artifact on its run page (you need to be signed in to GitHub to
+Every CI run, including pull requests, uploads the images as the
+`alaya-x86_64` and `alaya-aarch64` artifacts on its run page (you need to be signed in to GitHub to
 download it). Unzip it and pass the `.iso` to `alaya.sh run`.
 
 ## What you should see

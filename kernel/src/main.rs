@@ -191,7 +191,10 @@ extern "C" fn bsp_main(_: u64) -> ! {
         let buses = platform.ecam.map_or((0, 0), |e| (e.bus_start, e.bus_end));
         iommu::init(&mut sync::BKL.lock().sys, base, buses, platform.iommu_scope);
     } else {
-        kprintln!("iommu: none found; devices could reach all memory (add QEMU's intel-iommu)");
+        kprintln!(
+            "iommu: none found; devices could reach all memory ({})",
+            iommu::HINT
+        );
     }
 
     // The first program prints the boot marker once its checks pass.

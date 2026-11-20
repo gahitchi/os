@@ -104,7 +104,15 @@ impl Kit<'_> {
         alaya_sys::thread_configure(t, self.info.table, self.info.space, 0).unwrap();
         alaya_sys::thread_priority(t, prio, prio).unwrap();
         let top = self.stack();
-        alaya_sys::thread_write(t, entry as *const () as u64, top - 8, arg, 0, 0).unwrap();
+        alaya_sys::thread_write(
+            t,
+            entry as *const () as u64,
+            alaya_sys::entry_stack(top),
+            arg,
+            0,
+            0,
+        )
+        .unwrap();
         alaya_sys::sc_configure(
             self.info.sched_control,
             sc,
@@ -320,8 +328,7 @@ extern "C" fn isolation_caller(ep: u64) -> ! {
 }
 
 extern "C" fn bad_opcode(_: u64) -> ! {
-    // SAFETY: deliberately faults.
-    unsafe { core::arch::asm!("ud2", options(noreturn)) }
+    alaya_sys::crash()
 }
 
 extern "C" fn bad_read(_: u64) -> ! {
@@ -551,7 +558,15 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     let tsc = k.make(Kind::SchedContext, 8);
     alaya_sys::thread_configure(t, info.table, info.space, fep).unwrap();
     let top = k.stack();
-    alaya_sys::thread_write(t, bad_opcode as *const () as u64, top - 8, 0, 0, 0).unwrap();
+    alaya_sys::thread_write(
+        t,
+        bad_opcode as *const () as u64,
+        alaya_sys::entry_stack(top),
+        0,
+        0,
+        0,
+    )
+    .unwrap();
     alaya_sys::sc_configure(ctl, tsc, 1000, 1000, core_type::ANY, 0).unwrap();
     alaya_sys::sc_bind(tsc, t).unwrap();
     alaya_sys::thread_start(t).unwrap();
@@ -628,7 +643,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     alaya_sys::thread_write(
         x,
         server as *const () as u64,
-        STACK2 + 0x4000 - 8,
+        alaya_sys::entry_stack(STACK2 + 0x4000),
         2 | 3 << 16,
         0,
         0,

@@ -133,6 +133,7 @@ pub const SLOT_FAULT: usize = 2;
 
 /// Where the FPU/vector save area starts in a thread (64-byte aligned).
 pub const FPU_OFFSET: u64 = 1024;
+#[allow(dead_code)] // used by one processor family only
 pub const FPU_BYTES: u64 = (1 << THREAD_BITS) - FPU_OFFSET;
 
 /// A thread (4 KiB).

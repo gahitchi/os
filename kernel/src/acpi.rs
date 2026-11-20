@@ -3,9 +3,10 @@
 //!
 //! - **MCFG**: where PCI configuration space is (ECAM). The kernel only
 //!   passes it on; the device manager in user space walks the bus.
-//! - **DMAR**: where Intel's device memory guard (VT-d IOMMU) has its
-//!   registers. The kernel drives the IOMMU itself (`iommu.rs`), because it
-//!   decides what memory a device may reach.
+//! - **DMAR** (PC) and **IORT** (ARM): where the device memory guard (the
+//!   VT-d IOMMU, or ARM's SMMU) has its registers. The kernel drives it
+//!   itself (`iommu.rs`), because it decides what memory a device may
+//!   reach.
 //!
 //! Everything else in ACPI is left to user space later.
 
@@ -50,6 +51,7 @@ impl Scope {
         }
     }
 
+    #[allow(dead_code)] // used by one processor family only
     pub fn covers(&self, bdf: u16) -> bool {
         self.all || self.devices[..self.count].contains(&bdf)
     }
@@ -67,15 +69,15 @@ fn bytes(phys: u64, len: u64) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(virt as *const u8, len as usize) }
 }
 
-fn u16_at(b: &[u8], o: usize) -> u16 {
+pub fn u16_at(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])
 }
 
-fn u32_at(b: &[u8], o: usize) -> u32 {
+pub fn u32_at(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
 }
 
-fn u64_at(b: &[u8], o: usize) -> u64 {
+pub fn u64_at(b: &[u8], o: usize) -> u64 {
     u64::from_le_bytes(b[o..o + 8].try_into().unwrap())
 }
 
@@ -89,6 +91,31 @@ fn table(phys: u64) -> Option<&'static [u8]> {
     let t = bytes(phys, len);
     let sum = t.iter().fold(0u8, |a, &b| a.wrapping_add(b));
     (sum == 0).then_some(t)
+}
+
+/// The firmware table with signature `sig`, if there is one.
+#[allow(dead_code)] // used by one processor family only
+pub fn find(sig: &[u8; 4]) -> Option<&'static [u8]> {
+    let rsdp = limine::rsdp()?;
+    let r: [u8; 36] = read(rsdp);
+    if &r[..8] != b"RSD PTR " {
+        return None;
+    }
+    let (root, wide) = if r[15] >= 2 && u64_at(&r, 24) != 0 {
+        (u64_at(&r, 24), true)
+    } else {
+        (u64::from(u32_at(&r, 16)), false)
+    };
+    let rt = table(root)?;
+    let entry = if wide { 8 } else { 4 };
+    (36..rt.len()).step_by(entry).find_map(|i| {
+        let at = if wide {
+            u64_at(rt, i)
+        } else {
+            u64::from(u32_at(rt, i))
+        };
+        table(at).filter(|t| &t[..4] == sig)
+    })
 }
 
 /// Read the tables. Must run before the first program starts (it maps
@@ -130,6 +157,7 @@ pub fn init() -> Platform {
         match &t[..4] {
             b"MCFG" => p.ecam = mcfg(t),
             b"DMAR" => dmar(t, &mut p),
+            b"IORT" => p.iommu = p.iommu.or(iort_smmu(t)),
             _ => {}
         }
     }
@@ -169,6 +197,33 @@ fn mcfg(t: &[u8]) -> Option<Ecam> {
             bus_end: t[o + 11],
         })
         .find(|e| e.segment == 0)
+}
+
+/// The first SMMUv3 node of an IORT table: its register base.
+fn iort_smmu(t: &[u8]) -> Option<u64> {
+    iort_nodes(t)
+        .find(|n| n[0] == 4 && n.len() >= 24)
+        .map(|n| u64_at(n, 16))
+}
+
+/// The nodes of an IORT table.
+#[allow(dead_code)] // used by one processor family only
+pub fn iort_nodes(t: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let count = if t.len() >= 48 { u32_at(t, 36) } else { 0 };
+    let mut at = if t.len() >= 48 {
+        u32_at(t, 40) as usize
+    } else {
+        0
+    };
+    (0..count).map_while(move |_| {
+        let len = u16_at(t, at.checked_add(1)?.min(t.len().saturating_sub(2))) as usize;
+        if len < 16 || at + len > t.len() {
+            return None;
+        }
+        let node = &t[at..at + len];
+        at += len;
+        Some(node)
+    })
 }
 
 fn dmar(t: &[u8], p: &mut Platform) {

@@ -73,6 +73,9 @@ pub fn forget_notification(k: &mut Sys, n: u64) {
 /// The last capability to interrupt `vector` goes: free the vector.
 pub fn free_vector(k: &mut Sys, vector: u64) {
     if let Some(e) = k.irqs.get_mut(vector as usize) {
+        if e.taken {
+            arch::msi_release(vector as u8);
+        }
         *e = IrqEntry::EMPTY;
     }
 }
@@ -180,10 +183,12 @@ pub fn irq(m: &mut Phys, me: u64, c: Cap, label: u64, a: [u64; 6]) -> Result<Out
         }
         op::IRQ_MSI => {
             let e = m.sys.irqs[v];
+            let rid = u16::try_from(a[0]).map_err(|_| Error::InvalidArgument)?;
             let dest = percpu::get(u32::from(e.core))
                 .hw_id
                 .load(core::sync::atomic::Ordering::Relaxed);
-            let (address, data) = arch::msi_message(dest, v as u8);
+            let (address, data) =
+                arch::msi_message(e.core, dest, v as u8, rid).ok_or(Error::NoMemory)?;
             done([address, data, e.count, 0])
         }
         _ => Err(Error::NoSuchCall),

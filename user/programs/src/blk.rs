@@ -419,8 +419,7 @@ impl Driver {
         store(&self.jobs.state, run::FAILED);
         say!("cannot start the disk (reason {e})");
         // Crash, so the keeper sees it.
-        // SAFETY: deliberately faults.
-        unsafe { core::arch::asm!("ud2", options(noreturn)) }
+        alaya_sys::crash()
     }
 }
 
@@ -435,7 +434,7 @@ pub fn run(info: &'static StartInfo, version: u64) -> ! {
     });
     let irq = g + G_IRQ;
     let ntfn = g + G_NTFN;
-    let msi = alaya_sys::irq_msi(irq)
+    let msi = alaya_sys::irq_msi(irq, info.args[ARG_BDF] as u16)
         .map(|(a, d, _)| (a, d))
         .unwrap_or((0, 0));
     let mut d = Driver {

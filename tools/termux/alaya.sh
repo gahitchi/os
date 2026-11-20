@@ -2,14 +2,16 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # Boot a ready-made Alaya image in QEMU from Termux on Android, or on any
-# Linux PC with bash, curl and qemu-system-x86_64 (there it uses KVM when it
-# can). Nothing is built here: the image comes from the project's CI.
+# Linux PC with bash, curl and QEMU (there it uses KVM when it can). Nothing
+# is built here: the image comes from the project's CI. Both the PC image
+# and the ARM64 image (ALAYA_ARCH=aarch64) run in QEMU only.
 #
 #   alaya.sh run  [image]   boot and show the serial console (Ctrl+A then x quits)
 #   alaya.sh test [image]   boot, pass if the kernel reports a clean boot
 #   alaya.sh fetch          only download the latest image
 #
 # Options (environment):
+#   ALAYA_ARCH=aarch64      boot the ARM64 image instead of the PC one
 #   ALAYA_CPUS=2            virtual cores (default 1); "all" = every host core
 #   ALAYA_ACCEL=auto        kvm, tcg or auto (default: kvm if /dev/kvm is usable)
 #   ALAYA_TIMEOUT=600       seconds before "test" gives up (default 600)
@@ -19,7 +21,15 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/gahitchi/os"
-IMAGE_URL="${ALAYA_IMAGE_URL:-$REPO_URL/releases/download/nightly/alaya-x86_64.iso}"
+ARCH="${ALAYA_ARCH:-x86_64}"
+case "$ARCH" in
+    x86_64 | pc) ARCH=x86_64 ;;
+    aarch64 | arm64 | arm) ARCH=aarch64 ;;
+    *) printf 'alaya.sh: ALAYA_ARCH must be x86_64 or aarch64\n' >&2; exit 1 ;;
+esac
+IMAGE_NAME="alaya-$ARCH.iso"
+QEMU="qemu-system-$ARCH"
+IMAGE_URL="${ALAYA_IMAGE_URL:-$REPO_URL/releases/download/nightly/$IMAGE_NAME}"
 DIR="${ALAYA_DIR:-$HOME/alaya}"
 CPUS="${ALAYA_CPUS:-1}"
 ACCEL="${ALAYA_ACCEL:-auto}"
@@ -41,20 +51,24 @@ die() { say "$*"; exit 1; }
 
 need_tools() {
     local missing=()
-    command -v qemu-system-x86_64 >/dev/null || missing+=(qemu-system-x86-64-headless)
+    if [ "$ARCH" = aarch64 ]; then
+        command -v "$QEMU" >/dev/null || missing+=(qemu-system-aarch64-headless)
+    else
+        command -v "$QEMU" >/dev/null || missing+=(qemu-system-x86-64-headless)
+    fi
     command -v curl >/dev/null || missing+=(curl)
     [ ${#missing[@]} -eq 0 ] && return
     if command -v pkg >/dev/null; then
         say "installing ${missing[*]}"
         pkg install -y "${missing[@]}"
     else
-        die "please install: qemu-system-x86_64 and curl"
+        die "please install: $QEMU and curl"
     fi
 }
 
 fetch() {
     mkdir -p "$DIR"
-    local image="$DIR/alaya-x86_64.iso"
+    local image="$DIR/$IMAGE_NAME"
     say "downloading $IMAGE_URL"
     curl -fL --retry 3 -o "$image.part" "$IMAGE_URL" || die "download failed"
     if curl -fsL -o "$image.sha256" "$IMAGE_URL.sha256" 2>/dev/null; then
@@ -88,7 +102,49 @@ accel_name() {
     if [ "$ACCEL" = kvm ]; then echo "KVM"; else echo "emulation (TCG)"; fi
 }
 
+# ARM machines start from UEFI firmware, which comes with QEMU.
+arm_firmware() {
+    local f
+    for f in "${ALAYA_AAVMF:-}" \
+        "${PREFIX:-/usr}/share/qemu/edk2-aarch64-code.fd" \
+        /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+        /usr/share/AAVMF/AAVMF_CODE.fd \
+        /usr/share/qemu/edk2-aarch64-code.fd \
+        /usr/share/edk2/aarch64/QEMU_EFI.fd; do
+        if [ -n "$f" ] && [ -f "$f" ]; then
+            echo "$f"
+            return
+        fi
+    done
+    die "no ARM UEFI firmware found (install qemu-efi-aarch64, or set ALAYA_AAVMF)"
+}
+
+disk_image() {
+    local disk="$DIR/disk.img"
+    if [ ! -f "$disk" ]; then
+        mkdir -p "$DIR"
+        head -c 1048576 /dev/zero >"$disk"
+    fi
+    echo "$disk"
+}
+
 qemu_args() {
+    if [ "$ARCH" = aarch64 ]; then
+        if [ "$ACCEL" = kvm ]; then
+            printf '%s\n' -accel kvm -cpu host
+        else
+            printf '%s\n' -accel tcg -cpu max,pauth-impdef=on
+        fi
+        # QEMU's generic ARM board: GICv3 with its message translator, the
+        # SMMUv3 device memory guard, and the small virtual disk.
+        printf '%s\n' -machine virt,gic-version=3,iommu=smmuv3 -m 512M -smp "$CPUS" -no-reboot \
+            -display none -monitor none -bios "$(arm_firmware)" \
+            -drive "file=$(disk_image),if=none,id=disk0,format=raw" \
+            -device virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on \
+            -drive "file=$1,if=none,id=cd0,format=raw,readonly=on" \
+            -device virtio-scsi-pci,id=scsi0 -device scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0
+        return
+    fi
     if [ "$ACCEL" = kvm ]; then
         # The host CPU as it is: TSC-deadline timer, x2APIC, invariant TSC.
         printf '%s\n' -accel kvm -cpu host,+invtsc
@@ -97,11 +153,8 @@ qemu_args() {
     fi
     # The device memory guard (IOMMU) and the small virtual disk the boot
     # checks use (milestone 4).
-    local disk="$DIR/disk.img"
-    if [ ! -f "$disk" ]; then
-        mkdir -p "$DIR"
-        head -c 1048576 /dev/zero >"$disk"
-    fi
+    local disk
+    disk=$(disk_image)
     printf '%s\n' -machine q35 -m 256M -smp "$CPUS" -no-reboot \
         -display none -monitor none \
         -device intel-iommu,aw-bits=48,intremap=off \
@@ -116,7 +169,7 @@ run() {
     say "after 'alaya: boot ok' the kernel just waits; quit with Ctrl+A, then lowercase x"
     say "(or Ctrl+A, then c, then type quit). 'alaya.sh test' exits on its own."
     mapfile -t args < <(qemu_args "$image")
-    exec qemu-system-x86_64 "${args[@]}" -serial mon:stdio
+    exec "$QEMU" "${args[@]}" -serial mon:stdio
 }
 
 test_boot() {
@@ -124,7 +177,7 @@ test_boot() {
     log=$(mktemp "${TMPDIR:-/tmp}/alaya-serial.XXXXXX")
     mapfile -t args < <(qemu_args "$image")
     say "boot test on $CPUS core(s) with $(accel_name), timeout ${TIMEOUT}s"
-    qemu-system-x86_64 "${args[@]}" -serial "file:$log" </dev/null &
+    "$QEMU" "${args[@]}" -serial "file:$log" </dev/null &
     local pid=$! result=timeout start=$SECONDS
     while [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
         if grep -q "$OK_MARKER" "$log"; then result=pass; break; fi
@@ -154,8 +207,8 @@ image_arg() {
     if [ -n "${1:-}" ]; then
         [ -f "$1" ] || die "no such image: $1"
         echo "$1"
-    elif [ -f "$DIR/alaya-x86_64.iso" ]; then
-        echo "$DIR/alaya-x86_64.iso"
+    elif [ -f "$DIR/$IMAGE_NAME" ]; then
+        echo "$DIR/$IMAGE_NAME"
     else
         fetch
     fi
@@ -169,6 +222,6 @@ case "$cmd" in
     run) run "$(image_arg "${1:-}")" ;;
     test) test_boot "$(image_arg "${1:-}")" ;;
     fetch) fetch >/dev/null ;;
-    -h | --help | help) sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//' ;;
+    -h | --help | help) sed -n '4,19p' "$0" | sed 's/^# \{0,1\}//' ;;
     *) die "unknown command $cmd (use run, test or fetch)" ;;
 esac

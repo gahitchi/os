@@ -91,6 +91,8 @@ pub fn gib_pages() -> bool {
 /// The index of the first kernel entry in a top-level table: the upper
 /// half belongs to the kernel and is shared by every memory map.
 pub const KERNEL_HALF: usize = 256;
+/// Every memory map carries the kernel's half (one CR3 for both).
+pub const SHARES_KERNEL_HALF: bool = true;
 
 /// Turn on the paging features the kernel relies on and load the kernel's
 /// own tables, `root`. Every core, once.

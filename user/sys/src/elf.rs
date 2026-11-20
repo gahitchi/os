@@ -37,7 +37,7 @@ impl<'a> Elf<'a> {
             phentsize: u16_at(bytes, 54)? as usize,
             phnum: u16_at(bytes, 56)? as usize,
         };
-        if u16_at(bytes, 18)? != 62 || e.phentsize < 56 {
+        if u16_at(bytes, 18)? != crate::arch::ELF_MACHINE || e.phentsize < 56 {
             return None;
         }
         // Every segment must be sane before anything is loaded.
