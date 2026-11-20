@@ -183,5 +183,7 @@ Numbers from the reference laptop go here once measured.
 ## Not yet
 
 Interrupts delivered to drivers as notifications, timeout messages for
-servers whose lent time runs out, the placement service using Intel's
-hardware feedback, and device memory come in milestone 4.
+servers whose lent time runs out, a small helper that
+reads Intel's hardware feedback and sets each budget's core type (placement
+itself stays in the kernel, decision 54), and device memory come in
+milestone 4.

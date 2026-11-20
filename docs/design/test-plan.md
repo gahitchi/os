@@ -16,7 +16,7 @@
 - A fuzzer sends random and malformed calls on random capabilities to the kernel, around the clock in CI. Gate: no kernel crash, no hang, no memory leak.
 - Each server (file, memory, network, compositor) is fuzzed through its message protocol the same way.
 - The POSIX layer is checked with existing POSIX test suites, and with Wine's own tests.
-- The ported developer tools (decision 52) run Node's and git's own test suites, and CI runs a scripted Claude Code session under QEMU (start, read a file, run a shell command, edit a file, run git).
+- The ported developer tools (decision 52) run git's own test suite, the Linux world (decision 66) runs the official Claude Code program unchanged, and CI runs a scripted Claude Code session under QEMU (start, read a file, run a shell command, edit a file, run git).
 
 ## 3. Fault injection: things breaking
 

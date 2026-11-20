@@ -18,10 +18,10 @@ Started 19 November 2026. We take one principle at a time. For each one: what it
 | | Windows | macOS | Linux | Alaya |
 | --- | --- | --- | --- | --- |
 | What an app can see | Almost all your files | Most files, some folders ask first | All your files | Only what you hand it |
-| Undo past a crash or bad update | System Restore, unreliable | Time Machine, needs a drive, hourly | Depends on setup | Built in, every few seconds, per app |
+| Undo past a crash or bad update | System Restore, unreliable | Time Machine (local hourly snapshots, a drive for more); apps keep versions | Depends on setup | Built in, every few seconds, per app |
 | Try an app, then remove it fully | Leftovers stay | Leftovers stay | Leftovers stay | Throw the side branch away, nothing stays |
 | Who made each change | Unknown | Unknown | Unknown | Every change is signed by the app that made it |
-| A driver crashes | Often a blue screen | Often a restart | Often a freeze | The driver restarts, you keep working |
+| A driver crashes | The graphics driver recovers; other drivers often cause a blue screen | Often a restart | Often a freeze | Every driver restarts, you keep working |
 
 ### Old habits: what we drop and what we keep
 
@@ -112,7 +112,7 @@ Parts can fail. The computer keeps going, and your work is safe. This principle 
 
 | | Windows | macOS | Linux | Alaya |
 | --- | --- | --- | --- | --- |
-| Driver crash | Often a blue screen | Often a restart | Often a freeze | Driver restarts, you keep working |
+| Driver crash | Graphics recovers; others often a blue screen | Often a restart | Often a freeze | Every driver restarts, you keep working |
 | Power cut | Can corrupt files | Rarely corrupts | Depends on setup | Files are whole or as before, always |
 | Failed update | Can stop the PC from starting | Rare, hard to undo | Can stop the PC from starting | Goes back by itself |
 | Forced restarts for updates | Yes | Sometimes nags | No | Never |
@@ -151,7 +151,7 @@ Every file keeps its history: undo, try things on the side, and truly forget.
 
 | | Windows | macOS | Linux | Alaya |
 | --- | --- | --- | --- | --- |
-| Past versions | File History, off by default, needs a drive | Time Machine, hourly, needs a drive | Only with special setup | Built in, every few seconds |
+| Past versions | File History, off by default, needs a drive | Auto-save and versions in many apps (since 2011); Time Machine hourly | Only with special setup | Built in for every file, every few seconds |
 | Who changed it | Unknown | Unknown | Unknown | Signed by the app |
 | Undo one app's changes | No | No | No | Yes |
 | Truly delete a file | Copies may stay in backups | Copies stay in Time Machine | Copies may stay | Gone everywhere, including backups |
