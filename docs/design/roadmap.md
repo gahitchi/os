@@ -226,7 +226,7 @@ Asking your computer; live handoff for every app; your machines as one computer;
 - Protected outcomes (jobs with rules): core in 7, Claude Code's rules screen in 8b. It replaces the parked AI helper contract.
 - The Experience Guardian grows out of milestone 4's update trial: 8, with frame times in 9 and sound in 10.
 - The outbox, honest version (Alaya apps only), in 10; it leaves the parked list.
-- Continuity (`continuity.md`): a clickable mock-up to test the desktop ideas alongside milestone 5 (if you choose it); loose groups and the first return point in 6; tasks move from 7 to a new milestone 7a with resume, "since you left", the decision inbox, Finish and copy or reference handoff; app notifications and live handoff in 8.
+- Continuity (`continuity.md`): a clickable mock-up to test the desktop ideas alongside milestone 5 (decision 86); loose groups and the first return point in 6; tasks move from 7 to a new milestone 7a with resume, "since you left", the decision inbox, Finish and copy or reference handoff; app notifications and live handoff in 8.
 - Nothing in milestones 0 to 4 or in the kernel changes.
 
 ## What changed from roadmap version 1

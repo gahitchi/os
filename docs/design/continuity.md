@@ -1,6 +1,6 @@
 # Alaya: continuity (everyday work, from start to finish)
 
-Draft, 20 November 2026. Written from your second review, "Alaya OS: Rethinking everyday computing", and checked against every decision so far (up to 84), the principles, `contradictions.md` and `commitments.md`. Waiting for your approval and two choices (section 8).
+Draft, 20 November 2026. Written from your second review, "Alaya OS: Rethinking everyday computing", and checked against every decision so far (up to 84), the principles, `contradictions.md` and `commitments.md`. Both choices are answered (decisions 85 and 86); the roadmap changes wait for your approval.
 
 The short version: **Alaya keeps normal windows, files and folders, and changes what happens around them.** You can just use the computer. When some work starts to matter, you can group it. When you come back days later, Alaya brings you to where you were and tells you what changed while you were away. When the work is done, one action tidies it up without throwing anything away.
 
@@ -137,13 +137,13 @@ Rules: a linked source that is deleted or forgotten leaves a frozen last picture
 ## 8. Your choices
 
 1. **Should a group of windows and files change what apps can see?** Decided (85): **no.** Loose groups are only labels. Only a protected task you confirm sets a boundary. This changes decision 69.
-2. **How do we test these desktop ideas before building them into Alaya?** Recommended: **a clickable mock-up first**, in the browser, with a scripted "three days in the life" to click through. Then the real thing in Alaya. The alternative is a real prototype running on your laptop's Linux for a few weeks. It is more realistic, but it is weeks of work on something we then throw away.
+2. **How do we test these desktop ideas before building them into Alaya?** Decided (86): **a clickable mock-up first**, in the browser, with a scripted "three days in the life" to click through. Then the real thing in Alaya. The alternative is a real prototype running on your laptop's Linux for a few weeks. It is more realistic, but it is weeks of work on something we then throw away.
 
 ## 9. Where it goes in the roadmap
 
 | Milestone | Change |
 | --- | --- |
-| Now, alongside milestone 5 | The mock-up (if chosen), with you clicking through it and, if you like, a few friends |
+| Now, alongside milestone 5 | The mock-up (decision 86), with you clicking through it and, if you like, a few friends |
 | 6. A simple desktop | Windows can be dragged into a loose group. The first return point: the text editor reopens where you were |
 | 7. The remembering desktop | Unchanged, plus living validity in full and jobs with rules (`commitments.md`). Tasks move out to 7a, because 7 was getting too big |
 | **7a. Continuity (new)** | Loose groups and protected tasks, resume with "since you left", the decision inbox, Finish, and copy and reference handoff |
