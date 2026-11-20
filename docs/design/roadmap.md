@@ -2,7 +2,7 @@
 
 Approved 20 November 2026. Replaces version 1 (see the repository history).
 
-It includes every decision up to 75 (71 to 75 are your answers to the five contradiction cards) and the rules in `contradictions.md`.
+It includes every decision up to 77 (71 to 75 are your answers to the five contradiction cards) and the rules in `contradictions.md`.
 
 ## How to read it
 
@@ -47,6 +47,7 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 - Frame deadlines carried with calls, inside the existing time budgets (decision 70, rule B7).
 - A small helper that reads Intel's hints about performance and efficiency cores and sets each budget's core type (decision 54).
 - Timeout messages for servers whose lent time runs out (decision 55 follow-up).
+- First, the foundation additions (decision 77): the processor's safety switches, tagged memory maps for faster switching, a version label on every kernel object for swapping the kernel later, protection against "guessing" leaks, and the IOMMU turned on in the virtual machine. The big kernel lock is measured under load.
 
 **How it's tested on your laptop.** `cargo xtask test --cpus 8` runs the boot checks plus: kill every driver at random for 10 minutes (no error ever reaches the test app); update a running server 1,000 times in a row; the fuzzer now also attacks the helpers. TLA+ model of the crash-and-resend rule.
 
@@ -165,7 +166,7 @@ Linux stays in charge of your laptop. Alaya keeps running inside KVM, and Linux 
 
 **What you'll see.** A report: every stress gate, every proof, every crash test, all green, plus a 72-hour non-stop run inside KVM with real devices.
 
-**What it includes.** The full stress suite in one command, the 72-hour soak, a final review of security and data safety, and a bootable USB stick image that never writes to the laptop's own disk.
+**What it includes.** Alaya's own start-up program (decision 76): it reads the store, counts failed starts and falls back by itself, and records every step in the security chip (TPM). The full stress suite in one command, the 72-hour soak, a final review of security and data safety, and a bootable USB stick image that never writes to the laptop's own disk.
 
 **How it's tested on your laptop.** The soak runs while you use Linux normally. Only when everything passes, and only if you say so, do we move to phase E's real boot.
 
