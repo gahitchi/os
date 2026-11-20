@@ -93,6 +93,8 @@ pub struct Info {
     pub rights: u8,
     pub size_bits: u8,
     pub flags: u8,
+    /// The object's format label (`abi::format`; 0 for kinds without one).
+    pub format: u8,
     pub object: u64,
     pub badge_or_free: u64,
     pub clean: u64,
@@ -152,6 +154,7 @@ pub fn inspect(at: At) -> Result<Info, Error> {
         rights: (r[0] >> 8) as u8,
         size_bits: (r[0] >> 16) as u8,
         flags: (r[0] >> 24) as u8,
+        format: (r[0] >> 32) as u8,
         object: r[1],
         badge_or_free: r[2],
         clean: r[3],
@@ -414,6 +417,11 @@ pub fn this_core() -> u64 {
 /// between cores, thread switches.
 pub fn all_counters() -> [u64; 4] {
     syscall(abi::call::DEBUG, abi::debug::COUNTERS, 0, [0; 6]).1
+}
+
+/// Big kernel lock use since boot: taken, waited, ticks waiting, ticks held.
+pub fn lock_stats() -> [u64; 4] {
+    syscall(abi::call::DEBUG, abi::debug::LOCK_STATS, 0, [0; 6]).1
 }
 
 /// The time-stamp counter.

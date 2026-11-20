@@ -16,6 +16,7 @@
 //! moves back onto the `syscall` instruction.
 
 use core::arch::global_asm;
+use core::sync::atomic::Ordering;
 
 use alaya_abi::{Error, Info, Kind, call, debug, rights};
 use alaya_cap::Memory;
@@ -85,6 +86,10 @@ alaya_syscall_entry:
     mov rcx, [rsp + 16]
     mov r11, [rsp + 32]
     mov rsp, [rsp + 40]
+    cmp byte ptr [rip + alaya_verw_on_exit], 0
+    je 3f
+    verw word ptr [rip + alaya_verw_selector]
+3:
     swapgs
     sysretq
 
@@ -106,6 +111,10 @@ alaya_user_return:
     pop rbx
     pop rax
     add rsp, 16
+    cmp byte ptr [rip + alaya_verw_on_exit], 0
+    je 4f
+    verw word ptr [rip + alaya_verw_selector]
+4:
     swapgs
     iretq
     "#,
@@ -397,6 +406,17 @@ fn debug_call(
         }
         debug::COUNTERS => [sys.restarts, revoked, sys.migrations, sys.switches],
         debug::CORE => [u64::from(percpu::index()), 0, 0, 0],
+        debug::LOCK_STATS => {
+            let mut r = [0u64; 4];
+            for i in 0..percpu::count() {
+                let c = percpu::get(i);
+                r[0] += c.lock_takes.load(Ordering::Relaxed);
+                r[1] += c.lock_waits.load(Ordering::Relaxed);
+                r[2] += c.lock_wait_ticks.load(Ordering::Relaxed);
+                r[3] += c.lock_held_ticks.load(Ordering::Relaxed);
+            }
+            r
+        }
         _ => return Err(Error::NoSuchCall),
     };
     Ok(Outcome::Done(r))

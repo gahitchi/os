@@ -83,6 +83,10 @@ jobs:
           cargo xtask test --accel tcg --cpus 2 --fault stack
           cargo xtask test --accel tcg --cpus 2 --fault invalid-opcode
           cargo xtask test --accel kvm --cpus 4 --fault other-core-page
+          cargo xtask test --accel tcg --cpus 2 --fault smap
+          cargo xtask test --accel tcg --cpus 2 --fault smep
+          cargo xtask test --accel kvm --cpus 2 --fault smap
+          cargo xtask test --accel kvm --cpus 2 --fault smep
 
       # The kernel fuzzer: threads on every core make random system calls
       # on a sandbox; the kernel must not crash and must still work after.

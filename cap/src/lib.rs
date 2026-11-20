@@ -200,6 +200,11 @@ pub trait Memory {
     fn on_delete(&mut self, _g: &mut Globals, _at: SlotRef, _cap: &Cap, _last: bool) -> bool {
         true
     }
+
+    /// Called once for every object retype makes, after its memory was
+    /// zeroed (and, for a table, its header written). The kernel stamps the
+    /// object's format label there (`alaya_abi::format`).
+    fn on_create(&mut self, _kind: Kind, _object: u64) {}
 }
 
 /// Decides when an interruptible operation must stop. `step` is called
@@ -412,6 +417,7 @@ pub fn init_table<M: Memory>(m: &mut M, table: u64, bits: u8) {
         cap: Cap {
             kind: HEADER,
             size_bits: bits,
+            _reserved: alaya_abi::format::TABLE as u32,
             ..Cap::EMPTY
         },
         ..Slot::EMPTY
@@ -735,6 +741,7 @@ pub fn retype<M: Memory, B: Budget>(
         if kind == Kind::Table {
             init_table(m, object, cap_bits);
         }
+        m.on_create(kind, object);
         let at = dst.table + ((dst.index + i) << SLOT_BITS);
         insert_child(m, ut, at, Cap::new(kind, object, cap_bits));
     }

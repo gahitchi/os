@@ -31,8 +31,64 @@ use crate::obj::{self, SPACE_META, internal, space_meta};
 use crate::syscall::USER_END;
 use crate::{mm, percpu};
 
-/// Most address spaces at once.
-pub const MAX_SPACES: usize = 4096;
+/// Most address spaces at once. An address space's id is also its tag in
+/// the TLB (PCID), which has 12 bits, and tag 0 is the kernel's.
+pub const MAX_SPACES: usize = 4095;
+
+/// Tells `mov cr3` to keep the TLB entries of the new tag.
+const CR3_NOFLUSH: u64 = 1 << 63;
+
+/// Per core: the tags whose TLB entries may be stale there, because a
+/// mapping changed while that core had another address space loaded. The
+/// core flushes the tag the next time it loads it.
+pub struct Stale([[u64; MAX_SPACES.div_ceil(64) + 1]; crate::percpu::MAX_CPUS]);
+
+impl Stale {
+    pub const EMPTY: Stale = Stale([[0; MAX_SPACES.div_ceil(64) + 1]; crate::percpu::MAX_CPUS]);
+
+    fn mark_all(&mut self, id: u64) {
+        for core in 0..percpu::count() as usize {
+            self.0[core][id as usize / 64] |= 1 << (id % 64);
+        }
+    }
+
+    fn mark(&mut self, core: usize, id: u64) {
+        self.0[core][id as usize / 64] |= 1 << (id % 64);
+    }
+
+    /// Take the mark of `id` on `core`: true if it must be flushed.
+    fn take(&mut self, core: usize, id: u64) -> bool {
+        let w = &mut self.0[core][id as usize / 64];
+        let was = *w & 1 << (id % 64) != 0;
+        *w &= !(1 << (id % 64));
+        was
+    }
+}
+
+/// Load `space` on this core (`core`), with its tag when tagged memory
+/// maps are on, keeping its TLB entries unless they may be stale.
+pub fn load(k: &mut crate::sched::Sys, core: usize, space: u64) {
+    let mut cr3 = space;
+    if crate::arch::protect::pcid() {
+        let id = space_meta(space).id;
+        cr3 |= id;
+        if !k.stale.take(core, id) {
+            cr3 |= CR3_NOFLUSH;
+        }
+    }
+    // SAFETY: the address space maps the kernel's half too.
+    unsafe { cpu::write_cr3(cr3) };
+}
+
+/// Load the kernel's own tables (tag 0) on this core.
+pub fn load_kernel() {
+    let mut cr3 = mm::kernel_root();
+    if crate::arch::protect::pcid() {
+        cr3 |= CR3_NOFLUSH;
+    }
+    // SAFETY: the kernel's own tables.
+    unsafe { cpu::write_cr3(cr3) };
+}
 
 #[derive(Clone, Copy)]
 pub struct SpaceEntry {
@@ -97,6 +153,9 @@ pub fn assign(m: &mut Phys, space: u64, pool: SlotRef) -> Result<(), Error> {
             .ok_or(Error::NoMemory)?;
         m.sys.spaces[id].space = space;
         meta.id = id as u64 + 1;
+        // An earlier address space with this id may have left entries in
+        // some core's TLB under the same tag.
+        m.sys.stale.mark_all(meta.id);
         // The kernel's half of every address space is the kernel's own.
         let kernel = table(mm::kernel_root());
         table(space)[256..].copy_from_slice(&kernel[256..]);
@@ -251,8 +310,7 @@ pub fn finalise(m: &mut Phys, g: &mut cap::Globals, space: u64) -> bool {
     for c in 0..percpu::count() as usize {
         if m.sys.cores[c].space == space {
             if c == me && m.sys.cores[c].current == 0 {
-                // SAFETY: the kernel's own tables.
-                unsafe { cpu::write_cr3(mm::kernel_root()) };
+                load_kernel();
                 m.sys.cores[c].space = 0;
             } else if c != me {
                 crate::sched::kick(c);
@@ -275,11 +333,16 @@ pub fn finalise(m: &mut Phys, g: &mut cap::Globals, space: u64) -> bool {
 }
 
 /// Make every core with `space` loaded forget its old translations, and
-/// wait until they have.
-fn flush(k: &crate::sched::Sys, space: u64) {
+/// wait until they have. Cores that hold the space's tag but have another
+/// space loaded flush it when they next load it.
+fn flush(k: &mut crate::sched::Sys, space: u64) {
     let me = percpu::index() as usize;
+    let id = space_meta(space).id;
     for c in 0..percpu::count() as usize {
         if k.cores[c].space != space {
+            if id != 0 {
+                k.stale.mark(c, id);
+            }
             continue;
         }
         if c == me {

@@ -87,6 +87,8 @@ pub fn lookup<M: Memory>(m: &M, t: u64, handle: u64) -> Result<SlotRef, Error> {
         return Err(Error::InvalidHandle);
     }
     let at = cap::table_slot(table.object, table.size_bits, handle)?;
+    // The handle is the program's choice: no speculation past the check.
+    crate::arch::protect::barrier();
     if !m.read(at).cap.is_live() {
         return Err(Error::InvalidHandle);
     }

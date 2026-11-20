@@ -48,6 +48,10 @@ impl Memory for Phys<'_> {
     fn on_delete(&mut self, g: &mut Globals, at: SlotRef, cap: &Cap, last: bool) -> bool {
         objects::on_delete(self, g, at, cap, last)
     }
+
+    fn on_create(&mut self, kind: Kind, object: u64) {
+        crate::obj::stamp(kind, object);
+    }
 }
 
 /// How long one kernel entry may run an interruptible operation before it
@@ -120,11 +124,13 @@ pub fn invoke(
                 return Err(Error::InvalidHandle);
             }
             let fl = c.flags & flags::REVOKING | if children { flags::HAS_CHILDREN } else { 0 };
+            let format = c.kind().map_or(0, |k| crate::obj::format_of(k, c.object));
             done([
                 u64::from(c.kind)
                     | u64::from(c.rights) << 8
                     | u64::from(c.size_bits) << 16
-                    | u64::from(fl) << 24,
+                    | u64::from(fl) << 24
+                    | u64::from(format) << 32,
                 c.object,
                 c.a,
                 c.b,

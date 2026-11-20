@@ -55,9 +55,18 @@ const NAMES: [(&str, &str); 32] = [
 /// Called from the assembly stubs in `idt.rs` with interrupts off.
 pub extern "C" fn dispatch(frame: &mut TrapFrame) {
     let vector = frame.vector as u8;
+    super::protect::on_interrupt_entry();
     crate::vspace::poll_flush();
     if frame.cs & 3 == 3 && !matches!(vector, 2 | 8 | 18) {
         return from_user(frame);
+    }
+    if vector == 13 {
+        // A safe MSR access to an MSR this CPU does not have.
+        if let Some(rip) = super::protect::fixup(frame.rip) {
+            frame.rip = rip;
+            frame.rax = 1;
+            return;
+        }
     }
     match vector {
         2 => nmi(frame),

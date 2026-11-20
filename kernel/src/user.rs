@@ -85,6 +85,13 @@ pub fn start() -> ! {
 
     let mut k = sync::BKL.lock();
     let mut m = Phys::new(&mut k.sys);
+    for (kind, object) in [
+        (Kind::Thread, thread),
+        (Kind::SchedContext, sc_obj),
+        (Kind::AddressSpace, space_obj),
+    ] {
+        obj::stamp(kind, object);
+    }
     let slot = |h: u64| table + (h << SLOT_BITS);
     cap::init_table(&mut m, table, ROOT_BITS);
     cap::insert_root(&mut m, slot(1), Cap::new(Kind::Table, table, ROOT_BITS));
@@ -150,6 +157,7 @@ pub fn start() -> ! {
     info.space = 4;
     info.sched_control = 5;
     info.cores = u64::from(percpu::count());
+    info.protections = crate::arch::protect::enabled();
     info.tsc_hz = time::tsc_hz();
     info.image_start = image_start;
     info.image_end = image_end;

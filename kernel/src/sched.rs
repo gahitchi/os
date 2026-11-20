@@ -29,7 +29,7 @@ use crate::arch::cpu::{self, cpuid, msr, rdtsc};
 use crate::arch::trap::RESCHED_VECTOR;
 use crate::obj::{self, FPU_OFFSET, SLOT_SPACE, Sc, Tcb, scflag, state, tflag};
 pub use crate::sync::Sys;
-use crate::{fpu, mm, percpu, time};
+use crate::{fpu, percpu, time};
 
 pub const PRIORITIES: usize = 256;
 /// Time slice between threads of the same priority.
@@ -46,6 +46,8 @@ pub struct CoreState {
     pub current: u64,
     /// The address space loaded (0: the kernel's own).
     pub space: u64,
+    /// The last program address space loaded (stays set while idle).
+    pub last_space: u64,
     /// The scheduling context being charged, since `sc_start`; it runs out
     /// at `sc_end`.
     pub sc: u64,
@@ -67,6 +69,7 @@ impl CoreState {
         queued: 0,
         current: 0,
         space: 0,
+        last_space: 0,
         sc: 0,
         sc_start: 0,
         sc_end: 0,
@@ -511,13 +514,16 @@ pub fn switch_to(k: &mut Sys, core: usize, next: u64) {
             }
             let space = n.slots[SLOT_SPACE].cap.object;
             if space != k.cores[core].space {
-                // SAFETY: the address space maps the kernel's half too.
-                unsafe { cpu::write_cr3(space) };
+                crate::vspace::load(k, core, space);
                 k.cores[core].space = space;
+                if space != k.cores[core].last_space {
+                    // Another program's code runs here next.
+                    crate::arch::protect::on_space_switch();
+                    k.cores[core].last_space = space;
+                }
             }
         } else if k.cores[core].space != 0 {
-            // SAFETY: the kernel's own tables.
-            unsafe { cpu::write_cr3(mm::kernel_root()) };
+            crate::vspace::load_kernel();
             k.cores[core].space = 0;
         }
         k.cores[core].current = next;

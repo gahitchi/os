@@ -27,6 +27,7 @@ mod arch;
 mod caps;
 mod fpu;
 mod ipc;
+mod kstate;
 mod limine;
 mod mm;
 mod obj;
@@ -170,6 +171,8 @@ extern "C" fn bsp_main() -> ! {
         },
     );
     kprintln!("smp: {cores} of {cores} cores online");
+    report_protections();
+    kstate::report();
 
     smp::GO.store(true, Ordering::Release);
     selftest::run_on_this_core();
@@ -218,12 +221,40 @@ extern "C" fn bsp_main() -> ! {
     user::start()
 }
 
+fn report_protections() {
+    use alaya_abi::protect as p;
+    let on = arch::protect::enabled();
+    let has = |bit| yes(on & bit != 0);
+    kprintln!(
+        "protect: SMEP {}, SMAP {}, UMIP {}, tagged memory maps (PCID) {}",
+        has(p::SMEP),
+        has(p::SMAP),
+        has(p::UMIP),
+        has(p::PCID)
+    );
+    kprintln!(
+        "protect: speculation guards: enhanced IBRS {}, IBPB on program switch {}, return-stack refill yes, buffer clearing (MDS) {}, bounds-check barriers yes",
+        has(p::EIBRS),
+        has(p::IBPB),
+        if on & p::VERW != 0 {
+            "yes"
+        } else {
+            "not needed or not offered"
+        }
+    );
+    if on & p::NO_MELTDOWN == 0 {
+        kprintln!(
+            "protect: this CPU does not say it is safe from Meltdown; kernel page-table isolation is not built yet"
+        );
+    }
+}
+
 fn yes(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
 }
 
 const NO_CPU: u32 = u32::MAX;
-static PANIC_CPU: AtomicU32 = AtomicU32::new(NO_CPU);
+pub(crate) static PANIC_CPU: AtomicU32 = AtomicU32::new(NO_CPU);
 
 /// True once any core has started to panic.
 pub fn panicking() -> bool {

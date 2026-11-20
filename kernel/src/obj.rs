@@ -8,7 +8,7 @@
 //! their physical address and only touched under the big kernel lock.
 //! Links between objects are physical addresses, 0 for none.
 
-use alaya_abi::{SCHED_BITS, SMALL_OBJECT_BITS, SPACE_BITS, THREAD_BITS};
+use alaya_abi::{Kind, SCHED_BITS, SMALL_OBJECT_BITS, SPACE_BITS, THREAD_BITS};
 use alaya_cap::Slot;
 use alaya_sched::Budget;
 
@@ -24,6 +24,66 @@ pub fn get<T>(phys: u64) -> &'static mut T {
     debug_assert!(phys != 0, "null object");
     // SAFETY: see above; the direct map covers all RAM.
     unsafe { &mut *((phys + crate::limine::hhdm_offset().unwrap()) as *mut T) }
+}
+
+/// The format label every kernel object carries (decision 77), in its
+/// last 8 bytes before any variable part: at [`header_offset`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Header {
+    /// [`alaya_abi::format::MAGIC`].
+    pub magic: u16,
+    /// [`Kind`] as a byte.
+    pub kind: u8,
+    /// [`alaya_abi::format`] number of its layout.
+    pub format: u8,
+    pub _reserved: u32,
+}
+
+/// Where an object's header is, from its start (None: the kind has none;
+/// a table keeps its label in its header slot).
+pub const fn header_offset(kind: Kind) -> Option<u64> {
+    match kind {
+        Kind::Thread => Some(FPU_OFFSET - 8),
+        Kind::SchedContext => Some((1 << SCHED_BITS) - 8),
+        Kind::Endpoint | Kind::Notification | Kind::Reply => Some((1 << SMALL_OBJECT_BITS) - 8),
+        Kind::AddressSpace => Some((1 << SPACE_BITS) - 8),
+        _ => None,
+    }
+}
+
+/// Stamp the header of a new object.
+pub fn stamp(kind: Kind, object: u64) {
+    if let Some(off) = header_offset(kind) {
+        *get::<Header>(object + off) = Header {
+            magic: alaya_abi::format::MAGIC,
+            kind: kind as u8,
+            format: alaya_abi::format::of(kind),
+            _reserved: 0,
+        };
+    }
+}
+
+/// The format label an object carries (0: none, or not stamped).
+pub fn format_of(kind: Kind, object: u64) -> u8 {
+    match kind {
+        Kind::Table => {
+            // The header slot's `_reserved` (see `alaya_cap::init_table`).
+            let h = get::<alaya_cap::Slot>(object);
+            h.cap._reserved as u8
+        }
+        _ => match header_offset(kind) {
+            Some(off) => {
+                let h = *get::<Header>(object + off);
+                if h.magic == alaya_abi::format::MAGIC && h.kind == kind as u8 {
+                    h.format
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        },
+    }
 }
 
 /// A thread's registers as user mode sees them.
@@ -144,7 +204,7 @@ pub struct Tcb {
     pub slice_end: u64,
 }
 
-const _: () = assert!(core::mem::size_of::<Tcb>() as u64 <= FPU_OFFSET);
+const _: () = assert!(core::mem::size_of::<Tcb>() as u64 <= FPU_OFFSET - 8);
 
 /// Scheduling-context flags.
 pub mod scflag {
@@ -176,7 +236,7 @@ pub struct Sc {
     pub _pad2: u32,
 }
 
-const _: () = assert!(core::mem::size_of::<Sc>() <= 1 << SCHED_BITS);
+const _: () = assert!(core::mem::size_of::<Sc>() <= (1 << SCHED_BITS) - 8);
 
 /// A queue of threads (endpoint or notification).
 #[repr(C)]
@@ -222,9 +282,9 @@ pub struct Reply {
     pub below: u64,
 }
 
-const _: () = assert!(core::mem::size_of::<Endpoint>() <= 1 << SMALL_OBJECT_BITS);
-const _: () = assert!(core::mem::size_of::<Notification>() <= 1 << SMALL_OBJECT_BITS);
-const _: () = assert!(core::mem::size_of::<Reply>() <= 1 << SMALL_OBJECT_BITS);
+const _: () = assert!(core::mem::size_of::<Endpoint>() <= (1 << SMALL_OBJECT_BITS) - 8);
+const _: () = assert!(core::mem::size_of::<Notification>() <= (1 << SMALL_OBJECT_BITS) - 8);
+const _: () = assert!(core::mem::size_of::<Reply>() <= (1 << SMALL_OBJECT_BITS) - 8);
 
 /// An address space's bookkeeping, in its second page. Its first page is
 /// the top-level page table.
@@ -239,7 +299,8 @@ pub struct SpaceMeta {
 }
 
 pub const SPACE_META: u64 = 4096;
-const _: () = assert!(SPACE_META + core::mem::size_of::<SpaceMeta>() as u64 <= 1 << SPACE_BITS);
+const _: () =
+    assert!(SPACE_META + core::mem::size_of::<SpaceMeta>() as u64 <= (1 << SPACE_BITS) - 8);
 
 pub fn space_meta(space: u64) -> &'static mut SpaceMeta {
     get(space + SPACE_META)

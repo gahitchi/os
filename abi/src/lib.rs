@@ -65,6 +65,9 @@ pub mod debug {
     pub const COUNTERS: u64 = 2;
     /// The core the caller runs on, in result 0.
     pub const CORE: u64 = 3;
+    /// Big kernel lock use, summed over all cores since boot: times taken,
+    /// times a core had to wait, TSC ticks spent waiting, and held.
+    pub const LOCK_STATS: u64 = 4;
     pub const MAX_PRINT: usize = 256;
 }
 
@@ -84,7 +87,8 @@ pub mod op {
     /// capability; for an untyped, also takes its memory back.
     pub const REVOKE: u64 = 5;
     /// Inspect: arg 0 = index. Results: kind | rights << 8 | size bits << 16
-    /// | flags << 24, object address, badge or untyped free offset, untyped
+    /// | flags << 24 | the object's format label ([`super::format`]) << 32,
+    /// object address, badge or untyped free offset, untyped
     /// clean offset.
     pub const INSPECT: u64 = 6;
 
@@ -385,9 +389,67 @@ pub struct BootInfo {
     pub core_types: [u8; MAX_CORES],
     pub untyped_count: u64,
     pub untyped: [BootUntyped; MAX_BOOT_UNTYPED],
+    /// The processor protections in use ([`protect`] bits).
+    pub protections: u64,
 }
 
 const _: () = assert!(core::mem::size_of::<BootInfo>() as u64 <= BOOT_INFO_BYTES);
+
+/// Processor protections the kernel turned on (decision 77), as reported
+/// in [`BootInfo::protections`].
+pub mod protect {
+    /// The kernel cannot run code in program memory.
+    pub const SMEP: u64 = 1 << 0;
+    /// The kernel cannot read or write program memory by accident.
+    pub const SMAP: u64 = 1 << 1;
+    /// Programs cannot read the kernel's descriptor tables (`sgdt`, `sidt`,
+    /// `sldt`, `smsw`, `str` fault).
+    pub const UMIP: u64 = 1 << 2;
+    /// Tagged memory maps: switching programs keeps both TLBs' entries.
+    pub const PCID: u64 = 1 << 3;
+    /// Enhanced IBRS: programs cannot steer the kernel's branch predictions.
+    pub const EIBRS: u64 = 1 << 4;
+    /// Branch predictions are dropped when a core changes program.
+    pub const IBPB: u64 = 1 << 5;
+    /// The CPU's buffers are cleared on the way back to user mode (MDS).
+    pub const VERW: u64 = 1 << 6;
+    /// The CPU is not affected by Meltdown, so the kernel's half of the
+    /// memory map can stay mapped while programs run.
+    pub const NO_MELTDOWN: u64 = 1 << 7;
+}
+
+/// Format labels (decision 77): every kernel object carries a small header
+/// naming its kind and the format of its layout, so a later kernel can
+/// recognise the objects of an older one and take them over without a
+/// restart. Bump an object's number whenever its layout changes.
+pub mod format {
+    /// The header's first two bytes.
+    pub const MAGIC: u16 = 0xa1a7;
+    pub const TABLE: u8 = 1;
+    pub const ENDPOINT: u8 = 1;
+    pub const NOTIFICATION: u8 = 1;
+    pub const THREAD: u8 = 1;
+    pub const SCHED_CONTEXT: u8 = 1;
+    pub const REPLY: u8 = 1;
+    pub const ADDRESS_SPACE: u8 = 1;
+    /// The format of the kernel-wide state as a whole (`kernel/src/kstate.rs`).
+    pub const KERNEL_STATE: u32 = 1;
+
+    /// An object's format label, by kind (0: the kind has no header).
+    pub const fn of(kind: super::Kind) -> u8 {
+        use super::Kind as K;
+        match kind {
+            K::Table => TABLE,
+            K::Endpoint => ENDPOINT,
+            K::Notification => NOTIFICATION,
+            K::Thread => THREAD,
+            K::SchedContext => SCHED_CONTEXT,
+            K::Reply => REPLY,
+            K::AddressSpace => ADDRESS_SPACE,
+            _ => 0,
+        }
+    }
+}
 
 /// Flags in [`BootInfo::flags`], from the kernel command line.
 pub mod boot_flags {

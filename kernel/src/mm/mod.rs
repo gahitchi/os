@@ -20,7 +20,7 @@ use crate::arch::cpu;
 use crate::{kprintln, limine};
 
 /// Physical address of the kernel's top-level page table.
-static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" {
     static __kernel_start: u8;

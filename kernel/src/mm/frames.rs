@@ -18,9 +18,9 @@ use crate::sync::SpinLock;
 /// quirks).
 const LOWEST: u64 = 1 << 20;
 
-static NEXT: SpinLock<u64> = SpinLock::new(LOWEST);
-static TAKEN: AtomicU64 = AtomicU64::new(0);
-static HHDM: AtomicU64 = AtomicU64::new(0);
+pub(crate) static NEXT: SpinLock<u64> = SpinLock::new(LOWEST);
+pub(crate) static TAKEN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static HHDM: AtomicU64 = AtomicU64::new(0);
 
 pub fn init(hhdm: u64) {
     HHDM.store(hhdm, Ordering::Relaxed);
@@ -61,7 +61,8 @@ pub fn alloc_contiguous(len: u64, align: u64) -> u64 {
     panic!("out of memory for kernel boot structures");
 }
 
-static FROZEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub(crate) static FROZEN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Stop boot allocations and return the usable memory nobody took, as
 /// page-aligned ranges, through `each(base, end)`. From now on all of it

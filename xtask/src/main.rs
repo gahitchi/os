@@ -33,7 +33,7 @@ const CORE_READY: (&str, &str) = ("core ", ": ready");
 
 /// Deliberate crashes the kernel can be asked for (`test-fault=` on its
 /// command line), and what the fault report must say for each.
-const FAULTS: [(&str, &[&str]); 4] = [
+const FAULTS: [(&str, &[&str]); 6] = [
     (
         "page",
         &["page fault (#PF", "writing to 0x00000000dead0000"],
@@ -41,6 +41,20 @@ const FAULTS: [(&str, &[&str]); 4] = [
     ("stack", &["double fault (#DF", "stack overflow"]),
     ("invalid-opcode", &["invalid opcode (#UD"]),
     ("other-core-page", &["page fault (#PF", "on cpu LAST"]),
+    (
+        "smap",
+        &[
+            "page fault (#PF",
+            "reading from 0x0000000000010000: protection violation, kernel mode",
+        ],
+    ),
+    (
+        "smep",
+        &[
+            "page fault (#PF",
+            "executing at 0x0000000000010000: protection violation, kernel mode",
+        ],
+    ),
 ];
 
 const USAGE: &str = "\
@@ -59,7 +73,8 @@ options:
   --accel <a>       kvm, tcg or auto (default auto: KVM when /dev/kvm is usable)
   --memory <size>   guest memory, QEMU syntax (default 256M)
   --fault <kind>    test only: crash on purpose and check the fault report;
-                    kinds: page, stack, invalid-opcode, other-core-page
+                    kinds: page, stack, invalid-opcode, other-core-page,
+                    smap (kernel reads a user page), smep (runs one)
   --fuzz <secs>     test only: after the boot checks, run the kernel fuzzer
                     for this long (random calls from several cores)
   --timeout <secs>  give up after this long (test only, default 60, or
@@ -411,7 +426,10 @@ fn qemu(image: &Path, opts: &Options, serial: &str) -> Result<Command, String> {
         // invariant-TSC flag by default (it blocks live migration); show it.
         cmd.args(["-accel", "kvm", "-cpu", "host,+invtsc"]);
     } else {
-        cmd.args(["-accel", "tcg"]);
+        // The most complete emulated CPU: it has the safety switches
+        // (SMEP, SMAP, UMIP), tagged memory maps (PCID) and XSAVE, so their
+        // code runs under emulation too.
+        cmd.args(["-accel", "tcg", "-cpu", "max"]);
     }
     if opts.uefi {
         cmd.arg("-bios").arg(ovmf()?);
