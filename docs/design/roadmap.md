@@ -75,7 +75,7 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 **What it includes.**
 - Virtual display, keyboard and mouse drivers.
 - The compositor (draws the screen; each app draws into its own buffer), with frame deadlines from the screen's refresh (decision 70).
-- Floating windows on one screen, a basic keyboard layout.
+- Windows on one screen that float or tile (decision 87): snap to a half by dragging to an edge, or switch the screen to tiling; a basic keyboard layout.
 - The toolkit apps are built with: buttons, text, lists, with the accessibility tree and text in any language built in from the start (decision 67).
 - A login screen for separate people. It warns you if the login or key parts changed since your last login (decision 74).
 - A trusted way to type a PIN that no app can fake.

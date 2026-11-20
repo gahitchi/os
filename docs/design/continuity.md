@@ -2,7 +2,7 @@
 
 Draft, 20 November 2026. Written from your second review, "Alaya OS: Rethinking everyday computing", and checked against every decision so far (up to 84), the principles, `contradictions.md` and `commitments.md`. Both choices are answered (decisions 85 and 86); the roadmap changes wait for your approval.
 
-The short version: **Alaya keeps normal windows, files and folders, and changes what happens around them.** You can just use the computer. When some work starts to matter, you can group it. When you come back days later, Alaya brings you to where you were and tells you what changed while you were away. When the work is done, one action tidies it up without throwing anything away.
+The short version: **Alaya keeps normal windows (floating or tiled, decision 87), files and folders, and changes what happens around them.** You can just use the computer. When some work starts to matter, you can group it. When you come back days later, Alaya brings you to where you were and tells you what changed while you were away. When the work is done, one action tidies it up without throwing anything away.
 
 ---
 
