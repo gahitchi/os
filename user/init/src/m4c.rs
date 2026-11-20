@@ -3,7 +3,7 @@
 //! timeout messages (decision 55 follow-up) and the core-type helper
 //! (decision 54).
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use alaya_sys::abi::{BootInfo, TIMEOUT_LABEL, state};
 use alaya_sys::cores::{self, Cores, Work};
@@ -16,13 +16,25 @@ static ORDER: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static DONE: AtomicU64 = AtomicU64::new(0);
 /// A notification nobody signals: finished threads sleep on it.
 static PARK: AtomicU64 = AtomicU64::new(0);
-/// Set once every thread of a check has started, so the first one started
-/// cannot finish its work before the others exist.
-static GO: AtomicBool = AtomicBool::new(false);
+/// The threads of a check wait on this gate until all of them exist, so
+/// the first one started cannot finish its work before the others are
+/// there. Blocking, not spinning, so the core stays free meanwhile.
+static GATE: AtomicU64 = AtomicU64::new(0);
+static STARTED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static COUNT: AtomicU64 = AtomicU64::new(0);
 
 fn wait_for_go() {
-    while !GO.load(SeqCst) {
-        core::hint::spin_loop();
+    let _ = alaya_sys::wait(GATE.load(SeqCst));
+}
+
+/// Once every gated thread waits at the gate, let them all go.
+fn release() {
+    let n = COUNT.swap(0, SeqCst) as usize;
+    for t in &STARTED[..n] {
+        until_state(t.load(SeqCst), state::WAITING_SIGNAL);
+    }
+    for _ in 0..n {
+        alaya_sys::signal(GATE.load(SeqCst), 1).unwrap();
     }
 }
 
@@ -38,7 +50,7 @@ fn order(n: usize) -> [u64; 8] {
 }
 
 fn reset() {
-    GO.store(false, SeqCst);
+    COUNT.store(0, SeqCst);
     DONE.store(0, SeqCst);
     for o in &ORDER {
         o.store(0, SeqCst);
@@ -114,6 +126,10 @@ fn spawn(
     alaya_sys::sc_deadline(sc, deadline).unwrap();
     alaya_sys::sc_bind(sc, t).unwrap();
     alaya_sys::thread_start(t).unwrap();
+    if entry as *const () != spin_server as *const () {
+        let n = COUNT.fetch_add(1, SeqCst) as usize;
+        STARTED[n].store(t, SeqCst);
+    }
     (t, sc)
 }
 
@@ -130,6 +146,8 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     alaya_sys::retype(big, Kind::Untyped, 22, 1, k.at(k.ut)).unwrap();
     let park = k.make(Kind::Notification, 0);
     PARK.store(park, SeqCst);
+    let gate = k.make(Kind::Notification, 0);
+    GATE.store(gate, SeqCst);
     // Everything runs on one core, the last.
     let pin = info.cores;
     let now = alaya_sys::rdtsc;
@@ -182,7 +200,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         t0 + ms_to_tsc(1000),
         0,
     );
-    GO.store(true, SeqCst);
+    release();
     assert!(
         sleep_until(20_000, || DONE.load(SeqCst) == 4),
         "the workers did not finish"
@@ -243,7 +261,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         t0 + ms_to_tsc(100),
         0,
     );
-    GO.store(true, SeqCst);
+    release();
     assert!(
         sleep_until(20_000, || DONE.load(SeqCst) == 2),
         "the callers did not finish"
@@ -270,7 +288,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         t0 + ms_to_tsc(5),
         0,
     );
-    GO.store(true, SeqCst);
+    release();
     assert!(sleep_until(20_000, || DONE.load(SeqCst) == 1));
     let (misses, by, missed) = alaya_sys::sc_deadline(msc, 0).unwrap();
     let who = alaya_sys::inspect(k.at(mt)).unwrap().object;
@@ -314,7 +332,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         0,
         0,
     );
-    GO.store(true, SeqCst);
+    release();
     let m = alaya_sys::recv(fault, rep).unwrap();
     assert!(
         m.label() == TIMEOUT_LABEL,
