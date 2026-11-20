@@ -9,7 +9,11 @@
 //! - its own thread (slot 2), scheduling context (slot 3: a round-robin
 //!   one, any core), address space (slot 4, with 1 MiB of page-table
 //!   memory) and the scheduling control capability (slot 5);
-//! - one untyped capability per block of free memory, from slot 6 on;
+//! - the interrupt control (slot 6) and device control (slot 7)
+//!   capabilities, which make it the device manager;
+//! - one untyped capability per block of free memory, from slot 8 on;
+//! - the other programs of the boot image, mapped read only at
+//!   [`BOOT_MODULES_ADDRESS`] and listed in the boot information;
 //! - a read-only [`BootInfo`] at [`BOOT_INFO_ADDRESS`], whose address it
 //!   also gets in `rdi`.
 //!
@@ -18,9 +22,10 @@
 //! itself.
 
 use alaya_abi::{
-    BOOT_INFO_ADDRESS, BOOT_INFO_BYTES, BOOT_INFO_MAGIC, BootInfo, BootUntyped, INIT_STACK_BYTES,
-    INIT_STACK_TOP, Kind, MAX_BOOT_UNTYPED, MAX_CORES, MAX_PRIORITY, SLOT_BITS, SPACE_BITS,
-    THREAD_BITS, UNTYPED_MAX_BITS, UNTYPED_MIN_BITS, boot_flags,
+    BOOT_INFO_ADDRESS, BOOT_INFO_BYTES, BOOT_INFO_MAGIC, BOOT_MODULES_ADDRESS, BootInfo,
+    BootModule, BootUntyped, INIT_STACK_BYTES, INIT_STACK_TOP, Kind, MAX_BOOT_MODULES,
+    MAX_BOOT_UNTYPED, MAX_CORES, MAX_PRIORITY, SLOT_BITS, SPACE_BITS, THREAD_BITS,
+    UNTYPED_MAX_BITS, UNTYPED_MIN_BITS, boot_flags,
 };
 use alaya_cap::{self as cap, Cap, INTERNAL, Memory};
 
@@ -46,7 +51,7 @@ const INIT_PERIOD_NS: u64 = 10_000_000;
 
 /// Load the first program from the boot module, give it its capabilities
 /// and run it. Never returns.
-pub fn start() -> ! {
+pub fn start(platform: &crate::acpi::Platform) -> ! {
     let module = limine::modules()
         .find(|m| m.path().ends_with("/init"))
         .expect("no first program: the boot image lacks boot/init");
@@ -69,6 +74,39 @@ pub fn start() -> ! {
             USER | WRITABLE | NO_EXECUTE,
         );
     }
+    // The other programs of the boot image, read only, for the first
+    // program to start.
+    let mut modules = heapless_modules();
+    let mut at = BOOT_MODULES_ADDRESS;
+    let mut n = 0;
+    for f in limine::modules().filter(|m| !m.path().ends_with("/init")) {
+        if n == MAX_BOOT_MODULES {
+            kprintln!(
+                "init: more than {MAX_BOOT_MODULES} programs in the boot image; the rest are left out"
+            );
+            break;
+        }
+        let bytes = f.bytes();
+        let phys = bytes.as_ptr() as u64 - hhdm;
+        assert!(
+            phys.is_multiple_of(PAGE_SIZE),
+            "boot module not page aligned"
+        );
+        let len = (bytes.len() as u64).next_multiple_of(PAGE_SIZE);
+        space.map(at, phys, len, USER | NO_EXECUTE);
+        let name = f.path().rsplit('/').next().unwrap_or("?").as_bytes();
+        let mut m = BootModule {
+            address: at,
+            size: bytes.len() as u64,
+            ..BootModule::default()
+        };
+        let k = name.len().min(31);
+        m.name[..k].copy_from_slice(&name[..k]);
+        modules[n] = m;
+        n += 1;
+        at += len.next_multiple_of(1 << 21);
+    }
+    let modules = &modules[..n];
     let info_frames = frames::alloc_contiguous(BOOT_INFO_BYTES, PAGE_SIZE);
     space.map(
         BOOT_INFO_ADDRESS,
@@ -107,6 +145,8 @@ pub fn start() -> ! {
         Cap::new(Kind::AddressSpace, space_obj, SPACE_BITS),
     );
     cap::insert_root(&mut m, slot(5), Cap::new(Kind::SchedControl, 0, 0));
+    cap::insert_root(&mut m, slot(6), Cap::new(Kind::IrqControl, 0, 0));
+    cap::insert_root(&mut m, slot(7), Cap::new(Kind::DeviceControl, 0, 0));
 
     // The address space: its page-table memory and its id.
     let pool_slot = space_obj + SPACE_META;
@@ -172,7 +212,17 @@ pub fn start() -> ! {
     for c in 0..(percpu::count() as usize).min(MAX_CORES) {
         info.core_types[c] = m.sys.cores[c].ctype;
     }
-    let mut handle = 6u64;
+    info.irq_control = 6;
+    info.device_control = 7;
+    if let Some(e) = platform.ecam {
+        info.ecam_base = e.base;
+        info.ecam_bus_start = u64::from(e.bus_start);
+        info.ecam_bus_end = u64::from(e.bus_end);
+    }
+    info.iommu = u64::from(m.sys.iommu.present());
+    info.module_count = modules.len() as u64;
+    info.modules[..modules.len()].copy_from_slice(modules);
+    let mut handle = 8u64;
     let mut total = 0u64;
     frames::freeze(|start, end| {
         let mut at = start;
@@ -233,6 +283,10 @@ pub fn start() -> ! {
     k.sys.started = true;
     sched::make_ready(&mut k.sys, thread);
     crate::syscall::idle(k, percpu::index() as usize)
+}
+
+fn heapless_modules() -> [BootModule; MAX_BOOT_MODULES] {
+    [BootModule::default(); MAX_BOOT_MODULES]
 }
 
 /// Load the program's segments; return its entry point and where its

@@ -652,7 +652,7 @@ pub fn object_bits(kind: Kind, bits: u8, untyped_bits: u8) -> Result<(u8, u8), E
         }
         Kind::Thread => Ok((THREAD_BITS, THREAD_BITS)),
         Kind::SchedContext => Ok((SCHED_BITS, SCHED_BITS)),
-        Kind::AddressSpace => Ok((SPACE_BITS, SPACE_BITS)),
+        Kind::AddressSpace | Kind::IoSpace => Ok((SPACE_BITS, SPACE_BITS)),
         Kind::Page if PAGE_BITS.contains(&bits) => Ok((bits, bits)),
         Kind::Untyped
             if (UNTYPED_MIN_BITS..=UNTYPED_MAX_BITS).contains(&bits) && bits < untyped_bits =>

@@ -300,6 +300,11 @@ pub fn page(
             OK
         }
         op::PAGE_ADDRESS => done([c.object, 0, 0, 0]),
+        op::PAGE_IOMAP => {
+            let (_, s) = arg_cap(m, me, a[0], Kind::IoSpace, rights::WRITE)?;
+            crate::iommu::map_page(m, at, s.object, a[1], a[2])?;
+            OK
+        }
         _ => Err(Error::NoSuchCall),
     }
 }
@@ -317,6 +322,7 @@ pub fn on_delete(m: &mut Phys, g: &mut Globals, at: SlotRef, c: &Cap, last: bool
                 }
             }
             internal::SPACE_POOL => vspace::clear(m, at - obj::SPACE_META),
+            internal::IOSPACE_POOL => crate::iommu::clear(m.sys, at - obj::SPACE_META),
             _ => {}
         }
     }
@@ -330,7 +336,15 @@ pub fn on_delete(m: &mut Phys, g: &mut Globals, at: SlotRef, c: &Cap, last: bool
         Some(Kind::Thread) => finalise_thread(m, g, c.object),
         Some(Kind::SchedContext) => finalise_sc(m.sys, c.object),
         Some(Kind::Endpoint) => ipc::finalise_queue(m.sys, c.object, true),
-        Some(Kind::Notification) => ipc::finalise_queue(m.sys, c.object, false),
+        Some(Kind::Notification) => {
+            crate::device::forget_notification(m.sys, c.object);
+            ipc::finalise_queue(m.sys, c.object, false)
+        }
+        Some(Kind::Irq) => {
+            crate::device::free_vector(m.sys, c.object);
+            true
+        }
+        Some(Kind::IoSpace) => crate::iommu::finalise(m, g, c.object),
         Some(Kind::Reply) => {
             ipc::finalise_reply(m.sys, c.object);
             true

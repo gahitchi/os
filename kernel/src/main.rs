@@ -23,9 +23,12 @@
 #![no_std]
 #![no_main]
 
+mod acpi;
 mod arch;
 mod caps;
+mod device;
 mod fpu;
+mod iommu;
 mod ipc;
 mod kstate;
 mod limine;
@@ -217,8 +220,18 @@ extern "C" fn bsp_main() -> ! {
         // The fault happens on another core; wait for it to stop us.
         smp::idle();
     }
+    // Firmware tables, and the device memory guard.
+    let platform = acpi::init();
+    if let Some(base) = platform.iommu {
+        arch::disable_interrupts();
+        let buses = platform.ecam.map_or((0, 0), |e| (e.bus_start, e.bus_end));
+        iommu::init(&mut sync::BKL.lock().sys, base, buses, platform.iommu_scope);
+    } else {
+        kprintln!("iommu: none found; devices could reach all memory (add QEMU's intel-iommu)");
+    }
+
     // The first program prints the boot marker once its checks pass.
-    user::start()
+    user::start(&platform)
 }
 
 fn report_protections() {

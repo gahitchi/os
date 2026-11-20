@@ -194,6 +194,18 @@ pub fn invoke(
         (Some(Kind::SchedControl), _) => objects::sched_control(&mut m, me, label, args),
         (Some(Kind::AddressSpace), _) => objects::space(&mut m, me, c, label, args),
         (Some(Kind::Page), _) => objects::page(&mut m, me, at, c, label, args),
+        (Some(Kind::IoSpace), op::IOSPACE_ASSIGN) => {
+            if c.rights & rights::WRITE == 0 {
+                return Err(Error::NoRights);
+            }
+            let pool = ipc::lookup(&m, me, args[0])?;
+            crate::iommu::assign(&mut m, c.object, pool)?;
+            done([0; 4])
+        }
+        (Some(Kind::IoSpace), _) => Err(Error::NoSuchCall),
+        (Some(Kind::DeviceControl), _) => crate::device::device_control(&mut m, me, label, args),
+        (Some(Kind::IrqControl), _) => crate::device::irq_control(&mut m, me, label, args),
+        (Some(Kind::Irq), _) => crate::device::irq(&mut m, me, c, label, args),
         _ => Err(Error::WrongKind),
     }
 }

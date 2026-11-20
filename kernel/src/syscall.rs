@@ -422,7 +422,8 @@ fn debug_call(
     Ok(Outcome::Done(r))
 }
 
-/// Print a program's message on the serial port, prefixed with "init: ".
+/// Print a program's message on the serial port (programs add their own
+/// name in front).
 fn print(me: u64, at: u64, len: u64) -> Result<(), Error> {
     if len > debug::MAX_PRINT as u64 {
         return Err(Error::InvalidArgument);
@@ -443,6 +444,6 @@ fn print(me: u64, at: u64, len: u64) -> Result<(), Error> {
         buf[i as usize] = unsafe { *((phys + crate::limine::hhdm_offset().unwrap()) as *const u8) };
     }
     let text = core::str::from_utf8(&buf[..len as usize]).unwrap_or("(not UTF-8)");
-    kprint!("init: {text}");
+    kprint!("{text}");
     Ok(())
 }

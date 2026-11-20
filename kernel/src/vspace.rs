@@ -109,6 +109,8 @@ const WRITABLE: u64 = 1 << 1;
 const USER: u64 = 1 << 2;
 const HUGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
+/// Strong uncached (PAT entry 3).
+const UNCACHED: u64 = 1 << 3 | 1 << 4;
 const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 
 fn table(phys: u64) -> &'static mut [u64; 512] {
@@ -254,6 +256,10 @@ pub fn map_page(m: &mut Phys, at: SlotRef, space: u64, virt: u64, flags: u64) ->
     if leaf > 1 {
         e |= HUGE;
     }
+    if !mm::is_ram(c.object, size) {
+        // Device registers (made by DEVICE_PAGE): strong uncached.
+        e |= UNCACHED;
+    }
     table(t)[i] = e;
     s.cap.a = virt | flags;
     s.cap.b = stamp(m.sys, meta.id);
@@ -271,6 +277,10 @@ pub fn unmap_page(m: &mut Phys, at: SlotRef) {
     s.cap.a = 0;
     s.cap.b = 0;
     m.write(at, &s);
+    if c.b & crate::iommu::IO_STAMP != 0 {
+        crate::iommu::unmap(m.sys, c.b, c.a & !0xfff, c.size_bits, c.object);
+        return;
+    }
     let Some(space) = resolve(m.sys, c.b) else {
         return;
     };

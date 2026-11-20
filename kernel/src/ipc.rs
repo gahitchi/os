@@ -119,10 +119,14 @@ fn transfer(m: &mut Phys, from: u64, to: u64, badge: u64, grant: bool, called: b
         let n = i.words().min(Info::MAX_WORDS) as usize;
         let mut w = [0; 6];
         w[..n].copy_from_slice(&f.regs.words()[..n]);
-        (i.label() << 8 | n as u64 | (i.0 & Info::CAP), w)
+        (
+            i.label() << 8 | n as u64 | (i.0 & (Info::CAP | Info::MOVE)),
+            w,
+        )
     };
     if info & Info::CAP != 0 {
-        info &= !Info::CAP;
+        let moving = info & Info::MOVE != 0;
+        info &= !(Info::CAP | Info::MOVE);
         let r = tcb(to).regs.r14 >> 32;
         let moved = grant
             && r != 0
@@ -133,7 +137,11 @@ fn transfer(m: &mut Phys, from: u64, to: u64, badge: u64, grant: bool, called: b
                         return Err(Error::InvalidHandle);
                     }
                     let dst = cap::table_slot(t.object, t.size_bits, r)?;
-                    cap::copy(m, src, dst, rights::ALL, None)
+                    if moving {
+                        cap::move_cap(m, src, dst)
+                    } else {
+                        cap::copy(m, src, dst, rights::ALL, None)
+                    }
                 })
                 .is_ok();
         info |= if moved { Info::CAP } else { Info::CAP_LOST };

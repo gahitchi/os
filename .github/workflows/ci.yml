@@ -44,7 +44,7 @@ jobs:
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
           cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --all-targets -- -D warnings
-          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys \
+          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs \
             --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
 

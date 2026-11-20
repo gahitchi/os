@@ -76,6 +76,12 @@ pub extern "C" fn dispatch(frame: &mut TrapFrame) {
             apic::eoi();
         }
         RESCHED_VECTOR => apic::eoi(),
+        crate::device::FIRST_VECTOR..=crate::device::LAST_VECTOR => {
+            // A device, while this core idled in the kernel.
+            apic::eoi();
+            let mut k = sync::BKL.lock();
+            crate::device::interrupt(&mut k.sys, vector);
+        }
         apic::SPURIOUS_VECTOR => {} // no EOI for spurious interrupts
         v if v == legacy::PIC_BASE + 7 || v == legacy::PIC_BASE + 15 => {} // PIC spurious
         _ => {
@@ -105,6 +111,9 @@ fn from_user(frame: &mut TrapFrame) {
     }
     match vector {
         TIMER_VECTOR => crate::sched::timer(&mut k.sys, core),
+        crate::device::FIRST_VECTOR..=crate::device::LAST_VECTOR => {
+            crate::device::interrupt(&mut k.sys, vector)
+        }
         0..=31 if me != 0 => {
             let addr = if vector == 14 { cpu::cr2() } else { 0 };
             let mut m = crate::caps::Phys::new(&mut k.sys);

@@ -430,3 +430,69 @@ pub fn rdtsc() -> u64 {
     // SAFETY: reading the TSC has no side effects.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
+
+/// Physical address of a page (drivers).
+pub fn page_address(page: u64) -> Result<u64, Error> {
+    call(page, abi::op::PAGE_ADDRESS, [0; 6]).map(|r| r[0])
+}
+
+// ---------------------------------------------------------------------------
+// Devices
+
+/// Let the devices of I/O space `io` reach `page` at device address `at`.
+pub fn page_iomap(page: u64, io: u64, at: u64, flags: u64) -> Result<(), Error> {
+    call(page, abi::op::PAGE_IOMAP, [io, at, flags, 0, 0, 0]).map(|_| ())
+}
+
+pub fn iospace_assign(io: u64, pool: u64) -> Result<(), Error> {
+    call(io, abi::op::IOSPACE_ASSIGN, [pool, 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+/// A page capability for device registers at `phys` (`bits`: 12 or 21).
+pub fn device_page(control: u64, phys: u64, bits: u8, dst: At) -> Result<(), Error> {
+    call(
+        control,
+        abi::op::DEVICE_PAGE,
+        [phys, u64::from(bits), dst.table, dst.index, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// Attach PCI function `bdf` to I/O space `io`.
+pub fn device_bind(control: u64, io: u64, bdf: u16) -> Result<(), Error> {
+    call(
+        control,
+        abi::op::DEVICE_BIND,
+        [io, u64::from(bdf), 0, 0, 0, 0],
+    )
+    .map(|_| ())
+}
+
+/// Device accesses the IOMMU blocked since boot.
+pub fn device_faults(control: u64) -> Result<u64, Error> {
+    call(control, abi::op::DEVICE_FAULTS, [0; 6]).map(|r| r[0])
+}
+
+/// Take an interrupt vector delivered to `core`; returns the vector.
+pub fn irq_get(control: u64, core: u64, dst: At) -> Result<u64, Error> {
+    call(
+        control,
+        abi::op::IRQ_GET,
+        [core, dst.table, dst.index, 0, 0, 0],
+    )
+    .map(|r| r[0])
+}
+
+/// Deliver interrupt `irq` as `bits` on notification `ntfn` (0: stop).
+pub fn irq_set(irq: u64, ntfn: u64, bits: u64) -> Result<(), Error> {
+    call(irq, abi::op::IRQ_SET, [ntfn, bits, 0, 0, 0, 0]).map(|_| ())
+}
+
+/// MSI address and data for `irq`, and how many times it fired.
+pub fn irq_msi(irq: u64) -> Result<(u64, u64, u64), Error> {
+    call(irq, abi::op::IRQ_MSI, [0; 6]).map(|r| (r[0], r[1], r[2]))
+}
+
+pub mod elf;
+pub mod program;
+pub mod rt;

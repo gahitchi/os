@@ -214,6 +214,10 @@ pub struct Sys {
     pub spaces: [crate::vspace::SpaceEntry; crate::vspace::MAX_SPACES],
     /// TLB tags each core must flush before loading them again.
     pub stale: crate::vspace::Stale,
+    /// The IOMMU (device memory guard).
+    pub iommu: crate::iommu::State,
+    /// Device interrupts by vector.
+    pub irqs: [crate::device::IrqEntry; 256],
     /// System calls restarted because an interruptible operation stopped.
     pub restarts: u64,
     /// Threads that started running on another core than before.
@@ -237,6 +241,8 @@ pub static BKL: BigKernelLock<KernelState> = BigKernelLock::new(KernelState {
         first_thread: 0,
         spaces: [crate::vspace::SpaceEntry::EMPTY; crate::vspace::MAX_SPACES],
         stale: crate::vspace::Stale::EMPTY,
+        iommu: crate::iommu::State::EMPTY,
+        irqs: [crate::device::IrqEntry::EMPTY; 256],
         restarts: 0,
         migrations: 0,
         switches: 0,

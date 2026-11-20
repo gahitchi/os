@@ -77,8 +77,10 @@ options:
                     smap (kernel reads a user page), smep (runs one)
   --fuzz <secs>     test only: after the boot checks, run the kernel fuzzer
                     for this long (random calls from several cores)
-  --timeout <secs>  give up after this long (test only, default 60, or
-                    the fuzz time plus 120)
+  --long            test only: the long stress runs (10 minutes of random
+                    driver kills instead of 8 seconds)
+  --timeout <secs>  give up after this long (test only, default 180, or
+                    the fuzz time plus 180, or 15 minutes with --long)
   --image <path>    boot this image instead of building one (run and test)
 
 environment:
@@ -95,6 +97,7 @@ struct Options {
     memory: String,
     fault: Option<String>,
     fuzz: Option<u64>,
+    long: bool,
 }
 
 fn main() -> ExitCode {
@@ -107,12 +110,13 @@ fn main() -> ExitCode {
         release: true,
         cpus: 1,
         uefi: false,
-        timeout: 60,
+        timeout: 180,
         image: None,
         accel: "auto".into(),
         memory: "256M".into(),
         fault: None,
         fuzz: None,
+        long: false,
     };
     let mut timeout_set = false;
     while let Some(arg) = args.next() {
@@ -141,6 +145,7 @@ fn main() -> ExitCode {
                         .unwrap_or_else(|_| fail("bad --fuzz")),
                 )
             }
+            "--long" => opts.long = true,
             "--image" => opts.image = Some(PathBuf::from(value("--image"))),
             "--accel" => opts.accel = value("--accel"),
             "--memory" => opts.memory = value("--memory"),
@@ -160,7 +165,10 @@ fn main() -> ExitCode {
     }
 
     if let (Some(secs), false) = (opts.fuzz, timeout_set) {
-        opts.timeout = secs + 120;
+        opts.timeout = secs + 180;
+    }
+    if opts.long && !timeout_set {
+        opts.timeout = 15 * 60;
     }
 
     let result = match command.as_str() {
@@ -230,9 +238,14 @@ fn build_kernel(release: bool) -> Result<PathBuf, String> {
         .join("alaya-kernel"))
 }
 
-/// Build the first program. It lives in the lower half, so it is built
-/// without the kernel's code model (`.cargo/config.toml`), in a target
-/// directory of its own so the two builds do not invalidate each other.
+/// Programs the boot image carries besides the first one, all from the
+/// `alaya-programs` crate.
+const PROGRAMS: [&str; 4] = ["keeper", "blk1", "blk2", "disktest"];
+
+/// Build the first program and the programs it starts. They live in the
+/// lower half, so they are built without the kernel's code model
+/// (`.cargo/config.toml`), in a target directory of their own so the two
+/// builds do not invalidate each other. Returns the first program's path.
 fn build_init(release: bool) -> Result<PathBuf, String> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut cmd = Command::new(cargo);
@@ -242,6 +255,9 @@ fn build_init(release: bool) -> Result<PathBuf, String> {
             "build",
             "--package",
             "alaya-init",
+            "--package",
+            "alaya-programs",
+            "--bins",
             "--target",
             KERNEL_TARGET,
         ])
@@ -251,12 +267,26 @@ fn build_init(release: bool) -> Result<PathBuf, String> {
         cmd.arg("--release");
     }
     sh(&mut cmd)?;
+    Ok(user_binary(release, "init"))
+}
+
+fn user_binary(release: bool, name: &str) -> PathBuf {
     let profile = if release { "release" } else { "debug" };
-    Ok(root()
+    root()
         .join("target/user")
         .join(KERNEL_TARGET)
         .join(profile)
-        .join("init"))
+        .join(name)
+}
+
+/// The virtual disk the disk driver works on: 1 MiB of zeros, made once.
+fn disk_image() -> Result<PathBuf, String> {
+    let path = root().join("build").join("disk.img");
+    if !path.exists() {
+        fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        fs::write(&path, vec![0u8; 1 << 20]).map_err(|e| format!("write disk image: {e}"))?;
+    }
+    Ok(path)
 }
 
 /// Code generation flags for programs (the kernel's are in
@@ -308,6 +338,13 @@ fn build_image(release: bool, cmdline: Option<&str>) -> Result<PathBuf, String> 
     copy(&init, &iso_root.join("boot/init"))?;
     let mut conf = fs::read_to_string(root().join("boot/limine.conf"))
         .map_err(|e| format!("read boot/limine.conf: {e}"))?;
+    for name in PROGRAMS {
+        copy(
+            &user_binary(release, name),
+            &iso_root.join("boot").join(name),
+        )?;
+        conf.push_str(&format!("    module_path: boot():/boot/{name}\n"));
+    }
     if let Some(cmdline) = cmdline {
         conf.push_str(&format!("    cmdline: {cmdline}\n"));
     }
@@ -365,11 +402,18 @@ fn image_for(opts: &Options) -> Result<PathBuf, String> {
         }
         return build_image(opts.release, Some(&format!("test-fault={kind}")));
     }
+    let mut words = Vec::new();
     if let Some(secs) = opts.fuzz {
+        words.push(format!("fuzz={secs}"));
+    }
+    if opts.long {
+        words.push("long".to_string());
+    }
+    if !words.is_empty() {
         if opts.image.is_some() {
-            return Err("--fuzz builds its own image; leave out --image".into());
+            return Err("--fuzz and --long build their own image; leave out --image".into());
         }
-        return build_image(opts.release, Some(&format!("fuzz={secs}")));
+        return build_image(opts.release, Some(&words.join(" ")));
     }
     match &opts.image {
         Some(path) => Ok(path.clone()),
@@ -419,6 +463,20 @@ fn qemu(image: &Path, opts: &Options, serial: &str) -> Result<Command, String> {
     cmd.args(["-machine", "q35", "-m", &opts.memory, "-no-reboot"])
         .args(["-smp", &opts.cpus.to_string()])
         .args(["-display", "none", "-serial", serial, "-monitor", "none"])
+        // The device memory guard (decision 77). Interrupt remapping is not
+        // used yet.
+        .args(["-device", "intel-iommu,aw-bits=48,intremap=off"])
+        // The virtual disk, behind the IOMMU (its driver may reach only
+        // the memory its keeper maps for it).
+        .arg("-drive")
+        .arg(format!(
+            "file={},if=none,id=disk0,format=raw",
+            disk_image()?.display()
+        ))
+        .args([
+            "-device",
+            "virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on",
+        ])
         .arg("-cdrom")
         .arg(image);
     if use_kvm(opts)? {

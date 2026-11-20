@@ -47,7 +47,7 @@ pub const fn header_offset(kind: Kind) -> Option<u64> {
         Kind::Thread => Some(FPU_OFFSET - 8),
         Kind::SchedContext => Some((1 << SCHED_BITS) - 8),
         Kind::Endpoint | Kind::Notification | Kind::Reply => Some((1 << SMALL_OBJECT_BITS) - 8),
-        Kind::AddressSpace => Some((1 << SPACE_BITS) - 8),
+        Kind::AddressSpace | Kind::IoSpace => Some((1 << SPACE_BITS) - 8),
         _ => None,
     }
 }
@@ -296,6 +296,8 @@ pub struct SpaceMeta {
     pub id: u64,
     /// Page tables taken so far.
     pub tables: u64,
+    /// I/O spaces: the PCI functions attached, bdf + 1 (0: none).
+    pub bound: [u32; crate::iommu::MAX_BOUND],
 }
 
 pub const SPACE_META: u64 = 4096;
@@ -313,4 +315,5 @@ pub mod internal {
     pub const THREAD_SPACE: u32 = 2;
     pub const THREAD_FAULT: u32 = 3;
     pub const SPACE_POOL: u32 = 4;
+    pub const IOSPACE_POOL: u32 = 5;
 }

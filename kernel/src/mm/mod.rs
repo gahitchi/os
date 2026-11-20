@@ -181,6 +181,35 @@ pub fn init(cpus: u32, lapic_mmio: Option<u64>) {
     );
 }
 
+/// Map physical memory the direct map left out (firmware tables, device
+/// registers) at its direct-map address. Only at boot, before the first
+/// program exists, while page tables can still come from the boot
+/// allocator. `device` maps it uncached and writable; otherwise read only.
+pub fn map_physical(phys: u64, len: u64, device: bool) -> u64 {
+    let hhdm = limine::hhdm_offset().unwrap();
+    let from = align_down(phys);
+    let to = align_up(phys + len);
+    let flags = if device {
+        WRITABLE | NO_EXECUTE | GLOBAL | UNCACHED
+    } else {
+        NO_EXECUTE | GLOBAL
+    };
+    AddressSpace::kernel(kernel_root(), hhdm).map_absent(from + hhdm, from, to - from, flags);
+    phys + hhdm
+}
+
+/// Does `[phys, phys + len)` touch memory the firmware calls anything but
+/// reserved (RAM, firmware tables, the kernel, boot modules)? Device
+/// registers are either not in the memory map or marked reserved.
+pub fn is_ram(phys: u64, len: u64) -> bool {
+    limine::memmap().expect("no memory map").any(|e| {
+        e.kind != limine::MEMMAP_RESERVED
+            && e.kind != limine::MEMMAP_BAD_MEMORY
+            && e.base < phys + len
+            && phys < e.base + e.length
+    })
+}
+
 /// Turn on no-execute, write protection and global pages on this core and
 /// load the kernel's page tables.
 pub fn switch_this_core() {

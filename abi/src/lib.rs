@@ -142,6 +142,44 @@ pub mod op {
     pub const PAGE_UNMAP: u64 = 73;
     /// Physical address, in result 0 (for drivers).
     pub const PAGE_ADDRESS: u64 = 74;
+    /// Let the devices of an I/O space reach the page: args = I/O space
+    /// handle, device address, [`super::iomap`] flags. A page capability
+    /// is mapped in one place at a time; map a copy for a second place.
+    pub const PAGE_IOMAP: u64 = 75;
+
+    // On an I/O space.
+    /// Give it table memory: arg 0 = handle of an untyped nothing was made
+    /// from (as `SPACE_ASSIGN`).
+    pub const IOSPACE_ASSIGN: u64 = 80;
+
+    // On the device control capability.
+    /// Make a page capability for device registers: args = physical
+    /// address, size bits (12 or 21), destination table, index. Refused
+    /// for RAM and for the kernel's own devices (APIC, IOMMU).
+    pub const DEVICE_PAGE: u64 = 96;
+    /// Attach the PCI function `bdf` (bus << 8 | device << 3 | function)
+    /// to an I/O space: args = I/O space handle, bdf.
+    pub const DEVICE_BIND: u64 = 97;
+    /// How many blocked device accesses the IOMMU reported (result 0).
+    pub const DEVICE_FAULTS: u64 = 98;
+
+    // On the interrupt control capability.
+    /// Take a free vector: args = core it is delivered to, destination
+    /// table, index. Result 0: the vector.
+    pub const IRQ_GET: u64 = 104;
+
+    // On an interrupt.
+    /// Deliver it as `bits` on a notification: args = notification handle
+    /// (0: stop delivering), bits.
+    pub const IRQ_SET: u64 = 112;
+    /// What to program into a device's MSI or MSI-X entry: results =
+    /// address, data.
+    pub const IRQ_MSI: u64 = 113;
+}
+
+/// Flags of [`op::PAGE_IOMAP`].
+pub mod iomap {
+    pub const WRITE: u64 = 1 << 0;
 }
 
 /// Flags of [`op::PAGE_MAP`].
@@ -174,6 +212,10 @@ pub struct Info(pub u64);
 impl Info {
     /// Most data words in one message.
     pub const MAX_WORDS: u64 = 6;
+    /// With [`Info::CAP`]: the capability moves to the receiver instead of
+    /// being copied. Untyped memory can only be handed over this way (it
+    /// has one owner at a time).
+    pub const MOVE: u64 = 1 << 3;
     /// The message carries a capability (handle in `r14`).
     pub const CAP: u64 = 1 << 4;
     /// Received: this is a notification's signal bits (in `rdi`), not a
@@ -199,6 +241,11 @@ impl Info {
 
     pub const fn with_cap(self) -> Info {
         Info(self.0 | Self::CAP)
+    }
+
+    /// Carries a capability that moves to the receiver.
+    pub const fn moving_cap(self) -> Info {
+        Info(self.0 | Self::CAP | Self::MOVE)
     }
 
     pub const fn has(self, flag: u64) -> bool {
@@ -295,6 +342,15 @@ pub enum Kind {
     AddressSpace = 9,
     /// The right to give out time (configure scheduling contexts).
     SchedControl = 10,
+    /// One device interrupt (a vector), delivered as notification signals.
+    Irq = 11,
+    /// The right to take interrupt vectors.
+    IrqControl = 12,
+    /// The right to reach device registers and attach devices to I/O
+    /// spaces: held by the device manager only.
+    DeviceControl = 13,
+    /// What a set of devices may reach through the IOMMU.
+    IoSpace = 14,
 }
 
 impl Kind {
@@ -311,6 +367,10 @@ impl Kind {
             8 => Kind::Reply,
             9 => Kind::AddressSpace,
             10 => Kind::SchedControl,
+            11 => Kind::Irq,
+            12 => Kind::IrqControl,
+            13 => Kind::DeviceControl,
+            14 => Kind::IoSpace,
             _ => return None,
         })
     }
@@ -391,6 +451,41 @@ pub struct BootInfo {
     pub untyped: [BootUntyped; MAX_BOOT_UNTYPED],
     /// The processor protections in use ([`protect`] bits).
     pub protections: u64,
+    /// Handles of the interrupt control and device control capabilities.
+    pub irq_control: u64,
+    pub device_control: u64,
+    /// PCI configuration space (ECAM) of segment 0: physical base, first
+    /// and last bus (base 0: none).
+    pub ecam_base: u64,
+    pub ecam_bus_start: u64,
+    pub ecam_bus_end: u64,
+    /// The IOMMU is on (devices reach only what is mapped for them).
+    pub iommu: u64,
+    /// Programs the boot image carries, mapped read only into the first
+    /// program.
+    pub module_count: u64,
+    pub modules: [BootModule; MAX_BOOT_MODULES],
+}
+
+pub const MAX_BOOT_MODULES: usize = 16;
+/// Where the boot modules are mapped in the first program.
+pub const BOOT_MODULES_ADDRESS: u64 = 0x7ff0_0000_0000;
+
+/// A program in the boot image.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BootModule {
+    /// Its file name, NUL-padded.
+    pub name: [u8; 32],
+    pub address: u64,
+    pub size: u64,
+}
+
+impl BootModule {
+    pub fn name(&self) -> &str {
+        let end = self.name.iter().position(|&b| b == 0).unwrap_or(32);
+        core::str::from_utf8(&self.name[..end]).unwrap_or("?")
+    }
 }
 
 const _: () = assert!(core::mem::size_of::<BootInfo>() as u64 <= BOOT_INFO_BYTES);
@@ -432,6 +527,7 @@ pub mod format {
     pub const SCHED_CONTEXT: u8 = 1;
     pub const REPLY: u8 = 1;
     pub const ADDRESS_SPACE: u8 = 1;
+    pub const IO_SPACE: u8 = 1;
     /// The format of the kernel-wide state as a whole (`kernel/src/kstate.rs`).
     pub const KERNEL_STATE: u32 = 1;
 
@@ -446,9 +542,56 @@ pub mod format {
             K::SchedContext => SCHED_CONTEXT,
             K::Reply => REPLY,
             K::AddressSpace => ADDRESS_SPACE,
+            K::IoSpace => IO_SPACE,
             _ => 0,
         }
     }
+}
+
+/// How a program started by another one finds its way (`alaya_sys::program`).
+///
+/// The parent maps a read-only [`StartInfo`] page at [`START_INFO_ADDRESS`]
+/// and passes its address in `rdi`. The program's table has these slots:
+pub mod start {
+    /// Its own table, thread and address space.
+    pub const TABLE: u64 = 1;
+    pub const THREAD: u64 = 2;
+    pub const SPACE: u64 = 3;
+    /// Untyped memory of its own, for stacks and objects.
+    pub const UNTYPED: u64 = 4;
+    /// A scheduling context the parent configured for a helper thread
+    /// (its clock), or empty.
+    pub const CLOCK_SC: u64 = 5;
+    /// What the parent hands over starts here; the [`StartInfo`] says what
+    /// each slot holds.
+    pub const FIRST_GIVEN: u64 = 8;
+
+    pub const MAGIC: u64 = 0x616c_6179_615f_7369; // "alaya_si"
+    pub const MAX_ARGS: usize = 16;
+}
+
+pub const START_INFO_ADDRESS: u64 = 0x7fff_f100_0000;
+/// The top of a started program's stack (64 KiB).
+pub const PROGRAM_STACK_TOP: u64 = 0x7fff_e000_0000;
+pub const PROGRAM_STACK_BYTES: u64 = 64 * 1024;
+
+/// What a started program learns from its parent.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct StartInfo {
+    pub magic: u64,
+    pub name: [u8; 32],
+    pub tsc_hz: u64,
+    pub cores: u64,
+    /// The size of its untyped (`start::UNTYPED`), as a power of two.
+    pub untyped_bits: u64,
+    /// First empty slot of its table, and how many it has.
+    pub first_free: u64,
+    pub table_slots: u64,
+    /// Its priority (it may give its own threads up to this).
+    pub priority: u64,
+    /// Words the parent passes: their meaning depends on the program.
+    pub args: [u64; start::MAX_ARGS],
 }
 
 /// Flags in [`BootInfo::flags`], from the kernel command line.
