@@ -157,7 +157,7 @@ struct Driver {
     /// Jobs this instance finished (a faulty test version counts them).
     finished_here: u64,
     faulty: bool,
-    tsc_hz: u64,
+    clock_hz: u64,
 }
 
 /// Why starting the device failed, in the job page's error word.
@@ -342,8 +342,8 @@ impl Driver {
     fn probe(&mut self) {
         self.queue(0, false, 0, IOVA_FORBIDDEN);
         self.kick();
-        let end = alaya_sys::rdtsc() + self.tsc_hz / 4;
-        while alaya_sys::rdtsc() < end {
+        let end = alaya_sys::clock() + self.clock_hz / 4;
+        while alaya_sys::clock() < end {
             if self.status() & NEEDS_RESET != 0 || r16(RING_PAGE + USED + 2) != 0 {
                 return;
             }
@@ -453,7 +453,7 @@ pub fn run(info: &'static StartInfo, version: u64) -> ! {
         sectors: 0,
         finished_here: 0,
         faulty: flags & FLAG_FAULTY != 0,
-        tsc_hz: info.tsc_hz.max(1),
+        clock_hz: info.clock_hz.max(1),
     };
     store(&jobs.version, version);
     let _ = alaya_sys::irq_set(irq, ntfn, IRQ_BIT);

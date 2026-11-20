@@ -89,19 +89,39 @@ pub struct HhdmResponse {
     offset: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 pub struct MpResponse {
     revision: u64,
     pub flags: u32,
-    pub bsp_lapic_id: u32,
+    bsp_lapic_id: u32,
     pub cpu_count: u64,
     cpus: *const *mut MpInfo,
 }
 
-/// Set in [`MpResponse::flags`] when Limine switched every core to x2APIC.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+pub struct MpResponse {
+    revision: u64,
+    pub flags: u64,
+    bsp_mpidr: u64,
+    pub cpu_count: u64,
+    cpus: *const *mut MpInfo,
+}
+
+/// Set in [`MpResponse::flags`] when Limine switched every core to x2APIC
+/// (PC only).
 pub const MP_X2APIC: u32 = 1;
 
 impl MpResponse {
+    /// The bootstrap core's hardware id (APIC id on a PC, MPIDR on ARM).
+    pub fn bsp_hw_id(&self) -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        return u64::from(self.bsp_lapic_id);
+        #[cfg(target_arch = "aarch64")]
+        return self.bsp_mpidr;
+    }
+
     /// One entry per core, the bootstrap core included.
     pub fn cpus(&self) -> impl Iterator<Item = &'static MpInfo> {
         // SAFETY: Limine provides `cpu_count` valid pointers that stay mapped.
@@ -111,16 +131,36 @@ impl MpResponse {
 
 /// A core as Limine reports it. Each core except the bootstrap one spins on
 /// `goto_address` until the kernel writes an entry point there.
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 pub struct MpInfo {
     pub processor_id: u32,
-    pub lapic_id: u32,
+    lapic_id: u32,
+    reserved: u64,
+    goto_address: core::sync::atomic::AtomicU64,
+    extra_argument: core::sync::atomic::AtomicU64,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+pub struct MpInfo {
+    pub processor_id: u32,
+    reserved1: u32,
+    mpidr: u64,
     reserved: u64,
     goto_address: core::sync::atomic::AtomicU64,
     extra_argument: core::sync::atomic::AtomicU64,
 }
 
 impl MpInfo {
+    /// The core's hardware id (APIC id on a PC, MPIDR on ARM).
+    pub fn hw_id(&self) -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        return u64::from(self.lapic_id);
+        #[cfg(target_arch = "aarch64")]
+        return self.mpidr;
+    }
+
     /// Start this core at `entry`, which receives a pointer to this
     /// structure; `argument` can be read back with [`MpInfo::argument`].
     pub fn start(&self, entry: extern "C" fn(&'static MpInfo) -> !, argument: u64) {
@@ -247,7 +287,13 @@ static HHDM: Request<HhdmResponse> = Request::new([0x48dcf1cb8ad2b852, 0x63984e9
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 static MP: Request<MpResponse, u64> =
-    Request::new([0x95a67b819a1b857e, 0xa0b61b723b6a73e0], MP_X2APIC as u64);
+    Request::new([0x95a67b819a1b857e, 0xa0b61b723b6a73e0], MP_REQUEST_FLAGS);
+
+/// Ask for x2APIC on a PC; ARM has no flags.
+#[cfg(target_arch = "x86_64")]
+const MP_REQUEST_FLAGS: u64 = MP_X2APIC as u64;
+#[cfg(not(target_arch = "x86_64"))]
+const MP_REQUEST_FLAGS: u64 = 0;
 
 #[used]
 #[unsafe(link_section = ".limine_requests")]

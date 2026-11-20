@@ -424,9 +424,11 @@ pub fn lock_stats() -> [u64; 4] {
     syscall(abi::call::DEBUG, abi::debug::LOCK_STATS, 0, [0; 6]).1
 }
 
-/// The time-stamp counter.
+/// The clock, in ticks (`BootInfo::clock_hz` per second): the same clock
+/// the kernel uses for budgets and deadlines. On a PC it is the time-stamp
+/// counter.
 #[inline]
-pub fn rdtsc() -> u64 {
+pub fn clock() -> u64 {
     // SAFETY: reading the TSC has no side effects.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
@@ -493,12 +495,12 @@ pub fn irq_msi(irq: u64) -> Result<(u64, u64, u64), Error> {
     call(irq, abi::op::IRQ_MSI, [0; 6]).map(|r| (r[0], r[1], r[2]))
 }
 
-/// Set the deadline of the work `sc` pays for, in time-stamp counter
+/// Set the deadline of the work `sc` pays for, in clock
 /// ticks (0: none). Returns deadlines missed in total, the thread object
 /// that held the context when the last one passed, and whether the
 /// deadline it replaces was missed.
-pub fn sc_deadline(sc: u64, tsc: u64) -> Result<(u64, u64, bool), Error> {
-    call(sc, abi::op::SC_DEADLINE, [tsc, 0, 0, 0, 0, 0]).map(|r| (r[0], r[1], r[2] != 0))
+pub fn sc_deadline(sc: u64, deadline: u64) -> Result<(u64, u64, bool), Error> {
+    call(sc, abi::op::SC_DEADLINE, [deadline, 0, 0, 0, 0, 0]).map(|r| (r[0], r[1], r[2] != 0))
 }
 
 /// Ask for a timeout message (to the fault endpoint) when time lent to

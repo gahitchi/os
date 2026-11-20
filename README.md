@@ -29,6 +29,12 @@ run that kills the driver at random every half second, 1,000 live updates in a
 row, and a fuzzer that now attacks the helpers too. How it all works:
 [`docs/engine.md`](docs/engine.md).
 
+**Milestone 4b, step 1: the processor wall.** Everything in the kernel that
+only makes sense on a PC now sits in one folder behind a fixed list of
+things every processor must provide, so an ARM build can follow without
+slowing the PC path. Nothing changes on a PC; a CI check keeps the wall
+whole. How it works: [`docs/processor-wall.md`](docs/processor-wall.md).
+
 Milestone 3 (threads, time budgets and messages) is described in
 [`docs/threads-and-messages.md`](docs/threads-and-messages.md), with its own
 [TLA+ model](formal/sched/Sched.tla).

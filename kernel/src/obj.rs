@@ -86,43 +86,6 @@ pub fn format_of(kind: Kind, object: u64) -> u8 {
     }
 }
 
-/// A thread's registers as user mode sees them.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Regs {
-    pub rax: u64,
-    pub rbx: u64,
-    pub rcx: u64,
-    pub rdx: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rbp: u64,
-    pub r8: u64,
-    pub r9: u64,
-    pub r10: u64,
-    pub r11: u64,
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
-    pub rip: u64,
-    pub rflags: u64,
-    pub rsp: u64,
-    pub fs_base: u64,
-    pub gs_base: u64,
-}
-
-impl Regs {
-    /// Data words of a message, in register order.
-    pub fn words(&self) -> [u64; 6] {
-        [self.rdx, self.r10, self.r8, self.r9, self.r12, self.r13]
-    }
-
-    pub fn set_words(&mut self, w: [u64; 6]) {
-        [self.rdx, self.r10, self.r8, self.r9, self.r12, self.r13] = w;
-    }
-}
-
 /// Thread states (the numbers are `alaya_abi::state`).
 pub mod state {
     pub const STOPPED: u8 = 0;
@@ -135,8 +98,8 @@ pub mod state {
 
 /// Thread flags.
 pub mod tflag {
-    /// Entered the kernel last with `syscall`: `rcx` and `r11` are free, so
-    /// it may return with `sysret`.
+    /// Entered the kernel last with a system call (on a PC, `rcx` and
+    /// `r11` are then free, so it may return with `sysret`).
     pub const SYSCALL: u8 = 1 << 0;
     /// Sending a call (waits for a reply after delivery).
     pub const CALLING: u8 = 1 << 1;
@@ -178,7 +141,7 @@ pub struct Tcb {
     /// Its table, address space and fault endpoint (copies of capabilities,
     /// so revoking those takes them away from the thread too).
     pub slots: [Slot; 3],
-    pub regs: Regs,
+    pub regs: crate::arch::Regs,
     pub state: u8,
     /// Its own priority, and the highest it may give to others.
     pub prio: u8,
@@ -205,7 +168,7 @@ pub struct Tcb {
     pub reply: u64,
     /// Its bound notification.
     pub ntfn: u64,
-    /// A pending fault message: vector, error, address, rip, rsp.
+    /// A pending fault message: vector, error, address, pc, stack pointer.
     pub fault: [u64; 5],
     /// Badge of the endpoint capability it is sending through.
     pub send_badge: u64,
@@ -236,7 +199,7 @@ pub struct Sc {
     pub reply_top: u64,
     /// Release list link.
     pub next_release: u64,
-    /// Time used, in total (TSC ticks).
+    /// Time used, in total (clock ticks).
     pub used: u64,
     pub core_type: u8,
     pub flags: u8,
@@ -247,7 +210,7 @@ pub struct Sc {
     pub pin: u32,
     /// Deadlines it missed.
     pub misses: u32,
-    /// The work's deadline (TSC; 0: none). It travels with the context:
+    /// The work's deadline (clock ticks; 0: none). It travels with the context:
     /// a server running on it is ordered by its caller's deadline.
     pub deadline: u64,
     /// The thread that held it when its last deadline passed.

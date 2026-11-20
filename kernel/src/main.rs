@@ -25,10 +25,10 @@
 
 mod acpi;
 mod arch;
+// The device memory guard is the processor family's own (VT-d on a PC).
+use arch::iommu;
 mod caps;
 mod device;
-mod fpu;
-mod iommu;
 mod ipc;
 mod kstate;
 mod limine;
@@ -50,7 +50,6 @@ mod serial;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use arch::{apic, cpu, idt, legacy};
 use mm::layout::Stack;
 
 /// Printed once the kernel has finished booting. The runners look for it.
@@ -82,22 +81,6 @@ extern "C" fn kmain() -> ! {
         kprintln!("boot: command line \"{cmdline}\"");
     }
 
-    let mut brand = [0; 48];
-    let f = cpu::features();
-    kprintln!("cpu: {}", cpu::brand(&mut brand));
-    kprintln!(
-        "cpu: x2APIC {}, TSC deadline {}, invariant TSC {}, 1 GiB pages {}{}",
-        yes(f.x2apic),
-        yes(f.tsc_deadline),
-        yes(f.invariant_tsc),
-        yes(f.gib_pages),
-        if f.hypervisor {
-            ", running under a hypervisor"
-        } else {
-            ""
-        }
-    );
-
     let mp = limine::mp().expect("bootloader did not report the cores");
     let mut cores = mp.cpu_count as u32;
     if cores as usize > percpu::MAX_CPUS {
@@ -108,52 +91,33 @@ extern "C" fn kmain() -> ! {
         cores = percpu::MAX_CPUS as u32;
     }
     percpu::set_count(cores);
-    let x2apic = mp.flags & limine::MP_X2APIC != 0;
-    percpu::get(0)
-        .apic_id
-        .store(mp.bsp_lapic_id, Ordering::Relaxed);
+    let bsp = mp.bsp_hw_id();
+    percpu::get(0).hw_id.store(bsp, Ordering::Relaxed);
     let mut next = 1;
     for info in mp.cpus() {
-        if info.lapic_id != mp.bsp_lapic_id && (next as usize) < percpu::MAX_CPUS {
+        if info.hw_id() != bsp && (next as usize) < percpu::MAX_CPUS {
             percpu::get(next)
-                .apic_id
-                .store(info.lapic_id, Ordering::Relaxed);
+                .hw_id
+                .store(info.hw_id(), Ordering::Relaxed);
             next += 1;
         }
     }
-    kprintln!(
-        "cpu: {cores} core(s), bootstrap APIC id {}, APIC mode {}",
-        mp.bsp_lapic_id,
-        if x2apic { "x2APIC" } else { "xAPIC" }
-    );
+    arch::boot_before_memory(mp, cores);
 
     mm::print_memory_map();
-    let lapic_mmio = (!x2apic).then(apic::mmio_physical_base);
-    mm::init(cores, lapic_mmio);
-    let hhdm = limine::hhdm_offset().unwrap();
-    apic::set_mode(x2apic, lapic_mmio.map_or(0, |p| p + hhdm));
-
-    idt::init();
-    legacy::disable_pic();
+    mm::init(cores);
+    arch::boot_after_memory();
 
     // Leave the bootloader's stack for this core's own guarded one.
-    let top = Stack::Kernel.top(0);
-    // SAFETY: the stack is mapped and nothing on the old one is used again.
-    unsafe {
-        core::arch::asm!(
-            "mov rsp, {top}",
-            "xor ebp, ebp",
-            "call {main}",
-            top = in(reg) top,
-            main = sym bsp_main,
-            options(noreturn),
-        )
-    }
+    arch::run_on_stack(Stack::Kernel.top(0), bsp_main, 0)
 }
 
-extern "C" fn bsp_main() -> ! {
+extern "C" fn bsp_main(_: u64) -> ! {
     smp::init_this_core(0);
-    kprintln!("cpu 0: online, APIC id {} (bootstrap)", apic::id());
+    kprintln!(
+        "cpu 0: online, hardware id {:#x} (bootstrap)",
+        percpu::get(0).hw_id.load(Ordering::Relaxed)
+    );
     time::calibrate();
     time::init_this_core();
     sched::init_this_core(&mut sync::BKL.lock().sys);
@@ -161,7 +125,7 @@ extern "C" fn bsp_main() -> ! {
 
     let cores = percpu::count();
     let mp = limine::mp().unwrap();
-    smp::start_others(mp.cpus(), mp.bsp_lapic_id);
+    smp::start_others(mp.cpus(), mp.bsp_hw_id());
     let online = || (0..cores).filter(|&i| percpu::get(i).online.load(Ordering::Acquire));
     time::wait_for(
         CORE_TIMEOUT_S,
@@ -174,7 +138,7 @@ extern "C" fn bsp_main() -> ! {
         },
     );
     kprintln!("smp: {cores} of {cores} cores online");
-    report_protections();
+    arch::report_protections();
     kstate::report();
 
     smp::GO.store(true, Ordering::Release);
@@ -207,8 +171,8 @@ extern "C" fn bsp_main() -> ! {
     for i in 0..cores {
         let c = percpu::get(i);
         kprintln!(
-            "core {i}: ready, APIC id {}, {} timer, {} ticks, worst lateness {} us",
-            c.apic_id.load(Ordering::Relaxed),
+            "core {i}: ready, hardware id {:#x}, {} timer, {} ticks, worst lateness {} us",
+            c.hw_id.load(Ordering::Relaxed),
             time::timer_name(),
             c.timer_ticks.load(Ordering::Relaxed),
             c.timer_worst_late_ns.load(Ordering::Relaxed) / 1000
@@ -234,38 +198,6 @@ extern "C" fn bsp_main() -> ! {
     user::start(&platform)
 }
 
-fn report_protections() {
-    use alaya_abi::protect as p;
-    let on = arch::protect::enabled();
-    let has = |bit| yes(on & bit != 0);
-    kprintln!(
-        "protect: SMEP {}, SMAP {}, UMIP {}, tagged memory maps (PCID) {}",
-        has(p::SMEP),
-        has(p::SMAP),
-        has(p::UMIP),
-        has(p::PCID)
-    );
-    kprintln!(
-        "protect: speculation guards: enhanced IBRS {}, IBPB on program switch {}, return-stack refill yes, buffer clearing (MDS) {}, bounds-check barriers yes",
-        has(p::EIBRS),
-        has(p::IBPB),
-        if on & p::VERW != 0 {
-            "yes"
-        } else {
-            "not needed or not offered"
-        }
-    );
-    if on & p::NO_MELTDOWN == 0 {
-        kprintln!(
-            "protect: this CPU does not say it is safe from Meltdown; kernel page-table isolation is not built yet"
-        );
-    }
-}
-
-fn yes(b: bool) -> &'static str {
-    if b { "yes" } else { "no" }
-}
-
 const NO_CPU: u32 = u32::MAX;
 pub(crate) static PANIC_CPU: AtomicU32 = AtomicU32::new(NO_CPU);
 
@@ -274,7 +206,8 @@ pub fn panicking() -> bool {
     PANIC_CPU.load(Ordering::Relaxed) != NO_CPU
 }
 
-/// Claim the panic for this core and stop all other cores with an NMI.
+/// Claim the panic for this core and stop all other cores (an NMI on a
+/// PC).
 /// Returns false if another core is already panicking.
 pub fn begin_panic() -> bool {
     let me = percpu::index();
@@ -284,8 +217,8 @@ pub fn begin_panic() -> bool {
     }
     for i in 0..percpu::count() {
         let c = percpu::get(i);
-        if i != me && c.has_idt.load(Ordering::Acquire) {
-            apic::send_nmi(c.apic_id.load(Ordering::Relaxed));
+        if i != me && c.can_stop.load(Ordering::Acquire) {
+            arch::stop_core(c.hw_id.load(Ordering::Relaxed));
         }
     }
     true

@@ -24,12 +24,11 @@ use core::sync::atomic::Ordering;
 
 use alaya_abi::core_type;
 
-use crate::arch::apic;
-use crate::arch::cpu::{self, cpuid, msr, rdtsc};
-use crate::arch::trap::RESCHED_VECTOR;
+use crate::arch;
+use crate::arch::fpu;
 use crate::obj::{self, FPU_OFFSET, SLOT_SPACE, Sc, Tcb, scflag, state, tflag, tflag2};
 pub use crate::sync::Sys;
-use crate::{fpu, percpu, time};
+use crate::{percpu, time};
 
 pub const PRIORITIES: usize = 256;
 /// Time slice between threads of the same priority.
@@ -98,16 +97,7 @@ fn sc(s: u64) -> &'static mut Sc {
 /// Read this core's type and mark it ready for threads.
 pub fn init_this_core(k: &mut Sys) {
     let me = percpu::index() as usize;
-    let hybrid = cpu::max_leaf() >= 7 && cpuid(7, 0).edx & (1 << 15) != 0;
-    k.cores[me].ctype = if hybrid && cpu::max_leaf() >= 0x1a {
-        match cpuid(0x1a, 0).eax >> 24 {
-            0x40 => core_type::PERFORMANCE as u8,
-            0x20 => core_type::EFFICIENCY as u8,
-            _ => 0,
-        }
-    } else {
-        0
-    };
+    k.cores[me].ctype = arch::core_type();
     k.cores[me].online = true;
     if k.cores[me].ctype != 0 {
         k.hybrid = true;
@@ -275,10 +265,7 @@ pub fn dequeue(k: &mut Sys, t: u64) {
 /// Ask `core` to look at its queues again.
 pub fn kick(core: usize) {
     if core != percpu::index() as usize {
-        apic::send_ipi(
-            percpu::get(core as u32).apic_id.load(Ordering::Relaxed),
-            RESCHED_VECTOR,
-        );
+        arch::wake_core(percpu::get(core as u32).hw_id.load(Ordering::Relaxed));
     }
 }
 
@@ -334,7 +321,7 @@ pub fn make_ready(k: &mut Sys, t: u64) {
         return;
     }
     let s = th.sc;
-    if sc(s).budget.available(rdtsc()) == 0 {
+    if sc(s).budget.available(time::now()) == 0 {
         release_insert(k, s);
         return;
     }
@@ -452,8 +439,8 @@ fn account(k: &mut Sys, core: usize, now: u64) {
             && tcb(t).flags2 & tflag2::TIMEOUTS != 0
             && tcb(t).flags & tflag::FAULTING == 0
         {
-            let used = time::tsc_to_ns(x.used);
-            let wait = time::tsc_to_ns(x.budget.ready_time().saturating_sub(now));
+            let used = time::ticks_to_ns(x.used);
+            let wait = time::ticks_to_ns(x.budget.ready_time().saturating_sub(now));
             crate::ipc::timeout(&mut crate::caps::Phys::new(k), t, used, wait);
         }
     } else {
@@ -467,7 +454,7 @@ fn account(k: &mut Sys, core: usize, now: u64) {
 /// The running thread gives up the rest of its time: to its equals if its
 /// context is a round-robin one, else until its next refill.
 pub fn yield_now(k: &mut Sys, core: usize) {
-    let now = rdtsc();
+    let now = time::now();
     let cs = &mut k.cores[core];
     let s = cs.sc;
     if s == 0 {
@@ -529,7 +516,7 @@ fn steal(k: &mut Sys, core: usize) -> u64 {
 
 /// Choose what this core runs next (0: nothing).
 pub fn schedule(k: &mut Sys, core: usize) -> u64 {
-    let now = rdtsc();
+    let now = time::now();
     release_due(k, core, now);
     account(k, core, now);
     check_deadline(k, core, now);
@@ -563,7 +550,7 @@ pub fn schedule(k: &mut Sys, core: usize) -> u64 {
 /// state, load the new one's, switch address spaces, start charging its
 /// context and arm the timer.
 pub fn switch_to(k: &mut Sys, core: usize, next: u64) {
-    let now = rdtsc();
+    let now = time::now();
     let hhdm = crate::limine::hhdm_offset().unwrap();
     let cur = k.cores[core].current;
     if next != cur {
@@ -585,19 +572,14 @@ pub fn switch_to(k: &mut Sys, core: usize, next: u64) {
                 n.flags |= tflag::FPU_READY;
             }
             fpu::restore(area);
-            // SAFETY: user-mode segment bases; the user GS base sits in
-            // KERNEL_GS_BASE until `swapgs` on the way out.
-            unsafe {
-                cpu::wrmsr(msr::FS_BASE, n.regs.fs_base);
-                cpu::wrmsr(msr::KERNEL_GS_BASE, n.regs.gs_base);
-            }
+            arch::entry::load_user_tls(&n.regs);
             let space = n.slots[SLOT_SPACE].cap.object;
             if space != k.cores[core].space {
                 crate::vspace::load(k, core, space);
                 k.cores[core].space = space;
                 if space != k.cores[core].last_space {
                     // Another program's code runs here next.
-                    crate::arch::protect::on_space_switch();
+                    arch::on_space_switch();
                     k.cores[core].last_space = space;
                 }
             }
@@ -623,7 +605,7 @@ pub fn switch_to(k: &mut Sys, core: usize, next: u64) {
     if next != 0 {
         let n = tcb(next);
         if n.slice_end <= now {
-            n.slice_end = now + time::ns_to_tsc(SLICE_NS);
+            n.slice_end = now + time::ns_to_ticks(SLICE_NS);
         }
         k.cores[core].slice_end = n.slice_end;
     }
@@ -670,7 +652,7 @@ pub fn evict(k: &mut Sys, t: u64) -> bool {
         th.flags &= !tflag::CURRENT;
         k.cores[core].current = 0;
         if k.cores[core].sc == th.sc {
-            charge(k, core, rdtsc());
+            charge(k, core, time::now());
         }
         return true;
     }
@@ -687,7 +669,7 @@ pub fn evict_sc(k: &mut Sys, s: u64) -> bool {
     for c in 0..percpu::count() as usize {
         if k.cores[c].sc == s {
             if c == me {
-                charge(k, c, rdtsc());
+                charge(k, c, time::now());
             } else {
                 kick(c);
                 done = false;
@@ -699,7 +681,7 @@ pub fn evict_sc(k: &mut Sys, s: u64) -> bool {
 
 /// The timer fired on this core.
 pub fn timer(k: &mut Sys, core: usize) {
-    let now = rdtsc();
+    let now = time::now();
     release_due(k, core, now);
     account(k, core, now);
     check_deadline(k, core, now);

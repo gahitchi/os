@@ -66,7 +66,7 @@ pub mod debug {
     /// The core the caller runs on, in result 0.
     pub const CORE: u64 = 3;
     /// Big kernel lock use, summed over all cores since boot: times taken,
-    /// times a core had to wait, TSC ticks spent waiting, and held.
+    /// times a core had to wait, clock ticks spent waiting, and held.
     pub const LOCK_STATS: u64 = 4;
     pub const MAX_PRINT: usize = 256;
 }
@@ -454,8 +454,9 @@ pub struct BootInfo {
     pub sched: u64,
     pub space: u64,
     pub sched_control: u64,
-    /// TSC ticks per second.
-    pub tsc_hz: u64,
+    /// Clock ticks per second (the clock programs read with
+    /// `alaya_sys::clock()`: the TSC on a PC, the generic timer on ARM).
+    pub clock_hz: u64,
     /// Where the program's image lies, for programs that copy it.
     pub image_start: u64,
     pub image_end: u64,
@@ -599,7 +600,7 @@ pub const PROGRAM_STACK_BYTES: u64 = 64 * 1024;
 pub struct StartInfo {
     pub magic: u64,
     pub name: [u8; 32],
-    pub tsc_hz: u64,
+    pub clock_hz: u64,
     pub cores: u64,
     /// The size of its untyped (`start::UNTYPED`), as a power of two.
     pub untyped_bits: u64,

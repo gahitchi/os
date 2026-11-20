@@ -65,7 +65,7 @@ extern "C" fn null_client(ep: u64) -> ! {
 
 /// Run the checks; returns the next free slot.
 pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str)) -> u64 {
-    HZ.store(info.tsc_hz, SeqCst);
+    HZ.store(info.clock_hz, SeqCst);
     let mut k = Kit {
         info,
         ut: 0,
@@ -168,12 +168,12 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         k.thread(null_client, ep, 140, 1000, 1000, c + 1);
     }
     let before = alaya_sys::lock_stats();
-    let start = alaya_sys::rdtsc();
+    let start = alaya_sys::clock();
     CALLS.store(0, SeqCst);
     sleep_ms(500);
     let calls = CALLS.load(SeqCst);
     let after = alaya_sys::lock_stats();
-    let elapsed = alaya_sys::rdtsc() - start;
+    let elapsed = alaya_sys::clock() - start;
     STOP.store(1, SeqCst);
     let takes = after[0] - before[0];
     let waits = after[1] - before[1];

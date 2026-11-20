@@ -12,7 +12,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::arch::cpu::{self, cpuid};
+use super::cpu::{self, cpuid};
 use crate::obj::FPU_BYTES;
 
 pub(crate) static XSAVE: AtomicBool = AtomicBool::new(false);

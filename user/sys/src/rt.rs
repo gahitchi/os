@@ -11,7 +11,7 @@ use crate::{At, Error, Kind};
 
 static mut NAME: [u8; 32] = [0; 32];
 static NAME_LEN: AtomicU64 = AtomicU64::new(0);
-static TSC_HZ: AtomicU64 = AtomicU64::new(1_000_000_000);
+static CLOCK_HZ: AtomicU64 = AtomicU64::new(1_000_000_000);
 
 /// Set up the runtime from the start information. Called by [`entry!`].
 pub fn init(info: &StartInfo) {
@@ -19,7 +19,7 @@ pub fn init(info: &StartInfo) {
     // SAFETY: written once, before any other thread of the program runs.
     unsafe { (&mut *core::ptr::addr_of_mut!(NAME))[..n].copy_from_slice(&info.name[..n]) };
     NAME_LEN.store(n as u64, Ordering::Relaxed);
-    TSC_HZ.store(info.tsc_hz.max(1), Ordering::Relaxed);
+    CLOCK_HZ.store(info.clock_hz.max(1), Ordering::Relaxed);
 }
 
 /// The program's name.
@@ -32,8 +32,8 @@ pub fn name() -> &'static str {
 
 /// Milliseconds since boot, from the time-stamp counter.
 pub fn now_ms() -> u64 {
-    let hz = TSC_HZ.load(Ordering::Relaxed);
-    (crate::rdtsc() as u128 * 1000 / hz as u128) as u64
+    let hz = CLOCK_HZ.load(Ordering::Relaxed);
+    (crate::clock() as u128 * 1000 / hz as u128) as u64
 }
 
 struct Line {

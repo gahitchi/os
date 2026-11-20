@@ -125,7 +125,7 @@ impl<T> BigKernelLock<T> {
 
     pub fn lock(&self) -> BklGuard<'_, T> {
         let me = crate::percpu::index();
-        if arch::cpu::interrupts_enabled() {
+        if arch::interrupts_enabled() {
             panic!("big kernel lock taken with interrupts on (cpu {me})");
         }
         if self.owner.load(Ordering::Relaxed) == me {
@@ -133,7 +133,7 @@ impl<T> BigKernelLock<T> {
         }
         let ticket = self.next.fetch_add(1, Ordering::Relaxed);
         let stats = crate::percpu::get(me);
-        let mut now = arch::cpu::rdtsc();
+        let mut now = crate::time::now();
         if self.serving.load(Ordering::Acquire) != ticket {
             let start = now;
             while self.serving.load(Ordering::Acquire) != ticket {
@@ -141,7 +141,7 @@ impl<T> BigKernelLock<T> {
                 crate::vspace::poll_flush();
                 arch::spin_hint();
             }
-            now = arch::cpu::rdtsc();
+            now = crate::time::now();
             stats.lock_waits.fetch_add(1, Ordering::Relaxed);
             stats
                 .lock_wait_ticks
@@ -184,7 +184,7 @@ impl<T> DerefMut for BklGuard<'_, T> {
 impl<T> Drop for BklGuard<'_, T> {
     fn drop(&mut self) {
         let stats = crate::percpu::this();
-        let held = arch::cpu::rdtsc().wrapping_sub(stats.lock_since.load(Ordering::Relaxed));
+        let held = crate::time::now().wrapping_sub(stats.lock_since.load(Ordering::Relaxed));
         stats.lock_held_ticks.fetch_add(held, Ordering::Relaxed);
         self.lock.owner.store(NO_OWNER, Ordering::Relaxed);
         self.lock.serving.fetch_add(1, Ordering::Release);
