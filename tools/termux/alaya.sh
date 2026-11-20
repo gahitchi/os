@@ -12,7 +12,7 @@
 # Options (environment):
 #   ALAYA_CPUS=2            virtual cores (default 1); "all" = every host core
 #   ALAYA_ACCEL=auto        kvm, tcg or auto (default: kvm if /dev/kvm is usable)
-#   ALAYA_TIMEOUT=300       seconds before "test" gives up (default 300)
+#   ALAYA_TIMEOUT=600       seconds before "test" gives up (default 600)
 #   ALAYA_IMAGE_URL=...     download from somewhere else
 #   ALAYA_DIR=...           where images are kept (default ~/alaya)
 
@@ -23,7 +23,7 @@ IMAGE_URL="${ALAYA_IMAGE_URL:-$REPO_URL/releases/download/nightly/alaya-x86_64.i
 DIR="${ALAYA_DIR:-$HOME/alaya}"
 CPUS="${ALAYA_CPUS:-1}"
 ACCEL="${ALAYA_ACCEL:-auto}"
-TIMEOUT="${ALAYA_TIMEOUT:-300}"
+TIMEOUT="${ALAYA_TIMEOUT:-600}"
 OK_MARKER="alaya: boot ok"
 PANIC_MARKER="alaya: panic"
 # Each core prints "core <n>: ready, ..." once it passed its self-tests.
@@ -95,8 +95,19 @@ qemu_args() {
     else
         printf '%s\n' -accel tcg
     fi
+    # The device memory guard (IOMMU) and the small virtual disk the boot
+    # checks use (milestone 4).
+    local disk="$DIR/disk.img"
+    if [ ! -f "$disk" ]; then
+        mkdir -p "$DIR"
+        head -c 1048576 /dev/zero >"$disk"
+    fi
     printf '%s\n' -machine q35 -m 256M -smp "$CPUS" -no-reboot \
-        -display none -monitor none -cdrom "$1"
+        -display none -monitor none \
+        -device intel-iommu,aw-bits=48,intremap=off \
+        -drive "file=$disk,if=none,id=disk0,format=raw" \
+        -device virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on \
+        -cdrom "$1"
 }
 
 run() {

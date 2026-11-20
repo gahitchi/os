@@ -14,13 +14,13 @@
 //! (`Sc::reply_top`). A server that runs out of borrowed time waits for the
 //! caller's next refill (decision 55).
 
-use alaya_abi::{Error, FAULT_LABEL, Info, Kind, rights};
+use alaya_abi::{Error, FAULT_LABEL, Info, Kind, TIMEOUT_LABEL, rights};
 use alaya_cap::{self as cap, Memory, SlotRef};
 
 use crate::caps::Phys;
 use crate::obj::{
     self, Endpoint, Notification, Queue, Reply, SLOT_FAULT, SLOT_TABLE, Sc, Tcb, epstate, state,
-    tflag,
+    tflag, tflag2,
 };
 use crate::sched;
 
@@ -102,6 +102,7 @@ pub fn wake(k: &mut sched::Sys, t: u64, e: Error) {
     th.state = state::READY;
     th.waiting = 0;
     th.flags &= !(tflag::CALLING | tflag::FAULTING | tflag::SEND_GRANT);
+    th.flags2 &= !tflag2::TIMED_OUT;
     sched::make_ready(k, t);
 }
 
@@ -110,10 +111,12 @@ fn transfer(m: &mut Phys, from: u64, to: u64, badge: u64, grant: bool, called: b
     let f = tcb(from);
     let (mut info, words) = if f.flags & tflag::FAULTING != 0 {
         let x = f.fault;
-        (
-            Info::new(FAULT_LABEL, 5).0,
-            [x[0], x[1], x[2], x[3], x[4], 0],
-        )
+        let label = if f.flags2 & tflag2::TIMED_OUT != 0 {
+            TIMEOUT_LABEL
+        } else {
+            FAULT_LABEL
+        };
+        (Info::new(label, 5).0, [x[0], x[1], x[2], x[3], x[4], 0])
     } else {
         let i = Info(f.regs.rsi);
         let n = i.words().min(Info::MAX_WORDS) as usize;
@@ -295,8 +298,10 @@ pub fn answer(m: &mut Phys, me: u64, rep: u64) {
     if caller != 0 {
         let c = tcb(caller);
         if c.flags & tflag::FAULTING != 0 {
-            // A fault was handled: the thread tries the instruction again.
+            // A fault was handled: the thread tries the instruction again
+            // (or, after a timeout, goes on waiting for its caller's time).
             c.flags &= !tflag::FAULTING;
+            c.flags2 &= !tflag2::TIMED_OUT;
         } else {
             transfer(m, me, caller, 0, true, false);
         }
@@ -426,6 +431,7 @@ pub fn cancel(k: &mut sched::Sys, t: u64) {
     let _ = k;
     th.waiting = 0;
     th.flags &= !(tflag::CALLING | tflag::FAULTING | tflag::SEND_GRANT);
+    th.flags2 &= !tflag2::TIMED_OUT;
 }
 
 /// Stop a thread: cancel its wait and take it off every core. Returns
@@ -460,6 +466,21 @@ pub fn fault(m: &mut Phys, t: u64, vector: u64, error: u64, addr: u64) {
         crate::kprintln!("fault: more threads stopped by faults; not reporting them");
     }
     let _ = stop(m.sys, t);
+}
+
+/// `t`, serving a call, used up the time its caller lent it: send a timeout
+/// message to its fault endpoint, if it has one. Without one nothing
+/// happens: it waits for the caller's next refill.
+pub fn timeout(m: &mut Phys, t: u64, used_ns: u64, wait_ns: u64) {
+    let th = tcb(t);
+    let fe = th.slots[SLOT_FAULT].cap;
+    if !fe.is(Kind::Endpoint) || fe.rights & rights::WRITE == 0 {
+        return;
+    }
+    th.fault = [0, used_ns, wait_ns, th.regs.rip, th.regs.rsp];
+    th.flags |= tflag::FAULTING;
+    th.flags2 |= tflag2::TIMED_OUT;
+    let _ = send(m, t, fe.object, fe.a, false, true, true);
 }
 
 /// The last capability to an endpoint or notification goes: wake every

@@ -27,7 +27,7 @@ use alaya_abi::core_type;
 use crate::arch::apic;
 use crate::arch::cpu::{self, cpuid, msr, rdtsc};
 use crate::arch::trap::RESCHED_VECTOR;
-use crate::obj::{self, FPU_OFFSET, SLOT_SPACE, Sc, Tcb, scflag, state, tflag};
+use crate::obj::{self, FPU_OFFSET, SLOT_SPACE, Sc, Tcb, scflag, state, tflag, tflag2};
 pub use crate::sync::Sys;
 use crate::{fpu, percpu, time};
 
@@ -155,6 +155,19 @@ pub fn schedulable(t: u64) -> bool {
         && obj::space_meta(th.slots[SLOT_SPACE].cap.object).id != 0
 }
 
+/// Where a thread goes among its equals: by the deadline of the context it
+/// runs on, soonest first (decision 81); no deadline sorts last.
+fn key(t: u64) -> u64 {
+    let s = tcb(t).sc;
+    match if s == 0 { 0 } else { sc(s).deadline } {
+        0 => u64::MAX,
+        d => d,
+    }
+}
+
+/// Queue `t` among the threads of its priority on `core`, in deadline
+/// order: before its equals if `front` (it was preempted and keeps its
+/// turn), after them otherwise.
 fn enqueue(k: &mut Sys, core: usize, t: u64, front: bool) {
     let p = eff_prio(t);
     let cs = &mut k.cores[core];
@@ -164,24 +177,72 @@ fn enqueue(k: &mut Sys, core: usize, t: u64, front: bool) {
     th.core = core as u16;
     th.qprio = p;
     let pi = p as usize;
-    if cs.head[pi] == 0 {
-        th.next = 0;
-        th.prev = 0;
-        cs.head[pi] = t;
-        cs.tail[pi] = t;
-    } else if front {
-        th.prev = 0;
-        th.next = cs.head[pi];
-        tcb(cs.head[pi]).prev = t;
-        cs.head[pi] = t;
-    } else {
+    let mine = key(t);
+    // The first queued thread `t` goes before.
+    let mut at = cs.head[pi];
+    while at != 0
+        && (if front {
+            key(at) < mine
+        } else {
+            key(at) <= mine
+        })
+    {
+        at = tcb(at).next;
+    }
+    let th = tcb(t);
+    if at == 0 {
         th.next = 0;
         th.prev = cs.tail[pi];
-        tcb(cs.tail[pi]).next = t;
+        if cs.tail[pi] == 0 {
+            cs.head[pi] = t;
+        } else {
+            tcb(cs.tail[pi]).next = t;
+        }
         cs.tail[pi] = t;
+    } else {
+        let before = tcb(at).prev;
+        th.next = at;
+        th.prev = before;
+        tcb(at).prev = t;
+        if before == 0 {
+            cs.head[pi] = t;
+        } else {
+            tcb(before).next = t;
+        }
     }
     cs.bitmap[pi / 64] |= 1 << (pi % 64);
     cs.queued += 1;
+}
+
+/// A context's deadline changed: put its thread in its new place.
+pub fn deadline_changed(k: &mut Sys, s: u64) {
+    let t = sc(s).thread;
+    if t == 0 {
+        return;
+    }
+    let th = tcb(t);
+    let core = th.core as usize;
+    if th.flags & tflag::QUEUED != 0 {
+        dequeue(k, t);
+        enqueue(k, core, t, false);
+        kick(core);
+    } else if th.flags & tflag::CURRENT != 0 {
+        kick(core);
+    }
+}
+
+/// Record a deadline that passed while its context ran here.
+fn check_deadline(k: &mut Sys, core: usize, now: u64) {
+    let s = k.cores[core].sc;
+    if s == 0 {
+        return;
+    }
+    let x = sc(s);
+    if x.deadline != 0 && now >= x.deadline && x.flags & scflag::MISSED == 0 {
+        x.flags |= scflag::MISSED;
+        x.misses = x.misses.wrapping_add(1);
+        x.missed_by = k.cores[core].current;
+    }
 }
 
 /// Take a thread out of its run queue, if it is in one.
@@ -380,6 +441,21 @@ fn account(k: &mut Sys, core: usize, now: u64) {
     let avail = sc(s).budget.available(now);
     if avail == 0 {
         release_insert(k, s);
+        // A thread serving a call ran out of its caller's time: tell its
+        // handler, if it asked for that (decision 55 follow-up).
+        let t = k.cores[core].current;
+        let x = sc(s);
+        if t != 0
+            && tcb(t).sc == s
+            && x.home != t
+            && tcb(t).state == state::READY
+            && tcb(t).flags2 & tflag2::TIMEOUTS != 0
+            && tcb(t).flags & tflag::FAULTING == 0
+        {
+            let used = time::tsc_to_ns(x.used);
+            let wait = time::tsc_to_ns(x.budget.ready_time().saturating_sub(now));
+            crate::ipc::timeout(&mut crate::caps::Phys::new(k), t, used, wait);
+        }
     } else {
         let cs = &mut k.cores[core];
         cs.sc = s;
@@ -456,13 +532,16 @@ pub fn schedule(k: &mut Sys, core: usize) -> u64 {
     let now = rdtsc();
     release_due(k, core, now);
     account(k, core, now);
+    check_deadline(k, core, now);
     let cur = k.cores[core].current;
     let cur_ok = cur != 0 && schedulable(cur) && allowed(k, tcb(cur).sc, core);
     let best = k.cores[core].best();
     if cur_ok {
         let p = eff_prio(cur);
         let rotate = now >= k.cores[core].slice_end && best == Some(p);
-        if !rotate && best.is_none_or(|b| b <= p) {
+        // An equal with a sooner deadline goes first.
+        let sooner = best == Some(p) && key(k.cores[core].head[p as usize]) < key(cur);
+        if !rotate && !sooner && best.is_none_or(|b| b <= p) {
             return cur;
         }
         enqueue(k, core, cur, !rotate);
@@ -557,6 +636,10 @@ pub fn arm(k: &Sys, core: usize, now: u64) {
     let mut d = u64::MAX;
     if cs.sc != 0 {
         d = d.min(cs.sc_end);
+        let x = sc(cs.sc);
+        if x.deadline != 0 && x.flags & scflag::MISSED == 0 {
+            d = d.min(x.deadline);
+        }
         if cs.current != 0 && cs.best() == Some(eff_prio(cs.current)) {
             d = d.min(cs.slice_end);
         }
@@ -619,4 +702,5 @@ pub fn timer(k: &mut Sys, core: usize) {
     let now = rdtsc();
     release_due(k, core, now);
     account(k, core, now);
+    check_deadline(k, core, now);
 }

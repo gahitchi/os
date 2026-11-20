@@ -7,7 +7,9 @@ use alaya_cap::{self as cap, Cap, Globals, INTERNAL, Memory, SlotRef};
 
 use crate::arch::cpu::rdtsc;
 use crate::caps::{Outcome, Phys};
-use crate::obj::{self, SLOT_FAULT, SLOT_SPACE, SLOT_TABLE, Sc, Tcb, internal, state, tflag};
+use crate::obj::{
+    self, SLOT_FAULT, SLOT_SPACE, SLOT_TABLE, Sc, Tcb, internal, scflag, state, tflag, tflag2,
+};
 use crate::syscall::USER_END;
 use crate::{ipc, percpu, sched, time, vspace};
 
@@ -144,6 +146,15 @@ pub fn thread(
                 Ok(Outcome::Restart)
             }
         }
+        op::THREAD_TIMEOUTS => {
+            let th = tcb(t);
+            if a[0] != 0 {
+                th.flags2 |= tflag2::TIMEOUTS;
+            } else {
+                th.flags2 &= !tflag2::TIMEOUTS;
+            }
+            OK
+        }
         op::THREAD_BIND => {
             let th = tcb(t);
             if a[0] == 0 {
@@ -217,6 +228,23 @@ pub fn sched_context(
             }
             sched::release_remove(m.sys, s);
             OK
+        }
+        op::SC_DEADLINE => {
+            let now = rdtsc();
+            let mut missed = 0;
+            if x.deadline != 0 && now >= x.deadline {
+                missed = 1;
+                if x.flags & scflag::MISSED == 0 {
+                    // It passed while the context was not running: blame
+                    // whoever held it.
+                    x.misses = x.misses.wrapping_add(1);
+                    x.missed_by = x.thread;
+                }
+            }
+            x.deadline = a[0];
+            x.flags &= !scflag::MISSED;
+            sched::deadline_changed(m.sys, s);
+            done([u64::from(x.misses), x.missed_by, missed, 0])
         }
         op::SC_INFO => done([
             time::tsc_to_ns(x.budget.budget),

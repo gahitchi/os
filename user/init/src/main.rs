@@ -20,6 +20,7 @@ mod fuzz;
 mod m3;
 mod m4;
 mod m4b;
+mod m4c;
 
 core::arch::global_asm!(
     ".section .text._start, \"ax\"",
@@ -369,6 +370,7 @@ extern "C" fn main(info: &'static BootInfo) -> ! {
     slots.next = m3::run(info, u, slots.next, &mut pass);
     slots.next = m4::run(info, u, slots.next, &mut pass);
     slots.next = m4b::run(info, u, slots.next, &mut pass);
+    slots.next = m4c::run(info, u, slots.next, &mut pass);
     if info.flags & boot_flags::FUZZ != 0 {
         fuzz::run(info, u, slots.next, info.fuzz_seconds);
     }

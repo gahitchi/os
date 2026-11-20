@@ -95,6 +95,11 @@ jobs:
       - name: Kernel fuzzer, KVM, 8 cores, 120 s
         run: cargo xtask test --accel kvm --cpus 8 --fuzz 120
 
+      # Milestone 4: the driver is killed at random for 10 minutes while the
+      # test app uses the disk; no wrong answer may reach it.
+      - name: Driver chaos, KVM, 8 cores, 10 minutes
+        run: cargo xtask test --accel kvm --cpus 8 --long
+
       - name: Boot with the Termux script
         run: |
           ALAYA_ACCEL=tcg ALAYA_CPUS=2 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
@@ -111,8 +116,9 @@ jobs:
             build/alaya-x86_64.iso.sha256
           if-no-files-found: error
 
-  # The TLA+ models (formal/): capabilities and revoke, and the scheduler
-  # with time budgets and lent time. Each has must-fail checks too.
+  # The TLA+ models (formal/): capabilities and revoke, the scheduler with
+  # time budgets and lent time, and the driver keeper's crash-and-resend
+  # rule. Each has must-fail checks too.
   tla:
     name: TLA+ models
     runs-on: ubuntu-24.04

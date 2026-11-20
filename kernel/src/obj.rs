@@ -154,6 +154,15 @@ pub mod tflag {
     pub const CURRENT: u8 = 1 << 6;
 }
 
+/// More thread flags (`Tcb::flags2`).
+pub mod tflag2 {
+    /// Send a timeout message to the fault endpoint when lent time runs
+    /// out while serving a call (decision 55 follow-up).
+    pub const TIMEOUTS: u8 = 1 << 0;
+    /// The pending fault message is a timeout message.
+    pub const TIMED_OUT: u8 = 1 << 1;
+}
+
 /// Internal slots of a thread.
 pub const SLOT_TABLE: usize = 0;
 pub const SLOT_SPACE: usize = 1;
@@ -180,7 +189,8 @@ pub struct Tcb {
     pub core: u16,
     /// The priority it was queued at.
     pub qprio: u8,
-    pub _pad: u8,
+    /// [`tflag2`] bits.
+    pub flags2: u8,
     /// The scheduling context it runs on now: its own, or one lent by a
     /// caller.
     pub sc: u64,
@@ -210,6 +220,8 @@ const _: () = assert!(core::mem::size_of::<Tcb>() as u64 <= FPU_OFFSET - 8);
 pub mod scflag {
     /// Out of budget, on its core's release list.
     pub const RELEASING: u8 = 1 << 0;
+    /// Its deadline passed and the miss was recorded.
+    pub const MISSED: u8 = 1 << 1;
 }
 
 /// A scheduling context (256 bytes).
@@ -233,7 +245,13 @@ pub struct Sc {
     pub core: u32,
     /// Keep it on core `pin - 1` (0: any core of `core_type`).
     pub pin: u32,
-    pub _pad2: u32,
+    /// Deadlines it missed.
+    pub misses: u32,
+    /// The work's deadline (TSC; 0: none). It travels with the context:
+    /// a server running on it is ordered by its caller's deadline.
+    pub deadline: u64,
+    /// The thread that held it when its last deadline passed.
+    pub missed_by: u64,
 }
 
 const _: () = assert!(core::mem::size_of::<Sc>() <= (1 << SCHED_BITS) - 8);

@@ -116,6 +116,11 @@ pub mod op {
     /// Bind a notification: arg 0 = notification handle (0: unbind). A
     /// thread waiting in `recv` then also wakes for its signals.
     pub const THREAD_BIND: u64 = 38;
+    /// Timeout messages: arg 0 = 1 to send one to the thread's fault
+    /// endpoint whenever time lent to it by a caller runs out (label
+    /// [`super::TIMEOUT_LABEL`]); 0 to just wait for the caller's next
+    /// refill, as before (decision 55).
+    pub const THREAD_TIMEOUTS: u64 = 39;
 
     // On a scheduling context.
     /// Bind to a thread: arg 0 = thread handle.
@@ -124,6 +129,13 @@ pub mod op {
     /// Results = budget ns, period ns, time used in total ns, core it last
     /// ran on.
     pub const SC_INFO: u64 = 50;
+    /// Set the deadline of the work this context pays for: arg 0 = the
+    /// time-stamp counter value it is due at (0: none). Threads of equal
+    /// priority run soonest deadline first; priority always wins
+    /// (decision 81). Results = deadlines missed in total, the thread
+    /// object that held the context when the last one passed, and 1 if the
+    /// deadline this call replaces was missed.
+    pub const SC_DEADLINE: u64 = 51;
 
     // On the scheduling control capability.
     /// Configure a scheduling context: args = its handle, budget µs, period
@@ -256,6 +268,12 @@ impl Info {
 /// Label of a fault message, sent for a thread that faulted to its fault
 /// endpoint. Words: vector, error code, faulting address, rip, rsp.
 pub const FAULT_LABEL: u64 = 0xfa_17;
+
+/// Label of a timeout message: a thread serving a call ran out of the time
+/// its caller lent it (see [`op::THREAD_TIMEOUTS`]). Words: 0, time it
+/// used of the caller's context (ns), how long until that context's next
+/// refill (ns), rip, rsp. Answering it lets the thread wait for the refill.
+pub const TIMEOUT_LABEL: u64 = 0x71_3e;
 
 /// Highest priority.
 pub const MAX_PRIORITY: u64 = 255;

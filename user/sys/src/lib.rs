@@ -493,6 +493,21 @@ pub fn irq_msi(irq: u64) -> Result<(u64, u64, u64), Error> {
     call(irq, abi::op::IRQ_MSI, [0; 6]).map(|r| (r[0], r[1], r[2]))
 }
 
+/// Set the deadline of the work `sc` pays for, in time-stamp counter
+/// ticks (0: none). Returns deadlines missed in total, the thread object
+/// that held the context when the last one passed, and whether the
+/// deadline it replaces was missed.
+pub fn sc_deadline(sc: u64, tsc: u64) -> Result<(u64, u64, bool), Error> {
+    call(sc, abi::op::SC_DEADLINE, [tsc, 0, 0, 0, 0, 0]).map(|r| (r[0], r[1], r[2] != 0))
+}
+
+/// Ask for a timeout message (to the fault endpoint) when time lent to
+/// thread `t` by a caller runs out.
+pub fn thread_timeouts(t: u64, on: bool) -> Result<(), Error> {
+    call(t, abi::op::THREAD_TIMEOUTS, [u64::from(on), 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+pub mod cores;
 pub mod elf;
 pub mod program;
 pub mod rt;

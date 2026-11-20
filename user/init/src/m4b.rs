@@ -47,6 +47,15 @@ const APP: u64 = 2;
 const APP_BUDGET: u64 = 4 << 20;
 const OWN: u64 = 3;
 const OWN_BUDGET: u64 = 2 << 20;
+/// The fuzzer's account (badge 1), and its budget.
+const FUZZ: u64 = 1;
+const FUZZ_BUDGET: u64 = 1 << 20;
+
+/// Handles the fuzzer attacks the helpers with, and checks them with
+/// afterwards: registry, memory helper and keeper (app side) copies for
+/// it; then the first program's own registry, keeper control and memory
+/// helper handles.
+pub static HELPERS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 
 const APP_THREADS: u64 = 4;
 const APP_SPAN: u64 = 16;
@@ -137,6 +146,7 @@ fn budget(badge: u64) -> u64 {
     match badge {
         APP => APP_BUDGET,
         OWN => OWN_BUDGET,
+        FUZZ => FUZZ_BUDGET,
         _ => 0,
     }
 }
@@ -911,6 +921,18 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
 
     t.stop.store(1, SeqCst);
     no_wrong_answers(t);
+    let client = badged(&mut k, ep, k::CLIENT);
+    let targets = [
+        badged(&mut k, reg, FUZZ),
+        badged(&mut k, mem_ep, FUZZ),
+        client,
+        reg_init,
+        ctl,
+        mem_own,
+    ];
+    for (h, v) in HELPERS.iter().zip(targets) {
+        h.store(v, SeqCst);
+    }
     say!(
         "the test app got {} right answers in all, 0 wrong",
         t.ok.load(SeqCst)
