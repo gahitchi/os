@@ -1,6 +1,6 @@
 # Alaya: answers instead of data, and app promises that survive updates
 
-Draft, 20 November 2026. Written from your third review, "Alaya OS: Where else can we innovate?", and checked against every decision so far (up to 87), the principles, `contradictions.md`, `commitments.md` and `continuity.md`. Waiting for your approval and two choices (section 6).
+Draft, 20 November 2026. Written from your third review, "Alaya OS: Where else can we innovate?", and checked against every decision so far (up to 87), the principles, `contradictions.md`, `commitments.md` and `continuity.md`. Both choices are answered (decisions 88 and 89); the roadmap changes wait for your approval.
 
 The short version: **an app can get the answer it needs without getting your data, and an app update can never quietly give itself more access.** The two bigger ideas in the review, one shared home for your data that any app can use, and handing work to your other computer, are kept for later so the roadmap doesn't grow out of control.
 
@@ -82,7 +82,7 @@ When an app updates and the new version wants more than the old one had, Alaya s
 
 - An app's install list (decision 37) becomes its **promise**. That is everything it may touch, as you approved it, and you can untick items (60).
 - **An update can never widen the promise by itself.** Signed by the same developer or not, the new version starts with exactly the old version's limits.
-- New asks are shown as a difference (section 6, choice 1, decides when you are asked).
+- New asks are shown as a difference (decision 88: you are asked when the app first tries to use them).
 - During the update's 10-minute trial (decision 80), Alaya also notes what the new version **tried** to do: a new internet place it tried to reach, a file it tried to open. That goes into the update note. This is evidence, not proof, and the promise is still the real wall.
 - **Security updates are never held back** because an app wants more. The update installs with the old limits, and only the new asks wait for you.
 
@@ -104,7 +104,7 @@ When an app updates and the new version wants more than the old one had, Alaya s
 
 ## 4. Kept for later
 
-**A shared home for your data (personal state plane).** This means notes, calendar entries and contacts stored as Alaya objects, which any compatible app can open, so you can swap apps without exporting. It is a great idea and a big bet: it only works if apps support it. Solid and local-first research (Automerge) show how hard it is. The honest small version uses **one or two data types and two apps written separately**, and nothing is ever lost when an app doesn't understand a field. Where it goes is choice 2.
+**A shared home for your data (personal state plane).** This means notes, calendar entries and contacts stored as Alaya objects, which any compatible app can open, so you can swap apps without exporting. It is a great idea and a big bet: it only works if apps support it. Solid and local-first research (Automerge) show how hard it is. The honest small version uses **one or two data types and two apps written separately**, and nothing is ever lost when an app doesn't understand a field. It waits until Alaya runs everyday apps (decision 89).
 
 **Handing work to your other computer (portable authority).** This means sending a long job (a build, a render) to another Alaya machine with exactly the same limits, plus a receipt. Revoking it while the other machine is offline can't be instant, so it would need short leases. It needs the network (10) and machine identity first, so it goes on the parked list next to B7.
 
@@ -123,8 +123,8 @@ The kernel doesn't change. Answer helpers are ordinary programs that use the gra
 
 ## 6. Your choices
 
-1. **When an update asks for more access, what should happen?** Recommended: **update straight away with the old limits, and ask about the new things only when the app first tries to use them.** That way security fixes never wait. The other choice is to hold the whole update until you decide.
-2. **When should we try the shared home for your data?** Recommended: **later, after Alaya can run everyday apps** (with milestone 16, on the parked list), so the roadmap doesn't balloon. The other choice is a small version in milestone 8, with notes as the first shared type.
+1. **When an update asks for more access, what should happen?** Decided (88): **update straight away with the old limits, and ask about the new things only when the app first tries to use them.** That way security fixes never wait. The other choice is to hold the whole update until you decide.
+2. **When should we try the shared home for your data?** Decided (89): **later, after Alaya can run everyday apps** (with milestone 16, on the parked list), so the roadmap doesn't balloon. The other choice is a small version in milestone 8, with notes as the first shared type.
 
 ## 7. Rules that follow (stand unless you object)
 
