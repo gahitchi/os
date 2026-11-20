@@ -1,6 +1,6 @@
 # Alaya: principles
 
-Draft 2, 19 November 2026. Waiting for approval. Each principle is designed in depth, with all choices, in `principles-design.md`.
+Draft 3, 20 November 2026 (wording fixes from `contradictions.md`). Waiting for approval. Each principle is designed in depth, with all choices, in `principles-design.md`.
 
 This is the short list of what Alaya is. Every new idea, decision and milestone is checked against it. If something breaks a principle, we either change the idea or change the principle on purpose, never by accident.
 
@@ -23,13 +23,13 @@ Your computer remembers everything, and apps only get what you hand them. No oth
 
 ## 2. Private by design
 
-Nothing gets in by default. You decide what each app can touch.
+Apps only see what you hand them, and you can see everything they did.
 
-- **Always**: an app starts with only its own folder. Anything else (a file, a folder, the camera, a controller) arrives only when you hand it over: by opening or saving a file, by dragging, or by accepting the app's list when you install it.
+- **Always**: an app starts with only its own folder, plus the files of the task it is opened in. Anything else (a file, a folder, the camera, a controller) arrives only when you hand it over: by opening or saving a file, by dragging, or by accepting the app's list when you install it.
 - **Always**: let you untick any single thing an app asks for, and show a light whenever the camera, microphone or screen capture is in use.
 - **Always**: keep a log you can read of what each app opened, changed, deleted and connected to, and let you cut any app off.
 - **Always**: lock the whole disk with encryption, and give each person their own key.
-- **Never**: send anything about you anywhere without you seeing it first (no tracking, no hidden reports, crash reports only after you review them).
+- **Never**: let Alaya itself send anything about you anywhere without you seeing it first (no tracking, no hidden reports, crash reports only after you review them).
 - **Never**: need an account, a company server or a cloud to work.
 - **How we check**: a test app that tries to reach files it wasn't given gets nothing. The permission screen lists everything every app can touch. A fresh system with no apps open sends nothing over the network.
 - **Agreed exceptions** (confirmed 19 November 2026): the network is open to all apps by default, like on Windows, any app can read the clipboard, and the terminal sees all of your own files. Each one is recorded in the log, and the "private file" guard still applies.
@@ -38,10 +38,10 @@ Nothing gets in by default. You decide what each app can touch.
 
 Parts can fail. The computer keeps going, and your work is safe.
 
-- **Always**: a crashed driver or system part restarts on its own, without a reboot and without losing your session. A graphics crash costs at most one black frame.
+- **Always**: a crashed driver or system part restarts on its own, without a reboot and without losing your session. Target: a graphics crash costs at most one black frame.
 - **Always**: a power cut leaves your files exactly as last saved, or one step before, never half-written.
 - **Always**: a system update is tried first; if it fails to start or you reject it, the computer goes back to the old one by itself.
-- **Always**: reopen a crashed app where you were, and prepare updates quietly without ever forcing a restart.
+- **Always**: reopen a crashed app where you were, and apply updates without a restart where possible (never during a full-screen game, always undoable); the rest wait for your next restart, never forced.
 - **Always**: a built-in recovery system can roll back, repair or restore, even when the main system won't start.
 - **Never**: one bad app or driver takes the whole machine down.
 - **Never**: the core of the system crashes because a program sent it something strange.
@@ -53,7 +53,7 @@ Every file keeps its history: undo, try things on the side, and truly forget.
 
 - **Always**: keep past versions of your files, marked with which app made each change.
 - **Always**: let you undo everything one app did, and let you try an app or update "on the side" before keeping it.
-- **Always**: let you see your files and desktop as they were at any moment, within a tenth of a second.
+- **Always**: let you see your files and desktop as they were at any kept moment, within a tenth of a second.
 - **Always**: keep versions you name forever.
 - **Always**: let you forget a file for good: gone from all history and all backups, after a one-hour chance to cancel.
 - **Never**: let history quietly fill your disk. It has a size limit (15 % by default) and thins out older moments.

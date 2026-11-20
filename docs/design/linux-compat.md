@@ -1,6 +1,6 @@
 # Linux compatibility: options and decision
 
-19 November 2026. **Decided: D now, plus B inside Alaya (decision 52).** The rules that came with the choice are in section 7. Goal set by the person: run Claude Code inside Alaya, to test and debug the OS from within.
+19 November 2026. **Decided: D now, plus B inside Alaya (decision 52). Revised by decision 66 (19 November 2026): Claude Code now ships only as a native Linux program, so inside Alaya it runs in a Linux world (option A); the B ports of bash, git and ripgrep stay for the terminal.** The rules that came with the choice are in section 7. Goal set by the person: run Claude Code inside Alaya, to test and debug the OS from within.
 
 ## 1. What Claude Code needs
 
