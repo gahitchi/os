@@ -1,6 +1,6 @@
 # Alaya: the detailed roadmap (version 2)
 
-Version 3, draft of 20 November 2026: adds living validity and protected outcomes (`commitments.md`) continuity (`continuity.md`), and answers and app promises (`answers-and-contracts.md`). Waiting for your approval. Version 2 was approved on 20 November 2026.
+Version 3, approved 20 November 2026: adds living validity and protected outcomes (`commitments.md`), continuity (`continuity.md`), and answers and app promises (`answers-and-contracts.md`). Replaces version 2.
 
 It includes every decision up to 87 (71 to 75 are your answers to the five contradiction cards) and the rules in `contradictions.md`.
 
@@ -220,7 +220,7 @@ Linux stays in charge of your laptop. Alaya keeps running inside KVM, and Linux 
 
 Asking your computer; live handoff for every app; a shared home for your data that any app can open (personal state plane); handing work to your other computer with the same limits (portable authority); your machines as one computer; a computer that never turns off; a true battery screen; an internet identity per task; the flight recorder; updating the kernel itself without a restart (after milestone 12, decision 70).
 
-## What changes in version 3 (draft)
+## What changed in version 3
 
 - Living validity ("is this still up to date?"): recording what apps read moves to 5, first show in 6, full in 7.
 - Protected outcomes (jobs with rules): core in 7, Claude Code's rules screen in 8b. It replaces the parked AI helper contract.

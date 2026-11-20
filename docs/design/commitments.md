@@ -1,6 +1,6 @@
 # Alaya: living validity and protected outcomes
 
-Draft, 20 November 2026. Written from your research note "Alaya OS: Researching a genuinely new reason to use it" and checked against every decision so far (up to 81), the principles and `contradictions.md`. The three choices are answered (decisions 82 to 84); the roadmap changes wait for your approval.
+Approved 20 November 2026. Written from your research note "Alaya OS: Researching a genuinely new reason to use it" and checked against every decision so far (up to 81), the principles and `contradictions.md`. The three choices are answered (decisions 82 to 84), and the roadmap changes are approved (roadmap version 3).
 
 The short version: **Alaya stops being only a computer that remembers what happened. It also tells you which of your results may be out of date, and it holds any program, AI helpers included, to rules you set before its work is kept.**
 

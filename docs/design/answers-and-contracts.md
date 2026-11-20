@@ -1,6 +1,6 @@
 # Alaya: answers instead of data, and app promises that survive updates
 
-Draft, 20 November 2026. Written from your third review, "Alaya OS: Where else can we innovate?", and checked against every decision so far (up to 87), the principles, `contradictions.md`, `commitments.md` and `continuity.md`. Both choices are answered (decisions 88 and 89); the roadmap changes wait for your approval.
+Approved 20 November 2026. Written from your third review, "Alaya OS: Where else can we innovate?", and checked against every decision so far (up to 87), the principles, `contradictions.md`, `commitments.md` and `continuity.md`. Both choices are answered (decisions 88 and 89), and the roadmap changes are approved (roadmap version 3).
 
 The short version: **an app can get the answer it needs without getting your data, and an app update can never quietly give itself more access.** The two bigger ideas in the review, one shared home for your data that any app can use, and handing work to your other computer, are kept for later so the roadmap doesn't grow out of control.
 
