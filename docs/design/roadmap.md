@@ -1,8 +1,8 @@
 # Alaya: the detailed roadmap (version 2)
 
-Version 3, draft of 20 November 2026: adds living validity and protected outcomes (`commitments.md`) and continuity (`continuity.md`). Waiting for your approval. Version 2 was approved on 20 November 2026.
+Version 3, draft of 20 November 2026: adds living validity and protected outcomes (`commitments.md`) continuity (`continuity.md`), and answers and app promises (`answers-and-contracts.md`). Waiting for your approval. Version 2 was approved on 20 November 2026.
 
-It includes every decision up to 84 (71 to 75 are your answers to the five contradiction cards) and the rules in `contradictions.md`.
+It includes every decision up to 87 (71 to 75 are your answers to the five contradiction cards) and the rules in `contradictions.md`.
 
 ## How to read it
 
@@ -130,7 +130,7 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 
 **What you'll see.** Install an app from a signed file; it installs on the side and you approve it. Simple open-source games and tools from Linux run on Alaya. Apps without a window stop using the CPU unless allowed.
 
-**What it includes.** The Rust SDK with its C interface; signed app bundles with an install list you can untick; installs and updates on a branch; background and notification grants (notifications belong to tasks where possible); the terminal (sees only the task's files, one click for all (decision 71)); the POSIX layer (musl); SDL ported; the first simple ported games (software graphics until milestone 9). App notifications arrive in the decision inbox. Live handoff between two Alaya demo apps through the SDK. System parts and apps update live, by themselves, never during full-screen games, with one-click undo (decision 73). The Experience Guardian: during an update's 10-minute trial Alaya also measures, and an update that is clearly slower goes back too, never a security fix (`commitments.md` section 4).
+**What it includes.** The Rust SDK with its C interface; signed app bundles with an install list you can untick; installs and updates on a branch; background and notification grants (notifications belong to tasks where possible); the terminal (sees only the task's files, one click for all (decision 71)); the POSIX layer (musl); SDL ported; the first simple ported games (software graphics until milestone 9). App notifications arrive in the decision inbox. Live handoff between two Alaya demo apps through the SDK. App promises that can never grow on their own through an update, with a difference screen, and the update trial noting what a new version tried. The answer system: an app can get an answer (a resized photo without location, a column total, "is this device connected") instead of the data (`answers-and-contracts.md`). System parts and apps update live, by themselves, never during full-screen games, with one-click undo (decision 73). The Experience Guardian: during an update's 10-minute trial Alaya also measures, and an update that is clearly slower goes back too, never a security fix (`commitments.md` section 4).
 
 **How it's tested on your laptop.** POSIX test suites; a fuzzer for the app installer; install, update and undo 100 apps in a row; game mode test (background work pauses during a full-screen game).
 
@@ -154,7 +154,7 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 
 **What you'll see.** Browse, download and back up to a cloud you choose; music and game sound that never crackles while everything else is busy.
 
-**What it includes.** The full network stack, every connection in the ledger, the private-file guard for the network, cloud backup (S3 or WebDAV), the sound server on a guaranteed time budget, Bluetooth-style audio paths prepared. The outbox for Alaya's own mail and upload apps (hold for your OK); sound gaps join the Experience Guardian.
+**What it includes.** The full network stack, every connection in the ledger, the private-file guard for the network, cloud backup (S3 or WebDAV), the sound server on a guaranteed time budget, Bluetooth-style audio paths prepared. The outbox for Alaya's own mail and upload apps (hold for your OK); sound gaps join the Experience Guardian. Microphone answers ("is someone speaking", not the sound).
 
 **How it's tested on your laptop.** One hour of music under full load: zero gaps. Network fuzzing. The leak-guard test: an app that read a private file can't go online without asking.
 
@@ -168,7 +168,7 @@ Linux stays in charge of your laptop. Alaya keeps running inside KVM, and Linux 
 
 **What you'll see.** Alaya, still in a window, using real hardware: a real USB keyboard, mouse or game controller plugged into the laptop, your real Wi-Fi card, real sound.
 
-**What it includes.** USB (the controller, keyboards, mice, game controllers, USB networking for phone tethering), Bluetooth (controllers, headsets), HD Audio, Intel Wi-Fi, NVMe (on a spare or virtual drive, never your Linux disk), TPM (a virtual TPM first), updates on a branch with boot fallback, the recovery system, local crash reports. Before starting: a study of borrowing Linux drivers as separate programs for Wi-Fi (analysis, recommendation 4).
+**What it includes.** USB (the controller, keyboards, mice, game controllers, USB networking for phone tethering), Bluetooth (controllers, headsets), HD Audio, Intel Wi-Fi, NVMe (on a spare or virtual drive, never your Linux disk), TPM (a virtual TPM first), updates on a branch with boot fallback, the recovery system, local crash reports. Camera answers (read a QR code without seeing the camera). Before starting: a study of borrowing Linux drivers as separate programs for Wi-Fi (analysis, recommendation 4).
 
 **How it's tested on your laptop.** Each device handed to Alaya in KVM; driver-crash injection on real devices; the usual stress gates. A short written guide shows you how to hand a device over and get it back.
 
@@ -218,7 +218,7 @@ Linux stays in charge of your laptop. Alaya keeps running inside KVM, and Linux 
 
 ## Parked ideas (from `new-ideas.md`, for later)
 
-Asking your computer; live handoff for every app; your machines as one computer; a computer that never turns off; a true battery screen; an internet identity per task; the flight recorder; updating the kernel itself without a restart (after milestone 12, decision 70).
+Asking your computer; live handoff for every app; a shared home for your data that any app can open (personal state plane); handing work to your other computer with the same limits (portable authority); your machines as one computer; a computer that never turns off; a true battery screen; an internet identity per task; the flight recorder; updating the kernel itself without a restart (after milestone 12, decision 70).
 
 ## What changes in version 3 (draft)
 
@@ -227,6 +227,8 @@ Asking your computer; live handoff for every app; your machines as one computer;
 - The Experience Guardian grows out of milestone 4's update trial: 8, with frame times in 9 and sound in 10.
 - The outbox, honest version (Alaya apps only), in 10; it leaves the parked list.
 - Continuity (`continuity.md`): a clickable mock-up to test the desktop ideas alongside milestone 5 (decision 86); loose groups and the first return point in 6; tasks move from 7 to a new milestone 7a with resume, "since you left", the decision inbox, Finish and copy or reference handoff; app notifications and live handoff in 8.
+- Answers instead of data and app promises (`answers-and-contracts.md`): app promises and data answers in 8, microphone answers in 10, camera answers in 11; the shared data home and handing work to another computer are parked.
+- Windows float or tile from milestone 6 (decision 87).
 - Nothing in milestones 0 to 4 or in the kernel changes.
 
 ## What changed from roadmap version 1

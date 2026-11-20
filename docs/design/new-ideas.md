@@ -547,3 +547,7 @@ From your research note of 20 November. Two ideas join the design (draft, see `c
 ## Part E. Continuity (20 November 2026)
 
 From your second review of 20 November, "Rethinking everyday computing" (draft, see `continuity.md`): resume the work with a "since you left" list, loose groups that never grant anything next to protected tasks, a decision inbox (replaces B5), Finish (closing a piece of work without deleting anything), and copy, reference or live handoff (replaces B6). Every part has prior art (TaskTracer, Giornata, Laevo, KDE Activities, TaskSnap, App Intents, Loop, Oasis). The claim is the combination, on a system that really remembers, knows what is out of date and enforces boundaries.
+
+## Part F. Answers instead of data, and app promises (20 November 2026)
+
+From your third review, "Where else can we innovate?" (draft, see `answers-and-contracts.md`): answer grants (an app gets a fixed answer such as a total, a resized photo or a QR code's text, never the data), app promises that an update can never widen by itself, and, kept for later, a shared home for your data (personal state plane) and handing work to your other computer (portable authority).

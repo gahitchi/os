@@ -104,3 +104,7 @@ Checked against every decision up to 81 in `commitments.md` (battle-test tables 
 ## F. Continuity vs tasks as a permission boundary (20 November 2026)
 
 Decision 69 made a task both the way the desktop is organised and a permission boundary (putting a file in a task lets the task's apps see it). The continuity review (`continuity.md`) wants grouping to be light, optional and open to suggestions, and that clashes: an accepted suggestion would quietly widen what apps can see. The proposal splits the two into loose groups (labels only, never grant) and protected tasks (confirmed by you, the boundary of 69). Decided 20 November 2026 (decision 85): split as proposed; principle 2 now says "protected task". Everything else in `continuity.md` is consistent with decisions up to 84 (checked: 27, 39, 40, 46, 58, 62, 63, 68, 71 to 74, 82, 83, rules B3, B6, B11, B12).
+
+## G. Answers and app promises (20 November 2026)
+
+Checked in `answers-and-contracts.md` against decisions up to 87. Meeting points settled by rules R8 to R12: answers from private files stay private (27), network rules for updated apps (25, 84), install lists and unticking (37, 60), the update trial (80) and one-click update undo (73). No clash.
