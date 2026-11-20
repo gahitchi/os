@@ -29,6 +29,8 @@ static SEEDS: [[AtomicU64; MAX_SPAN]; MAX_THREADS] =
     [const { [const { AtomicU64::new(0) }; MAX_SPAN] }; MAX_THREADS];
 static DISK: AtomicU64 = AtomicU64::new(0);
 static SPAN: AtomicU64 = AtomicU64::new(0);
+/// A notification nobody signals: workers sleep on it once told to stop.
+static PARK: AtomicU64 = AtomicU64::new(0);
 
 fn page() -> &'static TestPage {
     // SAFETY: the first program maps the test page here before we start.
@@ -133,6 +135,10 @@ fn main(info: &'static StartInfo) -> ! {
         alaya_sys::yield_now();
     }
     DISK.store(disk, Ordering::Release);
+    PARK.store(
+        mem.make(Kind::Notification, 0).expect("notification"),
+        Ordering::Release,
+    );
     let threads = (info.args[DISKTEST_THREADS] as usize).clamp(1, MAX_THREADS);
     let span = (info.args[DISKTEST_SPAN] as usize).clamp(1, MAX_SPAN);
     SPAN.store(span as u64, Ordering::Release);
@@ -175,7 +181,9 @@ extern "C" fn worker(n: u64) -> ! {
     };
     loop {
         if t.stop.load(Ordering::Acquire) != 0 {
-            alaya_sys::yield_now();
+            // Sleep, not spin: spinning threads would keep four cores busy
+            // entering the kernel for the rest of the boot checks.
+            let _ = alaya_sys::wait(PARK.load(Ordering::Acquire));
             continue;
         }
         let i = next() % span;
