@@ -70,7 +70,7 @@ Where each line comes from (all already designed):
 
 ---
 
-## 4. Loose groups and protected tasks (this changes decision 69)
+## 4. Loose groups and protected tasks (decision 85, changes 69)
 
 **The problem.** In decision 69, putting a file into a task automatically gave the task's apps access to it ("putting a file in the task is the permission"). The review points out three risks:
 - If Alaya suggests a group and you accept it without thinking, apps quietly gain access to files.
@@ -136,7 +136,7 @@ Rules: a linked source that is deleted or forgotten leaves a frozen last picture
 
 ## 8. Your choices
 
-1. **Should a group of windows and files change what apps can see?** Recommended: **no.** Loose groups are only labels. Only a protected task you confirm sets a boundary. This changes decision 69.
+1. **Should a group of windows and files change what apps can see?** Decided (85): **no.** Loose groups are only labels. Only a protected task you confirm sets a boundary. This changes decision 69.
 2. **How do we test these desktop ideas before building them into Alaya?** Recommended: **a clickable mock-up first**, in the browser, with a scripted "three days in the life" to click through. Then the real thing in Alaya. The alternative is a real prototype running on your laptop's Linux for a few weeks. It is more realistic, but it is weeks of work on something we then throw away.
 
 ## 9. Where it goes in the roadmap
