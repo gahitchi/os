@@ -1,6 +1,6 @@
 # Alaya: living validity and protected outcomes
 
-Draft, 20 November 2026. Written from your research note "Alaya OS: Researching a genuinely new reason to use it" and checked against every decision so far (up to 81), the principles and `contradictions.md`. Waiting for your approval and three choices (section 7).
+Draft, 20 November 2026. Written from your research note "Alaya OS: Researching a genuinely new reason to use it" and checked against every decision so far (up to 81), the principles and `contradictions.md`. The three choices are answered (decisions 82 to 84); the roadmap changes wait for your approval.
 
 The short version: **Alaya stops being only a computer that remembers what happened. It also tells you which of your results may be out of date, and it holds any program, AI helpers included, to rules you set before its work is kept.**
 
@@ -179,11 +179,11 @@ The engine (milestones 0 to 4) doesn't change. Nothing in the kernel changes: al
 
 ---
 
-## 7. Your choices
+## 7. Your choices (all answered 20 November 2026: decisions 82 to 84)
 
-1. **How loudly should Alaya tell you that a result needs a look?** Recommended: quietly, as a mark on the file and a line in "What happened?", and a notification only for results you marked "tell me".
-2. **Should older apps (Linux and Windows ones) get marks too, from Alaya watching them?** Recommended: yes, clearly labelled as Alaya's guess, so the feature works for the apps people really use.
-3. **What should an AI helper be allowed to reach on the internet by default?** Recommended: only its own AI service, plus places you approve the first time each is used (each one logged). This narrows decision 25 for AI helpers only.
+1. **How loudly should Alaya tell you that a result needs a look?** Decided (82): quietly, as a mark on the file and a line in "What happened?", and a notification only for results you marked "tell me".
+2. **Should older apps (Linux and Windows ones) get marks too, from Alaya watching them?** Decided (83): yes, clearly labelled as Alaya's guess, so the feature works for the apps people really use.
+3. **What should an AI helper be allowed to reach on the internet by default?** Decided (84): only its own AI service, plus places you approve the first time each is used (each one logged). This narrows decision 25 for AI helpers only.
 
 ## 8. Rules that follow (stand unless you object)
 
