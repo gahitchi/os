@@ -68,4 +68,11 @@ tlc sched Bigger.cfg
 must_fail sched LostWakeup.cfg "Invariant NoLostWakeups is violated"
 must_fail sched LostLoan.cfg "Invariant LoansAccounted is violated"
 
+# The driver keeper: crash-and-resend and live updates. A restart without
+# a device reset lets an old job finish a newer one; a keeper that drops
+# unfinished jobs leaves apps waiting.
+tlc keeper Small.cfg
+must_fail keeper NoReset.cfg "is violated"
+must_fail keeper ForgetJobs.cfg "Temporal properties were violated"
+
 echo "formal: all checks passed"

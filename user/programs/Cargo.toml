@@ -1,0 +1,40 @@
+[package]
+name = "alaya-programs"
+description = "Alaya programs started from the boot image: the driver keeper, the disk driver (two versions) and the disk test app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "keeper"
+path = "src/bin/keeper.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "blk1"
+path = "src/bin/blk1.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "blk2"
+path = "src/bin/blk2.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "disktest"
+path = "src/bin/disktest.rs"
+test = false
+bench = false
+
+[dependencies]
+alaya-sys = { path = "../sys" }

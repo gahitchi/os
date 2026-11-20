@@ -65,6 +65,9 @@ pub mod debug {
     pub const COUNTERS: u64 = 2;
     /// The core the caller runs on, in result 0.
     pub const CORE: u64 = 3;
+    /// Big kernel lock use, summed over all cores since boot: times taken,
+    /// times a core had to wait, TSC ticks spent waiting, and held.
+    pub const LOCK_STATS: u64 = 4;
     pub const MAX_PRINT: usize = 256;
 }
 
@@ -84,7 +87,8 @@ pub mod op {
     /// capability; for an untyped, also takes its memory back.
     pub const REVOKE: u64 = 5;
     /// Inspect: arg 0 = index. Results: kind | rights << 8 | size bits << 16
-    /// | flags << 24, object address, badge or untyped free offset, untyped
+    /// | flags << 24 | the object's format label ([`super::format`]) << 32,
+    /// object address, badge or untyped free offset, untyped
     /// clean offset.
     pub const INSPECT: u64 = 6;
 
@@ -112,6 +116,11 @@ pub mod op {
     /// Bind a notification: arg 0 = notification handle (0: unbind). A
     /// thread waiting in `recv` then also wakes for its signals.
     pub const THREAD_BIND: u64 = 38;
+    /// Timeout messages: arg 0 = 1 to send one to the thread's fault
+    /// endpoint whenever time lent to it by a caller runs out (label
+    /// [`super::TIMEOUT_LABEL`]); 0 to just wait for the caller's next
+    /// refill, as before (decision 55).
+    pub const THREAD_TIMEOUTS: u64 = 39;
 
     // On a scheduling context.
     /// Bind to a thread: arg 0 = thread handle.
@@ -120,6 +129,13 @@ pub mod op {
     /// Results = budget ns, period ns, time used in total ns, core it last
     /// ran on.
     pub const SC_INFO: u64 = 50;
+    /// Set the deadline of the work this context pays for: arg 0 = the
+    /// time-stamp counter value it is due at (0: none). Threads of equal
+    /// priority run soonest deadline first; priority always wins
+    /// (decision 81). Results = deadlines missed in total, the thread
+    /// object that held the context when the last one passed, and 1 if the
+    /// deadline this call replaces was missed.
+    pub const SC_DEADLINE: u64 = 51;
 
     // On the scheduling control capability.
     /// Configure a scheduling context: args = its handle, budget µs, period
@@ -138,6 +154,44 @@ pub mod op {
     pub const PAGE_UNMAP: u64 = 73;
     /// Physical address, in result 0 (for drivers).
     pub const PAGE_ADDRESS: u64 = 74;
+    /// Let the devices of an I/O space reach the page: args = I/O space
+    /// handle, device address, [`super::iomap`] flags. A page capability
+    /// is mapped in one place at a time; map a copy for a second place.
+    pub const PAGE_IOMAP: u64 = 75;
+
+    // On an I/O space.
+    /// Give it table memory: arg 0 = handle of an untyped nothing was made
+    /// from (as `SPACE_ASSIGN`).
+    pub const IOSPACE_ASSIGN: u64 = 80;
+
+    // On the device control capability.
+    /// Make a page capability for device registers: args = physical
+    /// address, size bits (12 or 21), destination table, index. Refused
+    /// for RAM and for the kernel's own devices (APIC, IOMMU).
+    pub const DEVICE_PAGE: u64 = 96;
+    /// Attach the PCI function `bdf` (bus << 8 | device << 3 | function)
+    /// to an I/O space: args = I/O space handle, bdf.
+    pub const DEVICE_BIND: u64 = 97;
+    /// How many blocked device accesses the IOMMU reported (result 0).
+    pub const DEVICE_FAULTS: u64 = 98;
+
+    // On the interrupt control capability.
+    /// Take a free vector: args = core it is delivered to, destination
+    /// table, index. Result 0: the vector.
+    pub const IRQ_GET: u64 = 104;
+
+    // On an interrupt.
+    /// Deliver it as `bits` on a notification: args = notification handle
+    /// (0: stop delivering), bits.
+    pub const IRQ_SET: u64 = 112;
+    /// What to program into a device's MSI or MSI-X entry: results =
+    /// address, data.
+    pub const IRQ_MSI: u64 = 113;
+}
+
+/// Flags of [`op::PAGE_IOMAP`].
+pub mod iomap {
+    pub const WRITE: u64 = 1 << 0;
 }
 
 /// Flags of [`op::PAGE_MAP`].
@@ -170,6 +224,10 @@ pub struct Info(pub u64);
 impl Info {
     /// Most data words in one message.
     pub const MAX_WORDS: u64 = 6;
+    /// With [`Info::CAP`]: the capability moves to the receiver instead of
+    /// being copied. Untyped memory can only be handed over this way (it
+    /// has one owner at a time).
+    pub const MOVE: u64 = 1 << 3;
     /// The message carries a capability (handle in `r14`).
     pub const CAP: u64 = 1 << 4;
     /// Received: this is a notification's signal bits (in `rdi`), not a
@@ -197,6 +255,11 @@ impl Info {
         Info(self.0 | Self::CAP)
     }
 
+    /// Carries a capability that moves to the receiver.
+    pub const fn moving_cap(self) -> Info {
+        Info(self.0 | Self::CAP | Self::MOVE)
+    }
+
     pub const fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
     }
@@ -205,6 +268,12 @@ impl Info {
 /// Label of a fault message, sent for a thread that faulted to its fault
 /// endpoint. Words: vector, error code, faulting address, rip, rsp.
 pub const FAULT_LABEL: u64 = 0xfa_17;
+
+/// Label of a timeout message: a thread serving a call ran out of the time
+/// its caller lent it (see [`op::THREAD_TIMEOUTS`]). Words: 0, time it
+/// used of the caller's context (ns), how long until that context's next
+/// refill (ns), rip, rsp. Answering it lets the thread wait for the refill.
+pub const TIMEOUT_LABEL: u64 = 0x71_3e;
 
 /// Highest priority.
 pub const MAX_PRIORITY: u64 = 255;
@@ -291,6 +360,15 @@ pub enum Kind {
     AddressSpace = 9,
     /// The right to give out time (configure scheduling contexts).
     SchedControl = 10,
+    /// One device interrupt (a vector), delivered as notification signals.
+    Irq = 11,
+    /// The right to take interrupt vectors.
+    IrqControl = 12,
+    /// The right to reach device registers and attach devices to I/O
+    /// spaces: held by the device manager only.
+    DeviceControl = 13,
+    /// What a set of devices may reach through the IOMMU.
+    IoSpace = 14,
 }
 
 impl Kind {
@@ -307,6 +385,10 @@ impl Kind {
             8 => Kind::Reply,
             9 => Kind::AddressSpace,
             10 => Kind::SchedControl,
+            11 => Kind::Irq,
+            12 => Kind::IrqControl,
+            13 => Kind::DeviceControl,
+            14 => Kind::IoSpace,
             _ => return None,
         })
     }
@@ -385,9 +467,150 @@ pub struct BootInfo {
     pub core_types: [u8; MAX_CORES],
     pub untyped_count: u64,
     pub untyped: [BootUntyped; MAX_BOOT_UNTYPED],
+    /// The processor protections in use ([`protect`] bits).
+    pub protections: u64,
+    /// Handles of the interrupt control and device control capabilities.
+    pub irq_control: u64,
+    pub device_control: u64,
+    /// PCI configuration space (ECAM) of segment 0: physical base, first
+    /// and last bus (base 0: none).
+    pub ecam_base: u64,
+    pub ecam_bus_start: u64,
+    pub ecam_bus_end: u64,
+    /// The IOMMU is on (devices reach only what is mapped for them).
+    pub iommu: u64,
+    /// Programs the boot image carries, mapped read only into the first
+    /// program.
+    pub module_count: u64,
+    pub modules: [BootModule; MAX_BOOT_MODULES],
+}
+
+pub const MAX_BOOT_MODULES: usize = 16;
+/// Where the boot modules are mapped in the first program.
+pub const BOOT_MODULES_ADDRESS: u64 = 0x7ff0_0000_0000;
+
+/// A program in the boot image.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BootModule {
+    /// Its file name, NUL-padded.
+    pub name: [u8; 32],
+    pub address: u64,
+    pub size: u64,
+}
+
+impl BootModule {
+    pub fn name(&self) -> &str {
+        let end = self.name.iter().position(|&b| b == 0).unwrap_or(32);
+        core::str::from_utf8(&self.name[..end]).unwrap_or("?")
+    }
 }
 
 const _: () = assert!(core::mem::size_of::<BootInfo>() as u64 <= BOOT_INFO_BYTES);
+
+/// Processor protections the kernel turned on (decision 77), as reported
+/// in [`BootInfo::protections`].
+pub mod protect {
+    /// The kernel cannot run code in program memory.
+    pub const SMEP: u64 = 1 << 0;
+    /// The kernel cannot read or write program memory by accident.
+    pub const SMAP: u64 = 1 << 1;
+    /// Programs cannot read the kernel's descriptor tables (`sgdt`, `sidt`,
+    /// `sldt`, `smsw`, `str` fault).
+    pub const UMIP: u64 = 1 << 2;
+    /// Tagged memory maps: switching programs keeps both TLBs' entries.
+    pub const PCID: u64 = 1 << 3;
+    /// Enhanced IBRS: programs cannot steer the kernel's branch predictions.
+    pub const EIBRS: u64 = 1 << 4;
+    /// Branch predictions are dropped when a core changes program.
+    pub const IBPB: u64 = 1 << 5;
+    /// The CPU's buffers are cleared on the way back to user mode (MDS).
+    pub const VERW: u64 = 1 << 6;
+    /// The CPU is not affected by Meltdown, so the kernel's half of the
+    /// memory map can stay mapped while programs run.
+    pub const NO_MELTDOWN: u64 = 1 << 7;
+}
+
+/// Format labels (decision 77): every kernel object carries a small header
+/// naming its kind and the format of its layout, so a later kernel can
+/// recognise the objects of an older one and take them over without a
+/// restart. Bump an object's number whenever its layout changes.
+pub mod format {
+    /// The header's first two bytes.
+    pub const MAGIC: u16 = 0xa1a7;
+    pub const TABLE: u8 = 1;
+    pub const ENDPOINT: u8 = 1;
+    pub const NOTIFICATION: u8 = 1;
+    pub const THREAD: u8 = 1;
+    pub const SCHED_CONTEXT: u8 = 1;
+    pub const REPLY: u8 = 1;
+    pub const ADDRESS_SPACE: u8 = 1;
+    pub const IO_SPACE: u8 = 1;
+    /// The format of the kernel-wide state as a whole (`kernel/src/kstate.rs`).
+    pub const KERNEL_STATE: u32 = 1;
+
+    /// An object's format label, by kind (0: the kind has no header).
+    pub const fn of(kind: super::Kind) -> u8 {
+        use super::Kind as K;
+        match kind {
+            K::Table => TABLE,
+            K::Endpoint => ENDPOINT,
+            K::Notification => NOTIFICATION,
+            K::Thread => THREAD,
+            K::SchedContext => SCHED_CONTEXT,
+            K::Reply => REPLY,
+            K::AddressSpace => ADDRESS_SPACE,
+            K::IoSpace => IO_SPACE,
+            _ => 0,
+        }
+    }
+}
+
+/// How a program started by another one finds its way (`alaya_sys::program`).
+///
+/// The parent maps a read-only [`StartInfo`] page at [`START_INFO_ADDRESS`]
+/// and passes its address in `rdi`. The program's table has these slots:
+pub mod start {
+    /// Its own table, thread and address space.
+    pub const TABLE: u64 = 1;
+    pub const THREAD: u64 = 2;
+    pub const SPACE: u64 = 3;
+    /// Untyped memory of its own, for stacks and objects.
+    pub const UNTYPED: u64 = 4;
+    /// A scheduling context the parent configured for a helper thread
+    /// (its clock), or empty.
+    pub const CLOCK_SC: u64 = 5;
+    /// What the parent hands over starts here; the [`StartInfo`] says what
+    /// each slot holds.
+    pub const FIRST_GIVEN: u64 = 8;
+
+    pub const MAGIC: u64 = 0x616c_6179_615f_7369; // "alaya_si"
+    pub const MAX_ARGS: usize = 16;
+}
+
+pub const START_INFO_ADDRESS: u64 = 0x7fff_f100_0000;
+/// The top of a started program's stack (64 KiB).
+pub const PROGRAM_STACK_TOP: u64 = 0x7fff_e000_0000;
+pub const PROGRAM_STACK_BYTES: u64 = 64 * 1024;
+
+/// What a started program learns from its parent.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct StartInfo {
+    pub magic: u64,
+    pub name: [u8; 32],
+    pub tsc_hz: u64,
+    pub cores: u64,
+    /// The size of its untyped (`start::UNTYPED`), as a power of two.
+    pub untyped_bits: u64,
+    /// First empty slot of its table, and how many it has.
+    pub first_free: u64,
+    pub table_slots: u64,
+    /// Its priority (it may give its own threads up to this).
+    pub priority: u64,
+    /// Words the parent passes: their meaning depends on the program.
+    pub args: [u64; start::MAX_ARGS],
+}
 
 /// Flags in [`BootInfo::flags`], from the kernel command line.
 pub mod boot_flags {

@@ -23,10 +23,14 @@
 #![no_std]
 #![no_main]
 
+mod acpi;
 mod arch;
 mod caps;
+mod device;
 mod fpu;
+mod iommu;
 mod ipc;
+mod kstate;
 mod limine;
 mod mm;
 mod obj;
@@ -170,6 +174,8 @@ extern "C" fn bsp_main() -> ! {
         },
     );
     kprintln!("smp: {cores} of {cores} cores online");
+    report_protections();
+    kstate::report();
 
     smp::GO.store(true, Ordering::Release);
     selftest::run_on_this_core();
@@ -214,8 +220,46 @@ extern "C" fn bsp_main() -> ! {
         // The fault happens on another core; wait for it to stop us.
         smp::idle();
     }
+    // Firmware tables, and the device memory guard.
+    let platform = acpi::init();
+    if let Some(base) = platform.iommu {
+        arch::disable_interrupts();
+        let buses = platform.ecam.map_or((0, 0), |e| (e.bus_start, e.bus_end));
+        iommu::init(&mut sync::BKL.lock().sys, base, buses, platform.iommu_scope);
+    } else {
+        kprintln!("iommu: none found; devices could reach all memory (add QEMU's intel-iommu)");
+    }
+
     // The first program prints the boot marker once its checks pass.
-    user::start()
+    user::start(&platform)
+}
+
+fn report_protections() {
+    use alaya_abi::protect as p;
+    let on = arch::protect::enabled();
+    let has = |bit| yes(on & bit != 0);
+    kprintln!(
+        "protect: SMEP {}, SMAP {}, UMIP {}, tagged memory maps (PCID) {}",
+        has(p::SMEP),
+        has(p::SMAP),
+        has(p::UMIP),
+        has(p::PCID)
+    );
+    kprintln!(
+        "protect: speculation guards: enhanced IBRS {}, IBPB on program switch {}, return-stack refill yes, buffer clearing (MDS) {}, bounds-check barriers yes",
+        has(p::EIBRS),
+        has(p::IBPB),
+        if on & p::VERW != 0 {
+            "yes"
+        } else {
+            "not needed or not offered"
+        }
+    );
+    if on & p::NO_MELTDOWN == 0 {
+        kprintln!(
+            "protect: this CPU does not say it is safe from Meltdown; kernel page-table isolation is not built yet"
+        );
+    }
 }
 
 fn yes(b: bool) -> &'static str {
@@ -223,7 +267,7 @@ fn yes(b: bool) -> &'static str {
 }
 
 const NO_CPU: u32 = u32::MAX;
-static PANIC_CPU: AtomicU32 = AtomicU32::new(NO_CPU);
+pub(crate) static PANIC_CPU: AtomicU32 = AtomicU32::new(NO_CPU);
 
 /// True once any core has started to panic.
 pub fn panicking() -> bool {

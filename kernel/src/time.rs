@@ -19,10 +19,10 @@ use crate::arch::trap::TIMER_VECTOR;
 use crate::arch::{apic, legacy};
 use crate::{kprintln, percpu, sync};
 
-static TSC_HZ: AtomicU64 = AtomicU64::new(0);
-static DEADLINE_MODE: AtomicBool = AtomicBool::new(false);
+pub(crate) static TSC_HZ: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEADLINE_MODE: AtomicBool = AtomicBool::new(false);
 /// APIC timer counts per 2^32 TSC ticks (one-shot fallback only).
-static APIC_PER_TSC_FIXED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static APIC_PER_TSC_FIXED: AtomicU64 = AtomicU64::new(0);
 
 pub fn tsc_hz() -> u64 {
     TSC_HZ.load(Ordering::Relaxed)

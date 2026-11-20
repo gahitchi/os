@@ -112,6 +112,10 @@ alaya_trap_common:
     add rsp, 16
     test byte ptr [rsp + 8], 3
     jz 2f
+    cmp byte ptr [rip + alaya_verw_on_exit], 0
+    je 3f
+    verw word ptr [rip + alaya_verw_selector]
+3:
     swapgs
 2:
     iretq
@@ -125,7 +129,7 @@ unsafe extern "C" {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Gate {
+pub(crate) struct Gate {
     offset_low: u16,
     selector: u16,
     ist: u8,
@@ -161,9 +165,9 @@ impl Gate {
 }
 
 #[repr(C, align(16))]
-struct Idt([Gate; 256]);
+pub(crate) struct Idt([Gate; 256]);
 
-static mut IDT: Idt = Idt([Gate::EMPTY; 256]);
+pub(crate) static mut IDT: Idt = Idt([Gate::EMPTY; 256]);
 
 /// Fill the shared IDT. Called once, on the bootstrap core, before any core
 /// loads it.

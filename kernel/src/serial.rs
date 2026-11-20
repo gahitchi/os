@@ -8,7 +8,7 @@ use crate::sync::{SpinLock, SpinLockGuard};
 
 const COM1: u16 = 0x3f8;
 
-struct Uart {
+pub(crate) struct Uart {
     base: u16,
 }
 
@@ -48,7 +48,7 @@ impl Write for Uart {
     }
 }
 
-static SERIAL: SpinLock<Uart> = SpinLock::new(Uart { base: COM1 });
+pub(crate) static SERIAL: SpinLock<Uart> = SpinLock::new(Uart { base: COM1 });
 
 pub fn init() {
     SERIAL.lock().init();

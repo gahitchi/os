@@ -55,9 +55,18 @@ const NAMES: [(&str, &str); 32] = [
 /// Called from the assembly stubs in `idt.rs` with interrupts off.
 pub extern "C" fn dispatch(frame: &mut TrapFrame) {
     let vector = frame.vector as u8;
+    super::protect::on_interrupt_entry();
     crate::vspace::poll_flush();
     if frame.cs & 3 == 3 && !matches!(vector, 2 | 8 | 18) {
         return from_user(frame);
+    }
+    if vector == 13 {
+        // A safe MSR access to an MSR this CPU does not have.
+        if let Some(rip) = super::protect::fixup(frame.rip) {
+            frame.rip = rip;
+            frame.rax = 1;
+            return;
+        }
     }
     match vector {
         2 => nmi(frame),
@@ -67,6 +76,12 @@ pub extern "C" fn dispatch(frame: &mut TrapFrame) {
             apic::eoi();
         }
         RESCHED_VECTOR => apic::eoi(),
+        crate::device::FIRST_VECTOR..=crate::device::LAST_VECTOR => {
+            // A device, while this core idled in the kernel.
+            apic::eoi();
+            let mut k = sync::BKL.lock();
+            crate::device::interrupt(&mut k.sys, vector);
+        }
         apic::SPURIOUS_VECTOR => {} // no EOI for spurious interrupts
         v if v == legacy::PIC_BASE + 7 || v == legacy::PIC_BASE + 15 => {} // PIC spurious
         _ => {
@@ -96,6 +111,9 @@ fn from_user(frame: &mut TrapFrame) {
     }
     match vector {
         TIMER_VECTOR => crate::sched::timer(&mut k.sys, core),
+        crate::device::FIRST_VECTOR..=crate::device::LAST_VECTOR => {
+            crate::device::interrupt(&mut k.sys, vector)
+        }
         0..=31 if me != 0 => {
             let addr = if vector == 14 { cpu::cr2() } else { 0 };
             let mut m = crate::caps::Phys::new(&mut k.sys);

@@ -15,10 +15,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::arch::cpu::{self, cpuid};
 use crate::obj::FPU_BYTES;
 
-static XSAVE: AtomicBool = AtomicBool::new(false);
+pub(crate) static XSAVE: AtomicBool = AtomicBool::new(false);
 /// The state components saved (XCR0).
-static MASK: AtomicU64 = AtomicU64::new(0);
-static SIZE: AtomicU64 = AtomicU64::new(512);
+pub(crate) static MASK: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SIZE: AtomicU64 = AtomicU64::new(512);
 
 const CR0_MP: u64 = 1 << 1;
 const CR0_EM: u64 = 1 << 2;

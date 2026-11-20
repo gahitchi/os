@@ -63,6 +63,44 @@ impl AddressSpace {
         space
     }
 
+    /// The kernel's own tables, to add mappings at boot.
+    pub fn kernel(root: u64, hhdm: u64) -> Self {
+        Self {
+            root,
+            hhdm,
+            gib_pages: false,
+            mapped: [0; 3],
+        }
+    }
+
+    /// Map the 4 KiB pages of `[virt, virt + len)` that nothing maps yet
+    /// (pages inside a huge mapping count as mapped).
+    pub fn map_absent(&mut self, virt: u64, phys: u64, len: u64, flags: u64) {
+        let mut off = 0;
+        while off < len {
+            if !self.is_mapped(virt + off) {
+                self.map_one(virt + off, phys + off, 1, flags);
+            }
+            off += PAGE_SIZE;
+        }
+    }
+
+    fn is_mapped(&self, virt: u64) -> bool {
+        let mut table = self.root;
+        let mut level = 4;
+        loop {
+            let e = self.table(table)[(virt >> (12 + 9 * (level - 1))) as usize & 511];
+            if e & PRESENT == 0 {
+                return false;
+            }
+            if level == 1 || e & HUGE != 0 {
+                return true;
+            }
+            table = e & ADDRESS_MASK;
+            level -= 1;
+        }
+    }
+
     /// Physical address of the top-level table, for CR3.
     pub fn root(&self) -> u64 {
         self.root

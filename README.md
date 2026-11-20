@@ -12,24 +12,26 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
-**Milestone 3: threads, time budgets and messages.** Programs now run as
-threads on every core, each on a *time budget* ("this much time in every
-period") that it cannot overrun, so a busy program can never steal a game's
-or an audio thread's time. Threads of separate programs talk through fast
-messages; a server with no time of its own runs on its caller's time, so
-each caller pays for its own requests. A crash in a program becomes a
-message to whoever looks after it, not a crash of the system. Each program
-has its own private memory map, and pages can be shared on purpose. On
-hybrid CPUs (performance and efficiency cores) the kernel knows each core's
-type and places threads accordingly.
+**Milestone 4: the engine.** Drivers run as ordinary programs, each locked to
+its own device by the processor's device memory guard (IOMMU), and each looked
+after by a *keeper*. A driver can crash, freeze or be replaced by a new version
+while apps use the disk, and the apps never notice: the keeper holds every
+unfinished job and has it sent again. A driver that keeps crashing is switched
+off with a clear error, and a failed update goes back to the old version by
+itself. Programs are started from a file, find each other by name and get
+memory from a helper that keeps each app within its budget. Games can give
+their work a deadline (the next screen refresh) that travels with every call
+they make.
 
-Before the code: a [TLA+ model](formal/sched/Sched.tla) of the scheduler,
-checked in every ordering of events on 2 and 3 cores (budgets hold, no
-wake-up is lost, lent time always comes back). After it: 25 boot checks on
-1 to 8 cores, and a fuzzer that throws random system calls at the kernel
-from every core. How it all works:
-[`docs/threads-and-messages.md`](docs/threads-and-messages.md).
+Before the code: a [TLA+ model](formal/keeper/Keeper.tla) of the keeper's
+crash-and-resend rule. After it: 43 boot checks on 1 to 8 cores, a 10-minute
+run that kills the driver at random every half second, 1,000 live updates in a
+row, and a fuzzer that now attacks the helpers too. How it all works:
+[`docs/engine.md`](docs/engine.md).
 
+Milestone 3 (threads, time budgets and messages) is described in
+[`docs/threads-and-messages.md`](docs/threads-and-messages.md), with its own
+[TLA+ model](formal/sched/Sched.tla).
 Milestone 2 (capabilities and memory) is described in
 [`docs/capabilities.md`](docs/capabilities.md), with its own
 [TLA+ model](formal/revoke/Revoke.tla) and [Kani proofs](cap/src/proofs.rs).
@@ -50,6 +52,7 @@ cargo xtask run --uefi       # boot with UEFI firmware instead of BIOS
 cargo xtask test --fault page  # crash on purpose and check the fault report
 cargo xtask image            # only build build/alaya-x86_64.iso
 cargo xtask test --fuzz 60   # boot checks, then a minute of kernel fuzzing
+cargo xtask test --cpus 8 --long  # also kill the disk driver at random for 10 minutes
 cargo test -p alaya-cap -p alaya-sched  # capability and time-budget tests on the host
 formal/check.sh              # TLA+ model checks (needs Java)
 cargo kani -p alaya-cap      # Kani proofs (needs cargo install kani-verifier)
@@ -79,7 +82,8 @@ bash alaya.sh run
 | `sched/` | Time budgets with sporadic refills (used by the kernel; tested on the host) |
 | `abi/` | Numbers and layouts shared by the kernel and programs |
 | `user/init/` | The first program: the boot checks and the kernel fuzzer |
-| `user/sys/` | System call wrappers for programs |
+| `user/sys/` | System call wrappers, the program starter and the small runtime for programs |
+| `user/programs/` | Programs in the boot image: the driver keeper, the disk driver (two versions) and a disk test app |
 | `formal/` | TLA+ models, checked with TLC (`formal/check.sh`) |
 | `xtask/` | Build, image and QEMU runner (`cargo xtask`) |
 | `boot/limine.conf` | Bootloader configuration |

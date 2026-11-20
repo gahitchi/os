@@ -33,6 +33,10 @@ pub fn init_this_core(index: u32) {
     crate::fpu::init_this_core();
     const _: () = assert!(gdt::IST_DOUBLE_FAULT == 1 && gdt::IST_NMI == 2);
     idt::load();
+    if index == 0 {
+        crate::arch::protect::detect();
+    }
+    crate::arch::protect::init_this_core();
     let me = percpu::get(index);
     me.has_idt.store(true, Ordering::Release);
     apic::init_this_core();

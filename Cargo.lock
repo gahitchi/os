@@ -17,6 +17,7 @@ dependencies = [
 name = "alaya-init"
 version = "0.0.1"
 dependencies = [
+ "alaya-programs",
  "alaya-sys",
 ]
 
@@ -27,6 +28,13 @@ dependencies = [
  "alaya-abi",
  "alaya-cap",
  "alaya-sched",
+]
+
+[[package]]
+name = "alaya-programs"
+version = "0.0.1"
+dependencies = [
+ "alaya-sys",
 ]
 
 [[package]]
