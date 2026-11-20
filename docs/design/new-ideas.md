@@ -543,3 +543,7 @@ From your research note of 20 November. Two ideas join the design (draft, see `c
 - **Living validity**: every result made from other files shows whether its sources changed since (up to date, needs a look, as of a date, not sure), across all apps and copy and paste. New combination; builds on B4 file stories and the ledger. First shown in milestone 6.
 - **Protected outcomes**: a job with rules (what may change, what must stay unchanged, checks before keeping), enforced by Alaya for any program. It replaces 1.2 (AI helper contract). The outbox (1.1) comes back only in its honest form: Alaya apps can hold mail and uploads for your OK (milestone 10).
 - **Experience Guardian** (narrow): an update that is clearly slower during its trial goes back, never a security fix. Extends decision 80.
+
+## Part E. Continuity (20 November 2026)
+
+From your second review of 20 November, "Rethinking everyday computing" (draft, see `continuity.md`): resume the work with a "since you left" list, loose groups that never grant anything next to protected tasks, a decision inbox (replaces B5), Finish (closing a piece of work without deleting anything), and copy, reference or live handoff (replaces B6). Every part has prior art (TaskTracer, Giornata, Laevo, KDE Activities, TaskSnap, App Intents, Loop, Oasis). The claim is the combination, on a system that really remembers, knows what is out of date and enforces boundaries.
