@@ -96,3 +96,7 @@ Options: hand single real devices (a USB controller, the Wi-Fi card, the NVIDIA 
 - Milestones 0 to 3 match decisions 5, 7 to 11, 26, 51, 53 to 56: the kernel allocates nothing, 10 calls, sporadic refills, lent time, kernel placement, address spaces. Frame deadlines (70) need no new kernel call; they travel inside the existing scheduling context.
 - History and grants (22), tasks (69), "What happened?" (68) and file stories (69) all read from the same store and ledger; none needs a second record.
 - Games (6, 21, 63) and the new ideas: none of the new ideas runs during full-screen games or touches the frame path, except frame deadlines, which exist to help it.
+
+## E. Living validity and protected outcomes (20 November 2026)
+
+Checked against every decision up to 81 in `commitments.md` (battle-test tables in sections 2 and 3). No clash with a decision; rules R1 to R7 there settle the meeting points: thinning (33), forget (62), private files and other people (B12, principle 4), clipboard (38), side branch or directly (64), the open network (25, narrowed for AI helpers only if you choose so), live updates (73, 80).

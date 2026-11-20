@@ -535,3 +535,11 @@ A note on honesty first: at this level almost everything has been tried in a res
 - Rebootless updates overview (University of Washington course notes): https://courses.cs.washington.edu/courses/cse451/18au/notes/adv-rebootless.pdf
 - Linux GPU fence deadline hints (2023): https://lkml.rescloud.iu.edu/2303.2/06826.html
 - Stream isolation in Whonix/Qubes and Tor: https://whonix.org/wiki/Stream_Isolation , https://spec.torproject.org/proposals/171-separate-streams.txt
+
+## Part D. Living validity and protected outcomes (20 November 2026)
+
+From your research note of 20 November. Two ideas join the design (draft, see `commitments.md`):
+
+- **Living validity**: every result made from other files shows whether its sources changed since (up to date, needs a look, as of a date, not sure), across all apps and copy and paste. New combination; builds on B4 file stories and the ledger. First shown in milestone 6.
+- **Protected outcomes**: a job with rules (what may change, what must stay unchanged, checks before keeping), enforced by Alaya for any program. It replaces 1.2 (AI helper contract). The outbox (1.1) comes back only in its honest form: Alaya apps can hold mail and uploads for your OK (milestone 10).
+- **Experience Guardian** (narrow): an update that is clearly slower during its trial goes back, never a security fix. Extends decision 80.

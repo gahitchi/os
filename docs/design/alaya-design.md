@@ -72,6 +72,8 @@ Details: `concept-history-and-grants.md`, `battle-test.md`.
 - **Thinning and budget** (decision 33): every moment for a day, hourly for a week, daily for a month, weekly after; history capped at 15 % of the disk by default, oldest first.
 - **Full-disk rules**: a reserved pool keeps deletion possible on a full disk; commits are batched every few seconds and immediately on sync.
 - **The ledger** records which app read, wrote and deleted what, and every network connection. It follows the same retention.
+- **Living validity** (draft, `commitments.md`): every result made from other files carries a "made from" note and a mark (up to date, needs a look, as of a date, not sure), told exactly by Alaya apps or watched for older apps, and never shown as certain when it isn't.
+- **Protected outcomes** (draft, `commitments.md`): a job runs under rules (what may change, what must stay unchanged, checks before keeping), enforced through read-only grants and a side branch, with checks run by Alaya itself and honest labels for what it can't check.
 - **What history enables**: per-app undo, branches for trying apps and updates, opt-in replay for debugging.
 
 ## 8. Grants and security

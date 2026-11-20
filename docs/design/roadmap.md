@@ -1,8 +1,8 @@
 # Alaya: the detailed roadmap (version 2)
 
-Approved 20 November 2026. Replaces version 1 (see the repository history).
+Version 3, draft of 20 November 2026: adds living validity and protected outcomes (`commitments.md`). Waiting for your approval. Version 2 was approved on 20 November 2026.
 
-It includes every decision up to 77 (71 to 75 are your answers to the five contradiction cards) and the rules in `contradictions.md`.
+It includes every decision up to 81 (71 to 75 are your answers to the five contradiction cards) and the rules in `contradictions.md`.
 
 ## How to read it
 
@@ -19,7 +19,7 @@ The one rule of the order: **never build on something that hasn't passed its tes
 | Phase | Milestones | What it gives you |
 | --- | --- | --- |
 | A. The engine | 0 to 4 (0 to 3 done) | A kernel and system that can't be broken by any program |
-| B. The new idea | 5 to 7b | A desktop that remembers everything, with tasks, one undo, file stories and "What happened?". Nobody else has this |
+| B. The new idea | 5 to 7b | A desktop that remembers everything, with tasks, one undo, file stories and "What happened?"; it tells you which results are out of date, and holds any program to rules you set. Nobody else has this |
 | C. Real programs | 8 to 10 | Apps, Claude Code inside Alaya, fast graphics, network and sound |
 | D. Real hardware, safely | 11 to 13 | The laptop's own devices and NVIDIA card, tested one at a time from inside KVM |
 | E. Games and everyday use | 14 to 16 | Windows games, the first real boot, and Alaya as an everyday system |
@@ -63,13 +63,14 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 - The virtual disk driver.
 - The Alaya store: never overwrites, checksums every block, commits in small batches, encrypted, with separate branches for separate people.
 - Every commit already records which app made it (attribution), because it is cheap from the start and everything in phase B needs it.
+- Every stored version gets a permanent identity, and the store records which versions an app read (moved here from milestone 7, for living validity). Only the "documents" storage class is tracked.
 - Storage classes (documents keep full history, games one step back, caches none) and the reserved space that lets a full disk still delete.
 
-**How it's tested on your laptop.** The power-cut test: thousands of runs, cutting power at every single write, then checking. Gate: zero damaged files, zero lost commits. Full-disk and bad-block tests. TLA+ model of a commit.
+**How it's tested on your laptop.** The power-cut test: thousands of runs, cutting power at every single write, then checking. Gate: zero damaged files, zero lost commits. Full-disk and bad-block tests. TLA+ model of a commit. Tracking what apps read costs at most 3 % on a file-heavy test.
 
 ### Milestone 6. A simple desktop (large)
 
-**What you'll see.** Alaya's first graphical screen in a QEMU window on your laptop: a login screen, then a desktop with windows you can move and resize with the mouse, a simple text editor, a file browser and a clock.
+**What you'll see.** Alaya's first graphical screen in a QEMU window on your laptop: a login screen, then a desktop with windows you can move and resize with the mouse, a simple text editor, a file browser and a clock. And the first thing no other OS does: change some numbers in the editor, and the file browser marks the chart and the document made from them "Needs a look" (living validity, first show).
 
 **What it includes.**
 - Virtual display, keyboard and mouse drivers.
@@ -78,8 +79,9 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 - The toolkit apps are built with: buttons, text, lists, with the accessibility tree and text in any language built in from the start (decision 67).
 - A login screen for separate people. It warns you if the login or key parts changed since your last login (decision 74).
 - A trusted way to type a PIN that no app can fake.
+- Living validity, first version: "made from" notes for Alaya apps that tell their sources, a small chart-maker demo app and a simple export, and the four marks (up to date, needs a look, as of a date, not sure) in the file browser (`commitments.md`).
 
-**How it's tested on your laptop.** Run `cargo xtask run` and use it. Automatic tests: input-to-screen delay measured in QEMU; frame times of the desktop while every core is busy; fuzzing of the compositor's messages; kill the display driver and the desktop comes back.
+**How it's tested on your laptop.** Run `cargo xtask run` and use it. Automatic tests: input-to-screen delay measured in QEMU; frame times of the desktop while every core is busy; fuzzing of the compositor's messages; kill the display driver and the desktop comes back; living validity marks are right in a scripted pipeline, and nothing that wasn't fully seen is ever marked "up to date".
 
 ### Milestone 7. The remembering desktop (very large; the heart of Alaya)
 
@@ -90,11 +92,13 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 - **"What happened?"** Plain sentences about what changed and which app did it, with undo on each line.
 - **File stories.** Right-click any file to see where it came from and what was made from it.
 - **Run it again**: reopen an app with exactly the files it saw on a past day.
+- **Is it still up to date?** Every result made from other files shows whether its sources changed since, for all apps (older apps clearly marked as Alaya's guess), across copy and paste, with "show the difference" and "make again".
+- **Jobs with rules (protected outcomes).** Start a program on a job with one screen of rules: what it may change, what must stay unchanged, which checks must pass before its work is kept. Alaya enforces them, runs the checks itself and says plainly which wishes it can't check.
 - The Open and Save windows hand single files to apps; the permission screen shows what each app can touch; forget a file for good.
 
-**What it includes.** Grants with time (live, pinned, until), the ledger, per-app undo, side branches, thinning and the 15 % history budget, named versions, forget with per-file keys, desktop search with results as grants, backup to an external (virtual) drive, the private-file guard with trusted carriers (rule B1), and every rule in `contradictions.md` section B that concerns history, tasks and undo.
+**What it includes.** Grants with time (live, pinned, until), the ledger, per-app undo, side branches, thinning and the 15 % history budget, named versions, forget with per-file keys, desktop search with results as grants, backup to an external (virtual) drive, the private-file guard with trusted carriers (rule B1), and every rule in `contradictions.md` section B that concerns history, tasks and undo. Living validity in full and the protected-outcomes core (`commitments.md` sections 2 and 3, rules R1 to R7).
 
-**How it's tested on your laptop.** The timeline gates (past view in under 100 ms across a year of fake history, under full load); power cut during a restore; "forget" leaves nothing readable, raw disk included; one person never sees another's files; a test app that tries to reach files it wasn't given gets nothing; one undo walked back 1,000 steps without a mismatch. You use it by hand as well: this is the milestone to show people.
+**How it's tested on your laptop.** The timeline gates (past view in under 100 ms across a year of fake history, under full load); power cut during a restore; "forget" leaves nothing readable, raw disk included; one person never sees another's files; a test app that tries to reach files it wasn't given gets nothing; one undo walked back 1,000 steps without a mismatch; the living-validity mark tests (renames, restores, thinning, forget, hidden reads); the protected-outcomes attack suite (zero unauthorised changes kept, zero lost changes, no job kept when its checks fail). You use it by hand as well: this is the milestone to show people.
 
 ### Milestone 7b. The full modern desktop (large)
 
@@ -112,7 +116,7 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 
 **What you'll see.** Install an app from a signed file; it installs on the side and you approve it. Simple open-source games and tools from Linux run on Alaya. Apps without a window stop using the CPU unless allowed.
 
-**What it includes.** The Rust SDK with its C interface; signed app bundles with an install list you can untick; installs and updates on a branch; background and notification grants (notifications belong to tasks where possible); the terminal (sees only the task's files, one click for all (decision 71)); the POSIX layer (musl); SDL ported; the first simple ported games (software graphics until milestone 9). System parts and apps update live, by themselves, never during full-screen games, with one-click undo (decision 73).
+**What it includes.** The Rust SDK with its C interface; signed app bundles with an install list you can untick; installs and updates on a branch; background and notification grants (notifications belong to tasks where possible); the terminal (sees only the task's files, one click for all (decision 71)); the POSIX layer (musl); SDL ported; the first simple ported games (software graphics until milestone 9). System parts and apps update live, by themselves, never during full-screen games, with one-click undo (decision 73). The Experience Guardian: during an update's 10-minute trial Alaya also measures, and an update that is clearly slower goes back too, never a security fix (`commitments.md` section 4).
 
 **How it's tested on your laptop.** POSIX test suites; a fuzzer for the app installer; install, update and undo 100 apps in a row; game mode test (background work pauses during a full-screen game).
 
@@ -120,15 +124,15 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 
 **What you'll see.** Open the terminal inside Alaya (in QEMU on your laptop) and run Claude Code, working on Alaya's own code. Every change it makes shows in "What happened?" and can be undone at once.
 
-**What it includes.** The Linux world (decision 66): a program that answers Linux requests, so the real Claude Code program and normal Linux tools run unchanged; bash, git and ripgrep for the terminal; pseudo-terminals; a simple network (QEMU's virtual network, TCP/IP, names, secure connections, network time); Claude Code sessions on a side branch or directly (decision 64); private files hidden from it.
+**What it includes.** The Linux world (decision 66): a program that answers Linux requests, so the real Claude Code program and normal Linux tools run unchanged; bash, git and ripgrep for the terminal; pseudo-terminals; a simple network (QEMU's virtual network, TCP/IP, names, secure connections, network time); Claude Code sessions on a side branch or directly (decision 64); private files hidden from it. Claude Code starts with a rules screen by default (protected outcomes): what it may change, what stays protected, the checks before its work is kept, and where it may connect. The Linux world is tracked per process for living validity.
 
-**How it's tested on your laptop.** A scripted Claude Code session in CI (start, read a file, run a command, edit, run git); git's own test suite; you run a real session by hand.
+**How it's tested on your laptop.** A scripted Claude Code session in CI (start, read a file, run a command, edit, run git); git's own test suite; you run a real session by hand. A Claude Code job told to leave a file alone can't change it, even through a shell it starts.
 
 ### Milestone 9. Fast graphics (large)
 
 **What you'll see.** 3D graphics and games running smoothly inside Alaya in QEMU. The trick: QEMU passes Alaya's graphics work to your laptop's real NVIDIA card through the host's Linux driver, so you get real speed long before Alaya has its own NVIDIA driver.
 
-**What it includes.** Virtual GPU with Venus, Mesa's Vulkan in Alaya, explicit sync, games drawing straight to the screen when full screen, variable refresh and HDR as far as QEMU allows, frame deadlines through the graphics path (decision 70).
+**What it includes.** Virtual GPU with Venus, Mesa's Vulkan in Alaya, explicit sync, games drawing straight to the screen when full screen, variable refresh and HDR as far as QEMU allows, frame deadlines through the graphics path (decision 70). Frame times join the Experience Guardian's measurements.
 
 **How it's tested on your laptop.** A game-like benchmark while every core is busy and memory is 90 % full. Gate (relaxed for QEMU): 99 % of frames on time at 60 fps. The real gate (99.9 %) applies on real hardware.
 
@@ -136,7 +140,7 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 
 **What you'll see.** Browse, download and back up to a cloud you choose; music and game sound that never crackles while everything else is busy.
 
-**What it includes.** The full network stack, every connection in the ledger, the private-file guard for the network, cloud backup (S3 or WebDAV), the sound server on a guaranteed time budget, Bluetooth-style audio paths prepared.
+**What it includes.** The full network stack, every connection in the ledger, the private-file guard for the network, cloud backup (S3 or WebDAV), the sound server on a guaranteed time budget, Bluetooth-style audio paths prepared. The outbox for Alaya's own mail and upload apps (hold for your OK); sound gaps join the Experience Guardian.
 
 **How it's tested on your laptop.** One hour of music under full load: zero gaps. Network fuzzing. The leak-guard test: an app that read a private file can't go online without asking.
 
@@ -200,7 +204,15 @@ Linux stays in charge of your laptop. Alaya keeps running inside KVM, and Linux 
 
 ## Parked ideas (from `new-ideas.md`, for later)
 
-The outbox and the AI helper contract; asking your computer; live links between apps; your machines as one computer; a computer that never turns off; a true battery screen; an internet identity per task; the flight recorder; updating the kernel itself without a restart (after milestone 12, decision 70).
+Asking your computer; live links between apps; your machines as one computer; a computer that never turns off; a true battery screen; an internet identity per task; the flight recorder; updating the kernel itself without a restart (after milestone 12, decision 70).
+
+## What changes in version 3 (draft)
+
+- Living validity ("is this still up to date?"): recording what apps read moves to 5, first show in 6, full in 7.
+- Protected outcomes (jobs with rules): core in 7, Claude Code's rules screen in 8b. It replaces the parked AI helper contract.
+- The Experience Guardian grows out of milestone 4's update trial: 8, with frame times in 9 and sound in 10.
+- The outbox, honest version (Alaya apps only), in 10; it leaves the parked list.
+- Nothing in milestones 0 to 4 or in the kernel changes.
 
 ## What changed from roadmap version 1
 
