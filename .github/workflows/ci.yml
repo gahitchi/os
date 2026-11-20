@@ -135,11 +135,15 @@ jobs:
 
       - name: Allow KVM (when the machine has it)
         run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "no KVM here: plain emulation only"
+            exit 0
+          fi
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm || echo "no KVM here: plain emulation only"
+          ls -l /dev/kvm
 
       - name: Install Rust (version from rust-toolchain.toml)
         run: rustup toolchain install && rustup show
