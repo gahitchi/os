@@ -338,7 +338,7 @@ impl Keeper {
             given: &[self.dntfn, self.park, self.me, self.irq],
             shared: &shared[..ns],
             args: &args[..2 + self.ndev],
-            tsc_hz: self.info.tsc_hz,
+            clock_hz: self.info.clock_hz,
             cores: self.info.cores,
         };
         let p = program::start(&mut parent, &spec)?;

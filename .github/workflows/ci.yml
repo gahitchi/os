@@ -40,6 +40,9 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      - name: Processor wall
+        run: tools/wall-check.sh
+
       - name: Clippy
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings

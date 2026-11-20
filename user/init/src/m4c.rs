@@ -9,7 +9,7 @@ use alaya_sys::abi::{BootInfo, TIMEOUT_LABEL, state};
 use alaya_sys::cores::{self, Cores, Work};
 use alaya_sys::{Caps, Kind, Msg};
 
-use crate::m3::{Kit, ms_to_tsc, sleep_until, until_state, work_ms};
+use crate::m3::{Kit, ms_to_ticks, sleep_until, until_state, work_ms};
 use crate::say;
 
 static ORDER: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
@@ -150,7 +150,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     GATE.store(gate, SeqCst);
     // Everything runs on one core, the last.
     let pin = info.cores;
-    let now = alaya_sys::rdtsc;
+    let now = alaya_sys::clock;
 
     // Earliest deadline first among equals; priority always wins.
     reset();
@@ -164,7 +164,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         1000,
         1000,
         pin,
-        t0 + ms_to_tsc(300),
+        t0 + ms_to_ticks(300),
         0,
     );
     spawn(
@@ -175,7 +175,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         1000,
         1000,
         pin,
-        t0 + ms_to_tsc(100),
+        t0 + ms_to_ticks(100),
         0,
     );
     spawn(
@@ -186,7 +186,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         1000,
         1000,
         pin,
-        t0 + ms_to_tsc(200),
+        t0 + ms_to_ticks(200),
         0,
     );
     spawn(
@@ -197,7 +197,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         1000,
         1000,
         pin,
-        t0 + ms_to_tsc(1000),
+        t0 + ms_to_ticks(1000),
         0,
     );
     release();
@@ -247,7 +247,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         1000,
         1000,
         pin,
-        t0 + ms_to_tsc(400),
+        t0 + ms_to_ticks(400),
         0,
     );
     spawn(
@@ -258,7 +258,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         1000,
         1000,
         pin,
-        t0 + ms_to_tsc(100),
+        t0 + ms_to_ticks(100),
         0,
     );
     release();
@@ -285,7 +285,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         1000,
         1000,
         pin,
-        t0 + ms_to_tsc(5),
+        t0 + ms_to_ticks(5),
         0,
     );
     release();

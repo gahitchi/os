@@ -120,27 +120,27 @@ impl Kit<'_> {
     }
 }
 
-pub(crate) fn ms_to_tsc(ms: u64) -> u64 {
+pub(crate) fn ms_to_ticks(ms: u64) -> u64 {
     ms * HZ.load(SeqCst) / 1000
 }
 
-pub(crate) fn tsc_to_us(t: u64) -> u64 {
+pub(crate) fn ticks_to_us(t: u64) -> u64 {
     t * 1_000_000 / HZ.load(SeqCst)
 }
 
 /// Sleep for about `ms`: wait for the ticker thread's signals.
 pub(crate) fn sleep_ms(ms: u64) {
-    let end = alaya_sys::rdtsc() + ms_to_tsc(ms);
-    while alaya_sys::rdtsc() < end {
+    let end = alaya_sys::clock() + ms_to_ticks(ms);
+    while alaya_sys::clock() < end {
         alaya_sys::wait(TICK.load(SeqCst)).unwrap();
     }
 }
 
 /// Wait (sleeping) until `done` holds, at most `ms`.
 pub(crate) fn sleep_until(ms: u64, done: impl Fn() -> bool) -> bool {
-    let end = alaya_sys::rdtsc() + ms_to_tsc(ms);
+    let end = alaya_sys::clock() + ms_to_ticks(ms);
     while !done() {
-        if alaya_sys::rdtsc() > end {
+        if alaya_sys::clock() > end {
             return false;
         }
         alaya_sys::wait(TICK.load(SeqCst)).unwrap();
@@ -151,11 +151,11 @@ pub(crate) fn sleep_until(ms: u64, done: impl Fn() -> bool) -> bool {
 /// Run for `ms` of this thread's own time: gaps while it was not running
 /// do not count.
 pub(crate) fn work_ms(ms: u64) {
-    let (target, gap) = (ms_to_tsc(ms), ms_to_tsc(1) / 4);
+    let (target, gap) = (ms_to_ticks(ms), ms_to_ticks(1) / 4);
     let mut ran = 0;
-    let mut last = alaya_sys::rdtsc();
+    let mut last = alaya_sys::clock();
     while ran < target {
-        let now = alaya_sys::rdtsc();
+        let now = alaya_sys::clock();
         if now - last < gap {
             ran += now - last;
         }
@@ -199,8 +199,8 @@ extern "C" fn watcher(arg: u64) -> ! {
     loop {
         let _ = alaya_sys::wait(go);
         let a = COUNT_L.load(SeqCst);
-        let end = alaya_sys::rdtsc() + ms_to_tsc(20);
-        while alaya_sys::rdtsc() < end {
+        let end = alaya_sys::clock() + ms_to_ticks(20);
+        while alaya_sys::clock() < end {
             COUNT_H.fetch_add(1, SeqCst);
         }
         RESULT.store(COUNT_L.load(SeqCst) - a, SeqCst);
@@ -294,11 +294,11 @@ extern "C" fn client(arg: u64) -> ! {
 /// Calls the server with a 30 ms job on a 10 ms budget.
 extern "C" fn slow_client(arg: u64) -> ! {
     let (ep, done) = (arg & 0xffff, arg >> 16);
-    let start = alaya_sys::rdtsc();
+    let start = alaya_sys::clock();
     let r = alaya_sys::ipc_call(ep, &Msg::new(SPIN, &[30]), Caps::default());
     RESULT.store(
         if r.is_ok() {
-            alaya_sys::rdtsc() - start
+            alaya_sys::clock() - start
         } else {
             0
         },
@@ -345,7 +345,7 @@ pub(crate) fn until_state(t: u64, s: u64) {
 /// Run the milestone 3 checks. `checks` counts passed checks.
 /// Returns the next free slot.
 pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str)) -> u64 {
-    HZ.store(info.tsc_hz, SeqCst);
+    HZ.store(info.clock_hz, SeqCst);
     let cores = info.cores;
     let last = cores - 1;
     let mut k = Kit {
@@ -387,11 +387,11 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
 
     // A budget of 2 ms every 10 ms holds a thread that never stops.
     let (_, hog_sc) = k.thread(hog, 0, 150, 2000, 10_000, last + 1);
-    let start = alaya_sys::rdtsc();
+    let start = alaya_sys::clock();
     let used0 = alaya_sys::sc_info(hog_sc).unwrap()[2];
     sleep_ms(200);
     let used = alaya_sys::sc_info(hog_sc).unwrap()[2] - used0;
-    let elapsed_us = tsc_to_us(alaya_sys::rdtsc() - start);
+    let elapsed_us = ticks_to_us(alaya_sys::clock() - start);
     let share = used / 1000;
     say!(
         "a 2 ms / 10 ms budget used {} µs of {} µs ({}%)",
@@ -533,7 +533,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     RESULT.store(0, SeqCst);
     k.thread(slow_client, ep2 | slow_done << 16, 120, 10_000, 100_000, 0);
     alaya_sys::wait(slow_done).unwrap();
-    let took = tsc_to_us(RESULT.load(SeqCst));
+    let took = ticks_to_us(RESULT.load(SeqCst));
     say!(
         "a 30 ms job on a 10 ms / 100 ms budget took {} ms",
         took / 1000
@@ -656,11 +656,11 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             alaya_sys::ipc_call(ep, &Msg::new(NULL, &[]), Caps::default()).unwrap();
         }
         let rounds = 2000;
-        let start = alaya_sys::rdtsc();
+        let start = alaya_sys::clock();
         for _ in 0..rounds {
             alaya_sys::ipc_call(ep, &Msg::new(NULL, &[]), Caps::default()).unwrap();
         }
-        (alaya_sys::rdtsc() - start) / rounds
+        (alaya_sys::clock() - start) / rounds
     };
     let between = measure(ep3);
     let inside = measure(ep2);

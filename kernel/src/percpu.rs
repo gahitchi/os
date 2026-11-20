@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Data each core keeps for itself, reached through the GS base register.
+//! Data each core keeps for itself, reached through a register the
+//! processor keeps per core (GS base on a PC, TPIDR_EL1 on ARM; see
+//! `arch::set_cpu_base`).
 //!
 //! Cores are numbered from 0 (the bootstrap core) in the order the
 //! bootloader lists them. That number is the kernel's "cpu" everywhere; the
-//! APIC id is kept alongside because hardware addresses cores by it.
+//! hardware id (APIC id on a PC, MPIDR on ARM) is kept alongside because
+//! hardware addresses cores by it.
 
-use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use crate::arch::cpu;
-use crate::arch::gdt::{Gdt, Tss};
+use crate::arch;
 
 /// The most cores the kernel supports. Today's largest desktop and laptop
 /// CPUs have 32 threads; servers have more, so leave room.
@@ -17,16 +18,19 @@ pub const MAX_CPUS: usize = 256;
 
 #[repr(C)]
 pub struct PerCpu {
-    /// Must stay first: [`index`] reads it at GS:0.
+    /// Must stay first: [`index`] reads it at offset 0.
     index: u32,
-    /// Top of this core's kernel stack, where a system call switches to
-    /// (GS:8, read by the entry code in `syscall.rs`).
-    pub kernel_rsp: AtomicU64,
-    /// The user stack pointer while a system call runs (GS:16).
-    pub user_rsp: AtomicU64,
-    pub apic_id: AtomicU32,
-    /// The core has loaded the kernel's IDT and can take an NMI.
-    pub has_idt: AtomicBool,
+    /// Top of this core's kernel stack, where an entry from user mode
+    /// switches to (offset 8, read by the entry code behind the wall).
+    pub kernel_stack_top: AtomicU64,
+    /// Scratch space for the user stack pointer while the entry code
+    /// switches stacks (offset 16).
+    pub user_sp: AtomicU64,
+    /// The hardware's id for this core (APIC id, MPIDR).
+    pub hw_id: AtomicU64,
+    /// The core can take the "stop now" signal another core sends on a
+    /// panic (its exception table is loaded).
+    pub can_stop: AtomicBool,
     /// The core finished starting up.
     pub online: AtomicBool,
     /// Big-lock self-test: how many times this core took the lock.
@@ -38,7 +42,7 @@ pub struct PerCpu {
     /// Another core asks this one to flush its TLB.
     pub flush: AtomicBool,
     /// Big kernel lock use on this core (decision 77: measured under load):
-    /// times taken, times it had to wait, TSC ticks spent waiting and
+    /// times taken, times it had to wait, clock ticks spent waiting and
     /// holding, and when it was last taken.
     pub lock_takes: AtomicU64,
     pub lock_waits: AtomicU64,
@@ -51,10 +55,10 @@ impl PerCpu {
     const fn new(index: u32) -> Self {
         Self {
             index,
-            kernel_rsp: AtomicU64::new(0),
-            user_rsp: AtomicU64::new(0),
-            apic_id: AtomicU32::new(0),
-            has_idt: AtomicBool::new(false),
+            kernel_stack_top: AtomicU64::new(0),
+            user_sp: AtomicU64::new(0),
+            hw_id: AtomicU64::new(0),
+            can_stop: AtomicBool::new(false),
             online: AtomicBool::new(false),
             bkl_rounds: AtomicU64::new(0),
             timer_ticks: AtomicU32::new(0),
@@ -70,11 +74,12 @@ impl PerCpu {
     }
 }
 
-/// Offsets the system call entry code relies on.
-pub const KERNEL_RSP_OFFSET: usize = 8;
-pub const USER_RSP_OFFSET: usize = 16;
-const _: () = assert!(core::mem::offset_of!(PerCpu, kernel_rsp) == KERNEL_RSP_OFFSET);
-const _: () = assert!(core::mem::offset_of!(PerCpu, user_rsp) == USER_RSP_OFFSET);
+/// Offsets the entry code behind the wall relies on.
+pub const KERNEL_STACK_OFFSET: usize = 8;
+pub const USER_SP_OFFSET: usize = 16;
+const _: () = assert!(core::mem::offset_of!(PerCpu, index) == 0);
+const _: () = assert!(core::mem::offset_of!(PerCpu, kernel_stack_top) == KERNEL_STACK_OFFSET);
+const _: () = assert!(core::mem::offset_of!(PerCpu, user_sp) == USER_SP_OFFSET);
 
 pub(crate) static CPUS: [PerCpu; MAX_CPUS] = {
     let mut cpus = [const { PerCpu::new(0) }; MAX_CPUS];
@@ -85,9 +90,6 @@ pub(crate) static CPUS: [PerCpu; MAX_CPUS] = {
     }
     cpus
 };
-
-pub(crate) static mut GDTS: [Gdt; MAX_CPUS] = [const { Gdt::new() }; MAX_CPUS];
-pub(crate) static mut TSSES: [Tss; MAX_CPUS] = [const { Tss::new() }; MAX_CPUS];
 
 /// How many cores the bootloader reported (set once by the bootstrap core).
 pub(crate) static COUNT: AtomicU32 = AtomicU32::new(1);
@@ -104,44 +106,18 @@ pub fn get(index: u32) -> &'static PerCpu {
     &CPUS[index as usize]
 }
 
-/// Point GS at core `index`'s data. The first thing every core does.
+/// Point this core's per-core register at core `index`'s data. The first
+/// thing every core does.
 pub fn enter(index: u32) {
-    cpu::set_gs_base(&CPUS[index as usize] as *const PerCpu as u64);
+    arch::set_cpu_base(&CPUS[index as usize] as *const PerCpu as u64);
 }
 
 /// The running core's number.
 #[inline]
 pub fn index() -> u32 {
-    let i: u32;
-    // SAFETY: GS points at this core's `PerCpu` (see `enter`), whose first
-    // field is the index.
-    unsafe {
-        core::arch::asm!("mov {:e}, gs:[0]", out(reg) i, options(readonly, nostack, preserves_flags))
-    };
-    i
+    arch::cpu_index()
 }
 
 pub fn this() -> &'static PerCpu {
     get(index())
-}
-
-/// Set up and load this core's GDT and TSS, with its interrupt stacks.
-/// `kernel_top` is where the CPU switches to when an interrupt or a system
-/// call arrives from user mode.
-pub fn load_gdt(ist_tops: [u64; crate::arch::gdt::IST_COUNT], kernel_top: u64) {
-    let i = index() as usize;
-    CPUS[i].kernel_rsp.store(kernel_top, Ordering::Relaxed);
-    // SAFETY: each core touches only its own slot, once, while starting.
-    unsafe {
-        let tss = &mut (*addr_of_mut!(TSSES))[i];
-        let mut rsp = tss.rsp;
-        rsp[0] = kernel_top;
-        tss.rsp = rsp;
-        let mut ist = tss.ist;
-        ist[..ist_tops.len()].copy_from_slice(&ist_tops);
-        tss.ist = ist;
-        crate::arch::gdt::load(&mut (*addr_of_mut!(GDTS))[i], tss);
-    }
-    // Loading the segment registers cleared GS base; point it back.
-    enter(i as u32);
 }

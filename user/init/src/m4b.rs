@@ -397,7 +397,7 @@ fn no_wrong_answers(t: &TestPage) {
 
 /// Run the checks; returns the next free slot.
 pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str)) -> u64 {
-    HZ.store(info.tsc_hz, SeqCst);
+    HZ.store(info.clock_hz, SeqCst);
     let long = info.flags & boot_flags::LONG != 0;
     let mut k = Kit {
         info,
@@ -666,7 +666,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             given: &given[..fixed.len() + ncodes],
             shared: &image_pages[..nimg],
             args: &args[..k::ARG_DEV_CODES + ncodes],
-            tsc_hz: info.tsc_hz,
+            clock_hz: info.clock_hz,
             cores: info.cores,
         },
     )
@@ -697,7 +697,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             given: &app_given[..APP_THREADS as usize],
             shared: &[(tp, TEST_PAGE, map::WRITE)],
             args: &[APP_THREADS, APP_SPAN],
-            tsc_hz: info.tsc_hz,
+            clock_hz: info.clock_hz,
             cores: info.cores,
         },
     )
@@ -751,7 +751,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     control(ctl, k::POLICY, &[3, 1000]);
     let ok0 = t.ok.load(SeqCst);
     let s0 = stats(ctl);
-    control(ctl, k::CHAOS, &[1, 400, 900, 0x5eed_0000 ^ info.tsc_hz]);
+    control(ctl, k::CHAOS, &[1, 400, 900, 0x5eed_0000 ^ info.clock_hz]);
     let mut left = chaos_ms;
     while left > 0 {
         let step = left.min(60_000);
@@ -842,7 +842,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     let updates = 1000;
     let ok3 = t.ok.load(SeqCst);
     let u0 = stats(ctl);
-    let begin = alaya_sys::rdtsc();
+    let begin = alaya_sys::clock();
     let mut version = stats(ctl)[4];
     for i in 0..updates {
         // The app must really be using the disk between updates.
@@ -860,7 +860,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         );
         version = r[1];
     }
-    let us = crate::m3::tsc_to_us(alaya_sys::rdtsc() - begin);
+    let us = crate::m3::ticks_to_us(alaya_sys::clock() - begin);
     no_wrong_answers(t);
     let u1 = stats(ctl);
     assert!(

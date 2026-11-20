@@ -147,19 +147,15 @@ impl State {
     fn sync(&self, phys: u64) {
         if !self.coherent {
             let hhdm = crate::limine::hhdm_offset().unwrap();
-            // SAFETY: flushes one cache line of a page table.
-            unsafe { core::arch::asm!("clflush [{}]", in(reg) phys + hhdm, options(nostack)) };
+            super::paging::clean_for_device(phys + hhdm);
         }
     }
 }
 
 fn wait(done: impl Fn() -> bool, what: &str) {
-    let end = crate::arch::cpu::rdtsc() + crate::time::ns_to_tsc(100_000_000);
+    let end = crate::time::now() + crate::time::ns_to_ticks(100_000_000);
     while !done() {
-        assert!(
-            crate::arch::cpu::rdtsc() < end,
-            "iommu: {what} did not finish"
-        );
+        assert!(crate::time::now() < end, "iommu: {what} did not finish");
         core::hint::spin_loop();
     }
 }

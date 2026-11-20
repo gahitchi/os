@@ -340,8 +340,8 @@ impl Kit {
 }
 
 fn sleep_ms(ms: u64) {
-    let end = alaya_sys::rdtsc() + ms * HZ.load(SeqCst) / 1000;
-    while alaya_sys::rdtsc() < end {
+    let end = alaya_sys::clock() + ms * HZ.load(SeqCst) / 1000;
+    while alaya_sys::clock() < end {
         alaya_sys::wait(TICK.load(SeqCst)).unwrap();
     }
 }
@@ -394,7 +394,7 @@ fn check_helpers(jobs_before: u64) {
 /// Run the fuzzer for `seconds`; `first_free` is the first free slot of
 /// this program's table.
 pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
-    HZ.store(info.tsc_hz, SeqCst);
+    HZ.store(info.clock_hz, SeqCst);
     let mut k = Kit {
         table: info.table,
         ut: 0,
@@ -501,7 +501,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
     // The threads: fuzzers pinned one per core, and two victims that start
     // the same way but which nobody restarts.
     let mut handles = [(0u64, 0u64); (MAX_FUZZERS + VICTIMS) as usize];
-    let seed = alaya_sys::rdtsc();
+    let seed = alaya_sys::clock();
     let reset = |t: u64, i: u64, seed: u64| -> Result<(), Error> {
         alaya_sys::thread_configure(t, table, space, 0)?;
         alaya_sys::thread_priority(t, if i < fuzzers { FUZZ_PRIO } else { 90 }, FUZZ_PRIO)?;
@@ -545,11 +545,11 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
     let count = |i: u64| unsafe { (*(COUNTERS as *const AtomicU64).add(i as usize)).load(Relaxed) };
     let mut last = [0u64; MAX_FUZZERS as usize];
     let (mut restarts, mut failed_restarts) = (0u64, 0u64);
-    let start = alaya_sys::rdtsc();
-    let end = start + seconds * info.tsc_hz;
-    let mut report = start + 5 * info.tsc_hz;
+    let start = alaya_sys::clock();
+    let end = start + seconds * info.clock_hz;
+    let mut report = start + 5 * info.clock_hz;
     let mut round = 0u64;
-    while alaya_sys::rdtsc() < end {
+    while alaya_sys::clock() < end {
         sleep_ms(10);
         round += 1;
         for i in 0..fuzzers {
@@ -568,12 +568,12 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
                 Err(_) => failed_restarts += 1,
             }
         }
-        if alaya_sys::rdtsc() >= report {
-            report += 5 * info.tsc_hz;
+        if alaya_sys::clock() >= report {
+            report += 5 * info.clock_hz;
             let calls: u64 = (0..threads).map(count).sum();
             say!(
                 "fuzz: {} s, {calls} calls, {restarts} restarts",
-                (alaya_sys::rdtsc() - start) / info.tsc_hz
+                (alaya_sys::clock() - start) / info.clock_hz
             );
         }
     }

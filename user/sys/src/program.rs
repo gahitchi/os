@@ -72,7 +72,7 @@ pub struct Spec<'a> {
     /// away from it when it ends.
     pub shared: &'a [(u64, u64, u64)],
     pub args: &'a [u64],
-    pub tsc_hz: u64,
+    pub clock_hz: u64,
     pub cores: u64,
 }
 
@@ -231,7 +231,7 @@ pub fn start(parent: &mut Parent, spec: &Spec) -> Result<Program, Error> {
     let mut info = StartInfo {
         magic: start::MAGIC,
         name: [0; 32],
-        tsc_hz: spec.tsc_hz,
+        clock_hz: spec.clock_hz,
         cores: spec.cores,
         untyped_bits: own,
         first_free: first_free_guess,

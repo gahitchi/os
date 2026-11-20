@@ -5,7 +5,6 @@
 use alaya_abi::{Error, Kind, MAX_PRIORITY, core_type, op, rights};
 use alaya_cap::{self as cap, Cap, Globals, INTERNAL, Memory, SlotRef};
 
-use crate::arch::cpu::rdtsc;
 use crate::caps::{Outcome, Phys};
 use crate::obj::{
     self, SLOT_FAULT, SLOT_SPACE, SLOT_TABLE, Sc, Tcb, internal, scflag, state, tflag, tflag2,
@@ -115,21 +114,18 @@ pub fn thread(
             if a[0] >= USER_END || a[1] >= USER_END || a[4] >= USER_END {
                 return Err(Error::InvalidArgument);
             }
-            th.regs = obj::Regs {
-                rip: a[0],
-                rsp: a[1],
-                rdi: a[2],
-                rsi: a[3],
-                fs_base: a[4],
-                rflags: crate::arch::cpu::RFLAGS_IF | 2,
-                ..obj::Regs::default()
-            };
+            th.regs = crate::arch::Regs::start(a[0], a[1], a[2], a[3], a[4]);
             th.flags &= !tflag::SYSCALL;
             OK
         }
         op::THREAD_READ => {
             let th = tcb(t);
-            done([th.regs.rip, th.regs.rsp, th.regs.rax, u64::from(th.state)])
+            done([
+                th.regs.pc(),
+                th.regs.sp(),
+                th.regs.status(),
+                u64::from(th.state),
+            ])
         }
         op::THREAD_START => {
             let th = tcb(t);
@@ -230,7 +226,7 @@ pub fn sched_context(
             OK
         }
         op::SC_DEADLINE => {
-            let now = rdtsc();
+            let now = time::now();
             let mut missed = 0;
             if x.deadline != 0 && now >= x.deadline {
                 missed = 1;
@@ -247,9 +243,9 @@ pub fn sched_context(
             done([u64::from(x.misses), x.missed_by, missed, 0])
         }
         op::SC_INFO => done([
-            time::tsc_to_ns(x.budget.budget),
-            time::tsc_to_ns(x.budget.period),
-            time::tsc_to_ns(x.used),
+            time::ticks_to_ns(x.budget.budget),
+            time::ticks_to_ns(x.budget.period),
+            time::ticks_to_ns(x.used),
             u64::from(x.core),
         ]),
         _ => Err(Error::NoSuchCall),
@@ -275,9 +271,9 @@ pub fn sched_control(m: &mut Phys, me: u64, label: u64, a: [u64; 6]) -> Result<O
     sched::release_remove(m.sys, s);
     let x = sc(s);
     x.budget.configure(
-        time::ns_to_tsc(budget_us * 1000),
-        time::ns_to_tsc(period_us * 1000),
-        rdtsc(),
+        time::ns_to_ticks(budget_us * 1000),
+        time::ns_to_ticks(period_us * 1000),
+        time::now(),
     );
     x.core_type = ctype as u8;
     x.pin = pin as u32;

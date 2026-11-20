@@ -29,7 +29,7 @@ use alaya_abi::{
 };
 use alaya_cap::{self as cap, Cap, INTERNAL, Memory};
 
-use crate::arch::cpu::{self, rdtsc};
+use crate::arch;
 use crate::caps::Phys;
 use crate::mm::layout::PAGE_SIZE;
 use crate::mm::paging::{AddressSpace, NO_EXECUTE, USER, WRITABLE};
@@ -62,7 +62,7 @@ pub fn start(platform: &crate::acpi::Platform) -> ! {
     let mut space = AddressSpace::with_root(
         space_obj,
         hhdm,
-        cpu::features().gib_pages,
+        arch::paging::gib_pages(),
         mm::kernel_root(),
     );
     let (entry, image_start, image_end) = load_elf(&mut space, elf, hhdm);
@@ -173,14 +173,11 @@ pub fn start(platform: &crate::acpi::Platform) -> ! {
     let t = obj::get::<Tcb>(thread);
     t.prio = INIT_PRIORITY;
     t.mcp = MAX_PRIORITY as u8;
-    t.regs.rip = entry;
-    t.regs.rsp = INIT_STACK_TOP;
-    t.regs.rdi = BOOT_INFO_ADDRESS;
-    t.regs.rflags = cpu::RFLAGS_IF | 2;
+    t.regs = crate::arch::Regs::start(entry, INIT_STACK_TOP, BOOT_INFO_ADDRESS, 0, 0);
     t.state = state::READY;
-    let period = time::ns_to_tsc(INIT_PERIOD_NS);
+    let period = time::ns_to_ticks(INIT_PERIOD_NS);
     let s = obj::get::<Sc>(sc_obj);
-    s.budget.configure(period, period, rdtsc());
+    s.budget.configure(period, period, time::now());
     s.home = thread;
     s.thread = thread;
     t.sc = sc_obj;
@@ -197,8 +194,8 @@ pub fn start(platform: &crate::acpi::Platform) -> ! {
     info.space = 4;
     info.sched_control = 5;
     info.cores = u64::from(percpu::count());
-    info.protections = crate::arch::protect::enabled();
-    info.tsc_hz = time::tsc_hz();
+    info.protections = arch::protections();
+    info.clock_hz = time::hz();
     info.image_start = image_start;
     info.image_end = image_end;
     for word in limine::cmdline().split_whitespace() {
@@ -262,7 +259,7 @@ pub fn start(platform: &crate::acpi::Platform) -> ! {
         info.untyped_count,
         total >> 20
     );
-    let (kind, mask, size) = crate::fpu::describe();
+    let (kind, mask, size) = arch::fpu::describe();
     kprintln!("fpu: {kind}, state components {mask:#x}, {size} bytes per thread");
     let types = &m.sys.cores[..percpu::count() as usize];
     let perf = types
@@ -299,7 +296,11 @@ fn load_elf(space: &mut AddressSpace, elf: &[u8], hhdm: u64) -> (u64, u64, u64) 
         elf.len() >= 64 && elf[..4] == *b"\x7fELF" && elf[4] == 2 && elf[5] == 1,
         "the first program is not a 64-bit little-endian ELF file"
     );
-    assert!(u16_at(18) == 62, "the first program is not for x86-64");
+    assert!(
+        u16_at(18) == arch::ELF_MACHINE,
+        "the first program is not for {}",
+        arch::NAME
+    );
     let entry = u64_at(24);
     let (phoff, phentsize, phnum) = (u64_at(32) as usize, u16_at(54) as usize, u16_at(56));
     let (mut lowest, mut highest) = (u64::MAX, 0);

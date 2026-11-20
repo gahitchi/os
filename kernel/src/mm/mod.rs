@@ -14,9 +14,9 @@ pub mod paging;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use layout::{PAGE_SIZE, Stack};
-use paging::{AddressSpace, GLOBAL, NO_EXECUTE, UNCACHED, WRITABLE};
+use paging::{AddressSpace, DEVICE, GLOBAL, NO_EXECUTE, WRITABLE};
 
-use crate::arch::cpu;
+use crate::arch;
 use crate::{kprintln, limine};
 
 /// Physical address of the kernel's top-level page table.
@@ -71,12 +71,11 @@ pub fn print_memory_map() {
 ///
 /// `cpus` is how many cores need stacks; `lapic_mmio` is the physical
 /// address of the xAPIC registers when x2APIC is not in use.
-pub fn init(cpus: u32, lapic_mmio: Option<u64>) {
+pub fn init(cpus: u32) {
     let hhdm = limine::hhdm_offset().expect("bootloader gave no direct map");
     let image = limine::executable_address().expect("bootloader gave no kernel address");
-    let features = cpu::features();
     frames::init(hhdm);
-    let mut space = AddressSpace::new(hhdm, features.gib_pages);
+    let mut space = AddressSpace::new(hhdm, arch::paging::gib_pages());
 
     // The kernel image, each part with only the rights it needs.
     // SAFETY: linker-provided symbols; only their addresses are used.
@@ -139,12 +138,13 @@ pub fn init(cpus: u32, lapic_mmio: Option<u64>) {
         flush(&mut space, range);
     }
 
-    if let Some(mmio) = lapic_mmio {
+    // Device registers the kernel itself drives (behind the wall).
+    for (mmio, len) in arch::kernel_device_pages().into_iter().flatten() {
         space.map(
             mmio + hhdm,
             mmio,
-            PAGE_SIZE,
-            WRITABLE | NO_EXECUTE | GLOBAL | UNCACHED,
+            align_up(len),
+            WRITABLE | NO_EXECUTE | GLOBAL | DEVICE,
         );
     }
 
@@ -190,7 +190,7 @@ pub fn map_physical(phys: u64, len: u64, device: bool) -> u64 {
     let from = align_down(phys);
     let to = align_up(phys + len);
     let flags = if device {
-        WRITABLE | NO_EXECUTE | GLOBAL | UNCACHED
+        WRITABLE | NO_EXECUTE | GLOBAL | DEVICE
     } else {
         NO_EXECUTE | GLOBAL
     };
@@ -210,23 +210,11 @@ pub fn is_ram(phys: u64, len: u64) -> bool {
     })
 }
 
-/// Turn on no-execute, write protection and global pages on this core and
-/// load the kernel's page tables.
+/// Turn on the paging features the kernel relies on (no-execute, write
+/// protection, global pages) on this core and load the kernel's page
+/// tables.
 pub fn switch_this_core() {
     let root = KERNEL_ROOT.load(Ordering::Acquire);
     assert!(root != 0, "kernel page tables not built yet");
-    assert!(
-        cpu::cr4() & cpu::CR4_LA57 == 0,
-        "5-level paging is on, but the kernel uses 4 levels"
-    );
-    // SAFETY: the new tables map everything the kernel uses: its image, the
-    // direct map (bootloader structures and this core's boot stack included)
-    // and the per-core stacks.
-    unsafe {
-        let efer = cpu::rdmsr(cpu::msr::EFER);
-        cpu::wrmsr(cpu::msr::EFER, efer | cpu::EFER_NXE);
-        cpu::write_cr0(cpu::cr0() | cpu::CR0_WP);
-        cpu::write_cr4(cpu::cr4() | cpu::CR4_PGE);
-        cpu::write_cr3(root);
-    }
+    arch::paging::enable(root);
 }
