@@ -234,7 +234,7 @@ plug_test() {
         while [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
             if grep -qE "$PANIC_MARKER|FAILED" "$log"; then result=panic; break; fi
             if [ -z "$found" ]; then
-                found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\).*/\1/p' | head -n1 || true)
+                found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\) (.*/\1/p' | head -n1 || true)
             fi
             if [ -n "$found" ] && [ "$(grep -c 'soak: saving ' "$log")" -ge "$saves" ]; then
                 # Inside a save or between two: a random 0-0.4 s later.
@@ -268,8 +268,13 @@ plug_test() {
         else
             say "boot $boot: started with save $found"
         fi
-        # What the boot printed before it was switched off.
+        # What the boot printed before it was switched off. Only whole
+        # lines count: a kill while printing "soak: saving 400" can leave
+        # "soak: saving 40" as the last, unfinished line.
         local p s
+        if [ -n "$(tail -c1 "$log")" ]; then
+            sed -i '$d' "$log"
+        fi
         p=$(tr -d '\r' <"$log" | sed -n 's/.*soak: promised \([0-9]*\).*/\1/p' | tail -n1)
         s=$(tr -d '\r' <"$log" | sed -n 's/.*soak: saving \([0-9]*\).*/\1/p' | tail -n1)
         promised="${p:-$found}"
@@ -286,7 +291,7 @@ plug_test() {
     while [ $((SECONDS - start)) -lt "$TIMEOUT" ] && [ -z "$found" ]; do
         if grep -qE "$PANIC_MARKER|FAILED" "$log"; then break; fi
         kill -0 "$pid" 2>/dev/null || break
-        found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\).*/\1/p' | head -n1 || true)
+        found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\) (.*/\1/p' | head -n1 || true)
         sleep 0.2
     done
     kill -9 "$pid" 2>/dev/null || true

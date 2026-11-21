@@ -882,8 +882,17 @@ fn plug(image: &Path, opts: &Options) -> Result<(), String> {
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
+            // Only whole lines: QEMU killed in the middle of printing
+            // "soak: saving 400" leaves "soak: saving 40", which must not
+            // count as a number that was saved.
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            while matches!(reader.read_line(&mut line), Ok(n) if n > 0) {
+                if !line.ends_with('\n') {
+                    break;
+                }
+                line.pop();
+                if tx.send(std::mem::take(&mut line)).is_err() {
                     break;
                 }
             }
