@@ -147,6 +147,9 @@ options:
                     for this long (random calls from several cores)
   --long            test only: the long stress runs (10 minutes of random
                     driver kills instead of 8 seconds)
+  --plug <n>        test only: pull the plug n times. Each boot opens the
+                    store the last boot left, checks what survived, keeps
+                    saving, and QEMU is killed at a random moment
   --timeout <secs>  give up after this long (test only, default 180, or
                     the fuzz time plus 180, or 15 minutes with --long)
   --image <path>    boot this image instead of building one (run and test)
@@ -167,6 +170,7 @@ struct Options {
     fault: Option<String>,
     fuzz: Option<u64>,
     long: bool,
+    plug: Option<u32>,
 }
 
 fn main() -> ExitCode {
@@ -187,6 +191,7 @@ fn main() -> ExitCode {
         fault: None,
         fuzz: None,
         long: false,
+        plug: None,
     };
     let mut timeout_set = false;
     let mut memory_set = false;
@@ -224,6 +229,13 @@ fn main() -> ExitCode {
                 )
             }
             "--long" => opts.long = true,
+            "--plug" => {
+                opts.plug = Some(
+                    value("--plug")
+                        .parse()
+                        .unwrap_or_else(|_| fail("bad --plug")),
+                )
+            }
             "--image" => opts.image = Some(PathBuf::from(value("--image"))),
             "--accel" => opts.accel = value("--accel"),
             "--memory" => {
@@ -268,6 +280,7 @@ fn main() -> ExitCode {
             build_image(opts.arch, opts.release, None).map(|p| println!("image: {}", p.display()))
         }
         "run" => image_for(&opts).and_then(|image| run(&image, &opts)),
+        "test" if opts.plug.is_some() => image_for(&opts).and_then(|image| plug(&image, &opts)),
         "test" => image_for(&opts).and_then(|image| test(&image, &opts)),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
@@ -331,7 +344,7 @@ fn build_kernel(arch: Arch, release: bool) -> Result<PathBuf, String> {
 
 /// Programs the boot image carries besides the first one, all from the
 /// `alaya-programs` crate.
-const PROGRAMS: [&str; 4] = ["keeper", "blk1", "blk2", "disktest"];
+const PROGRAMS: [&str; 5] = ["keeper", "blk1", "blk2", "disktest", "store"];
 
 /// Build the first program and the programs it starts. They live in the
 /// lower half, so they are built without the kernel's code model
@@ -370,12 +383,25 @@ fn user_binary(arch: Arch, release: bool, name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The virtual disk the disk driver works on: 1 MiB of zeros, made once.
+/// Size of the virtual disk: the first MiB for the disk tests of
+/// milestone 4, the rest for the store (milestone 5).
+const DISK_BYTES: u64 = 64 << 20;
+
+/// The virtual disk the disk driver works on, made once (and grown if an
+/// older, smaller one is there).
 fn disk_image() -> Result<PathBuf, String> {
     let path = root().join("build").join("disk.img");
-    if !path.exists() {
-        fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        fs::write(&path, vec![0u8; 1 << 20]).map_err(|e| format!("write disk image: {e}"))?;
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if len < DISK_BYTES {
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("disk image: {e}"))?;
+        f.set_len(DISK_BYTES)
+            .map_err(|e| format!("disk image: {e}"))?;
     }
     Ok(path)
 }
@@ -501,9 +527,14 @@ fn image_for(opts: &Options) -> Result<PathBuf, String> {
     if opts.long {
         words.push("long".to_string());
     }
+    if opts.plug.is_some() {
+        words.push("store-soak".to_string());
+    }
     if !words.is_empty() {
         if opts.image.is_some() {
-            return Err("--fuzz and --long build their own image; leave out --image".into());
+            return Err(
+                "--fuzz, --long and --plug build their own image; leave out --image".into(),
+            );
         }
         return build_image(opts.arch, opts.release, Some(&words.join(" ")));
     }
@@ -797,4 +828,145 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
         Err(e) => eprintln!("xtask: FAIL ({label}): {e}"),
     }
     outcome
+}
+
+/// Pull the plug `--plug` times (milestone 5). Each boot of a `store-soak`
+/// image opens the store left on the virtual disk, prints what it found
+/// ("soak: found C"), then keeps changing two files and saving, printing
+/// "soak: saving C" before each save and "soak: promised C" once the save
+/// is safe. The host kills QEMU at a random moment and boots again. Every
+/// boot must find a counter at least the last one promised and at most the
+/// last one being saved: nothing promised lost, nothing invented. (Killing
+/// QEMU loses what the virtual machine had not handed to the disk; a host
+/// power cut, which also loses the disk's own cache, is what the store's
+/// host tests cut at every write.)
+fn plug(image: &Path, opts: &Options) -> Result<(), String> {
+    let boots = opts.plug.unwrap_or(1);
+    let mut seed = env::var("ALAYA_PLUG_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1)
+                | 1
+        });
+    eprintln!("xtask: pulling the plug {boots} times (ALAYA_PLUG_SEED={seed})");
+    let mut rand = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut promised, mut saving) = (None::<u64>, None::<u64>);
+    for boot in 0..boots {
+        // Kill after a random number of saves, at a random moment after
+        // that save started: inside the save or between saves.
+        let saves = 1 + rand() % 12;
+        let extra = Duration::from_millis(rand() % 400);
+        let mut child = qemu(image, opts, "stdio")?
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("cannot start {}: {e}", opts.arch.qemu()))?;
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(opts.timeout);
+        let mut started = 0u64;
+        let mut kill_at: Option<Instant> = None;
+        let outcome: Result<(), String> = loop {
+            if let Some(t) = kill_at
+                && Instant::now() >= t
+            {
+                break Ok(());
+            }
+            let wait = match kill_at {
+                Some(t) => t.saturating_duration_since(Instant::now()),
+                None => deadline.saturating_duration_since(Instant::now()),
+            };
+            let line = match rx.recv_timeout(wait) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Timeout) if kill_at.is_some() => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    break Err(format!("boot {boot}: no progress within {}s", opts.timeout));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err(format!("boot {boot}: QEMU exited"));
+                }
+            };
+            let line = line.trim_end_matches('\r');
+            let number = |prefix: &str| {
+                line.find(prefix)
+                    .and_then(|i| line[i + prefix.len()..].split_whitespace().next())
+                    .and_then(|n| n.parse::<u64>().ok())
+            };
+            if line.contains(PANIC_MARKER) || line.contains("FAILED") {
+                println!("  | {line}");
+                break Err(format!("boot {boot}: {line}"));
+            }
+            if let Some(c) = number("soak: found ") {
+                println!("  | {line}");
+                if let Some(p) = promised
+                    && c < p
+                {
+                    break Err(format!("boot {boot}: found {c}, but {p} was promised"));
+                }
+                if let Some(s) = saving
+                    && c > s
+                {
+                    break Err(format!(
+                        "boot {boot}: found {c}, but only {s} was ever saved"
+                    ));
+                }
+                eprintln!(
+                    "xtask: boot {boot}: found {c} (promised {}, saving {}): good",
+                    promised.map_or("-".into(), |p| p.to_string()),
+                    saving.map_or("-".into(), |s| s.to_string()),
+                );
+                promised = Some(c);
+                saving = Some(c);
+            } else if let Some(c) = number("soak: saving ") {
+                saving = Some(c);
+                started += 1;
+                if started == saves {
+                    kill_at = Some(Instant::now() + extra);
+                }
+            } else if let Some(c) = number("soak: promised ") {
+                promised = Some(c);
+            }
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        // Drain what QEMU printed before it died.
+        while let Ok(line) = rx.try_recv() {
+            let after = |prefix: &str| {
+                line.find(prefix)
+                    .and_then(|i| line[i + prefix.len()..].trim().parse::<u64>().ok())
+            };
+            if let Some(c) = after("soak: promised ") {
+                promised = Some(c);
+            } else if let Some(c) = after("soak: saving ") {
+                saving = Some(c);
+            }
+        }
+        if let Err(e) = outcome {
+            eprintln!("xtask: FAIL: {e}");
+            return Err(e);
+        }
+        eprintln!(
+            "xtask: boot {boot}: plug pulled (promised {}, saving {})",
+            promised.map_or("-".into(), |p| p.to_string()),
+            saving.map_or("-".into(), |s| s.to_string()),
+        );
+    }
+    eprintln!("xtask: PASS: pulled the plug {boots} times; nothing promised was lost");
+    Ok(())
 }

@@ -54,6 +54,25 @@ pub mod keeper {
     pub const WRITE: u64 = 2;
     /// SIZE: → sectors on the disk.
     pub const SIZE: u64 = 3;
+    /// Block labels, for the store only (badge [`STORE`]); blocks are
+    /// 4 KiB and the data is in buffer slot `slot` of the pages the store
+    /// shares with the keeper ([`CLIENT_BUF`]).
+    /// BREAD: block, slot → status. BWRITE: block, slot → status.
+    pub const BREAD: u64 = 4;
+    pub const BWRITE: u64 = 5;
+    /// FLUSH: → status, once everything written before is kept for good.
+    pub const FLUSH: u64 = 6;
+    /// BLOCKS: → first block of the store's area, blocks in it.
+    pub const BLOCKS: u64 = 7;
+    /// Badge of the store's copy of the keeper's endpoint.
+    pub const STORE: u64 = 3;
+    /// The disk is split in two: the first MiB for the disk tests of
+    /// milestone 4 (sector labels), the rest for the store (block labels).
+    pub const STORE_FIRST_BLOCK: u64 = 256;
+    /// Where the store's buffer pages are, in the keeper.
+    /// (Next to the driver images, so it shares their page tables.)
+    pub const CLIENT_BUF: u64 = 0x6000_0200_0000;
+    pub const BUF_SLOTS: u64 = 32;
 
     /// Control labels (badge [`CONTROL`]).
     /// STATS: → restarts, resent jobs, updates, rollbacks, version,
@@ -162,7 +181,8 @@ pub mod driver {
     pub const IOVA_DATA: u64 = 0x20_0000;
     /// Never mapped: the guard probe points the device here.
     pub const IOVA_FORBIDDEN: u64 = 0x7000_0000;
-    pub const DATA_PAGES: u64 = (JOBS * super::SECTOR / 4096) as u64;
+    /// One 4 KiB data page per job.
+    pub const DATA_PAGES: u64 = JOBS as u64;
 
     /// Given capabilities, from `start::FIRST_GIVEN`: its notification,
     /// the park notification, the keeper's notification, the interrupt.
@@ -196,7 +216,9 @@ pub struct Job {
     pub op: AtomicU64,
     pub sector: AtomicU64,
     pub status: AtomicU64,
-    _pad: [u64; 3],
+    /// Sectors: 1 for the milestone 4 tests, 8 for a 4 KiB block.
+    pub count: AtomicU64,
+    _pad: [u64; 2],
 }
 
 /// Driver states in the job page.
@@ -229,6 +251,8 @@ pub struct JobPage {
 /// Disk operations in [`Job::op`].
 pub const OP_READ: u64 = 0;
 pub const OP_WRITE: u64 = 1;
+/// Make every finished write permanent (the device's write cache).
+pub const OP_FLUSH: u64 = 2;
 
 const _: () = assert!(core::mem::size_of::<JobPage>() <= 4096);
 
@@ -248,10 +272,12 @@ pub struct Handover {
     pub notify_offset: u64,
     /// The job posted number each slot was last sent to the device with.
     pub submitted: [u64; driver::JOBS],
+    /// 1 when the device has a write cache to flush.
+    pub flush: u64,
 }
 
 pub const HANDOVER_MAGIC: u64 = 0x4841_4e44_4f56_4552;
-pub const HANDOVER_FORMAT: u64 = 1;
+pub const HANDOVER_FORMAT: u64 = 2;
 
 const _: () = assert!(core::mem::size_of::<Handover>() <= 4096);
 
@@ -353,4 +379,111 @@ pub fn load(a: &AtomicU64) -> u64 {
 
 pub fn store(a: &AtomicU64, v: u64) {
     a.store(v, Ordering::Release)
+}
+
+/// The store server (milestone 5): how apps talk to it.
+///
+/// Each app holds a badged copy of the store's endpoint. The badge says
+/// who it is: `person << 48 | app << 8 | channel`. The person decides
+/// whose files it sees; the app is what every change and read is recorded
+/// under; the channel picks the app's transfer pages, where names and data
+/// travel.
+pub mod files {
+    /// Labels. Every answer starts with a status word ([`st`]).
+    /// UNLOCK: secret (4 words) → open the badge's person's files.
+    pub const UNLOCK: u64 = 1;
+    /// ADD_PERSON: secret (4 words) → add the badge's person.
+    pub const ADD_PERSON: u64 = 2;
+    /// ROOT: class → file.
+    pub const ROOT: u64 = 3;
+    /// CREATE: dir, is_dir, name length (name in the transfer pages) → file.
+    pub const CREATE: u64 = 4;
+    /// LOOKUP: dir, name length → file.
+    pub const LOOKUP: u64 = 5;
+    /// WRITE: file, offset, length (data in the transfer pages).
+    pub const WRITE: u64 = 6;
+    /// READ: file, offset, length → bytes read (data in the transfer pages).
+    pub const READ: u64 = 7;
+    /// STAT: file → size, version, is_dir.
+    pub const STAT: u64 = 8;
+    /// REMOVE: dir, name length.
+    pub const REMOVE: u64 = 9;
+    /// SAVE: → commit number, once everything gathered is safe.
+    pub const SAVE: u64 = 10;
+    /// HISTORY: → moments; (commit, time) pairs in the transfer pages.
+    pub const HISTORY: u64 = 11;
+    /// CHANGES: commit → count; (app, file, what) triples in the pages.
+    pub const CHANGES: u64 = 12;
+    /// READS: commit → count; (app, file, version) triples in the pages.
+    pub const READS: u64 = 13;
+    /// PAST_READ: commit, file, offset, length → bytes read.
+    pub const PAST_READ: u64 = 14;
+    /// CHECK: → problems, blocks checked, moments checked, data blocks.
+    pub const CHECK: u64 = 15;
+    /// STATS: → commits, last commit, blocks used, blocks, history blocks,
+    /// repaired blocks.
+    pub const STATS: u64 = 16;
+    /// TRUNCATE: file, size.
+    pub const TRUNCATE: u64 = 17;
+    /// KEEP_APPS / RELEASE_APPS: the copy of the apps from before an update.
+    pub const KEEP_APPS: u64 = 18;
+    pub const RELEASE_APPS: u64 = 19;
+    /// MAKE_ROOM: blocks, now → status (choice B).
+    pub const MAKE_ROOM: u64 = 20;
+    /// TRACK: on → record reads or not (to measure what tracking costs).
+    pub const TRACK: u64 = 21;
+    /// LIST: dir → count; entries in the pages as (file, name length,
+    /// name in 32 bytes), 48 bytes each.
+    pub const LIST: u64 = 22;
+    /// PAST_STAT: commit, file → size. PAST_LOOKUP: commit, dir, name
+    /// length → file.
+    pub const PAST_LOOKUP: u64 = 23;
+    /// DIE_AFTER: n → after n more writes or flushes to the disk, stop
+    /// dead (signal the dying notification, then never run again): a
+    /// power cut at an exact point, for the tests.
+    pub const DIE_AFTER: u64 = 24;
+
+    /// Status words.
+    pub mod st {
+        pub const OK: u64 = 0;
+        pub const NOT_FOUND: u64 = 1;
+        pub const EXISTS: u64 = 2;
+        pub const FULL: u64 = 3;
+        pub const LOCKED: u64 = 4;
+        pub const WRONG_KEY: u64 = 5;
+        pub const DAMAGED: u64 = 6;
+        pub const BAD_REQUEST: u64 = 7;
+        pub const IO: u64 = 8;
+        pub const OTHER: u64 = 9;
+        pub const NO_SUCH_MOMENT: u64 = 10;
+    }
+
+    pub const fn badge(person: u64, app: u64, channel: u64) -> u64 {
+        person << 48 | app << 8 | channel
+    }
+
+    /// Transfer channels and their size.
+    pub const CHANNELS: u64 = 4;
+    pub const XFER_PAGES: u64 = 16;
+    pub const XFER_BYTES: usize = (XFER_PAGES * 4096) as usize;
+    /// Where the transfer pages are, in the store server.
+    pub const XFER: u64 = 0x6200_0000_0000;
+    /// Where the keeper's buffer pages are, in the store server.
+    pub const BUF: u64 = 0x6300_0000_0000;
+
+    /// Args: flags, and the most blocks to format (0: the whole area).
+    pub const ARG_FLAGS: usize = 0;
+    pub const ARG_BLOCKS: usize = 1;
+    /// Format the disk even if a store is there.
+    pub const FLAG_FORMAT: u64 = 1;
+    /// Given: its endpoint, the keeper (store badge).
+    pub const G_ENDPOINT: u64 = 0;
+    pub const G_KEEPER: u64 = 1;
+    /// A notification the store signals when it stops dead (DIE_AFTER).
+    pub const G_DYING: u64 = 2;
+
+    /// Save by itself this often (milestone 5, choice A).
+    /// Caches nobody used for this many days are emptied (choice D).
+    pub const CACHE_UNUSED_DAYS: u64 = 30;
+    pub const AUTOSAVE_MS: u64 = 5000;
 }

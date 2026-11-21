@@ -253,3 +253,94 @@ fn full_disk_can_still_delete() {
     assert!(s.blocks() - s.used_blocks() > free_now + 100);
     clean(&mut s);
 }
+
+const DAY: u64 = 24 * 3600;
+
+#[test]
+fn caches_are_cleaned_by_themselves_documents_never() {
+    let mut s = fresh(4096);
+    let docs = s.root(Class::Documents);
+    let caches = s.root(Class::Caches);
+    let t0 = 100 * DAY;
+    s.commit(t0).unwrap();
+    let old = s.create(1, 7, caches, b"old-shaders", false).unwrap();
+    let used = s.create(1, 7, caches, b"used-shaders", false).unwrap();
+    let doc = s.create(1, 7, docs, b"essay", false).unwrap();
+    for f in [old, used, doc] {
+        s.write(1, 7, f, 0, &[5u8; 40_000]).unwrap();
+    }
+    s.commit(t0 + 10).unwrap();
+    let doc_version = s.stat(1, doc).unwrap().version;
+    // 20 days later the game reads one cache; nothing is old enough yet.
+    s.commit(t0 + 20 * DAY).unwrap();
+    let mut buf = [0u8; 100];
+    s.read(1, 7, used, 0, &mut buf).unwrap();
+    assert_eq!(s.clean_caches(t0 + 20 * DAY, 30).unwrap(), 0);
+    s.commit(t0 + 20 * DAY + 10).unwrap();
+    // 31 days after the start: only the cache nobody used goes, emptied
+    // but still there, so the app just makes it again.
+    assert!(s.clean_caches(t0 + 31 * DAY, 30).unwrap() >= 10);
+    s.commit(t0 + 31 * DAY).unwrap();
+    assert_eq!(s.stat(1, old).unwrap().size, 0);
+    assert_eq!(s.stat(1, used).unwrap().size, 40_000);
+    // Documents are never cleaned by themselves, however old.
+    assert_eq!(s.clean_caches(t0 + 400 * DAY, 30).unwrap(), 10);
+    s.commit(t0 + 400 * DAY).unwrap();
+    assert_eq!(s.stat(1, doc).unwrap().size, 40_000);
+    assert_eq!(
+        s.stat(1, doc).unwrap().version,
+        doc_version,
+        "cleaning touched a document"
+    );
+    clean(&mut s);
+    // But they are listed, to ask the person.
+    let list = s
+        .cleanup_suggestions(1, t0 + 400 * DAY, 10_000, 90)
+        .unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].file, doc);
+    assert!(list[0].days_unchanged >= 399);
+    assert!(
+        s.cleanup_suggestions(1, t0 + 400 * DAY, 100_000, 90)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_full_disk_empties_caches_before_history() {
+    let mut s = fresh(1024);
+    let docs = s.root(Class::Documents);
+    let caches = s.root(Class::Caches);
+    let t = 50 * DAY;
+    let doc = s.create(1, 1, docs, b"doc", false).unwrap();
+    s.write(1, 1, doc, 0, &[1u8; 60_000]).unwrap();
+    s.commit(t).unwrap();
+    // A second version, so there is history to drop.
+    s.write(1, 1, doc, 0, &[2u8; 60_000]).unwrap();
+    s.commit(t + 10).unwrap();
+    let mut n = 0;
+    loop {
+        let name = format!("c{n}");
+        let Ok(f) = s.create(1, 1, caches, name.as_bytes(), false) else {
+            break;
+        };
+        if s.write(1, 1, f, 0, &[3u8; 16_384]).is_err() {
+            break;
+        }
+        n += 1;
+        if n % 8 == 0 {
+            s.commit(t + 20 + n).unwrap();
+        }
+    }
+    s.commit(t + 100).unwrap();
+    let moments = s.history(1).unwrap().len();
+    // Two days on, so history could be dropped too: caches must go first.
+    assert!(s.make_room(t + 2 * DAY, 100).unwrap());
+    assert_eq!(
+        s.history(1).unwrap().len(),
+        moments,
+        "history went before caches"
+    );
+    clean(&mut s);
+}

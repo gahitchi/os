@@ -15,7 +15,8 @@ use core::sync::atomic::{Ordering, fence};
 
 use alaya_programs::driver::*;
 use alaya_programs::{
-    HANDOVER_FORMAT, HANDOVER_MAGIC, Handover, JobPage, OP_WRITE, load, run, status, store,
+    HANDOVER_FORMAT, HANDOVER_MAGIC, Handover, JobPage, OP_FLUSH, OP_WRITE, load, run, status,
+    store,
 };
 use alaya_sys::abi::{StartInfo, start};
 use alaya_sys::say;
@@ -30,6 +31,13 @@ const NEEDS_RESET: u8 = 64;
 // Feature bits.
 const VERSION_1: u64 = 1 << 32;
 const ACCESS_PLATFORM: u64 = 1 << 33;
+/// The device has a write cache that a flush request empties.
+const BLK_FLUSH: u64 = 1 << 9;
+
+// Request types.
+const T_IN: u32 = 0;
+const T_OUT: u32 = 1;
+const T_FLUSH: u32 = 4;
 
 // Common configuration registers.
 const C_DEVICE_FEATURE_SELECT: u64 = 0x00;
@@ -157,6 +165,8 @@ struct Driver {
     /// Jobs this instance finished (a faulty test version counts them).
     finished_here: u64,
     faulty: bool,
+    /// The device has a write cache to flush.
+    flush: bool,
     clock_hz: u64,
 }
 
@@ -200,7 +210,8 @@ impl Driver {
         if offered & VERSION_1 == 0 {
             return Err(why::NO_VERSION_1);
         }
-        let want = offered & (VERSION_1 | ACCESS_PLATFORM);
+        let want = offered & (VERSION_1 | ACCESS_PLATFORM | BLK_FLUSH);
+        self.flush = want & BLK_FLUSH != 0;
         w32(c + C_DRIVER_FEATURE_SELECT, 0);
         w32(c + C_DRIVER_FEATURE, want as u32);
         w32(c + C_DRIVER_FEATURE_SELECT, 1);
@@ -249,9 +260,16 @@ impl Driver {
     }
 
     /// Point descriptor chain `i` at a request and put it in the ring.
-    fn queue(&mut self, i: usize, write: bool, sector: u64, data: u64) {
+    /// A flush has no data; without a write cache it is not sent at all.
+    fn queue(&mut self, i: usize, op: u64, sector: u64, count: u64, data: u64) {
+        let write = op == OP_WRITE;
         let hdr = HEADER_PAGE + i as u64 * 16;
-        w32(hdr, if write { 1 } else { 0 });
+        let kind = match op {
+            OP_WRITE => T_OUT,
+            OP_FLUSH => T_FLUSH,
+            _ => T_IN,
+        };
+        w32(hdr, kind);
         w32(hdr + 4, 0);
         w64(hdr + 8, sector);
         w8(HEADER_PAGE + STATUS_BYTES + i as u64, 0xff);
@@ -264,14 +282,18 @@ impl Driver {
             w16(a + 14, next);
         };
         desc(d, IOVA_HEADER + i as u64 * 16, 16, D_NEXT, (d + 1) as u16);
-        desc(
-            d + 1,
-            data,
-            alaya_programs::SECTOR as u32,
-            D_NEXT | if write { 0 } else { D_WRITE },
-            (d + 2) as u16,
-        );
-        desc(d + 2, IOVA_HEADER + STATUS_BYTES + i as u64, 1, D_WRITE, 0);
+        if op == OP_FLUSH {
+            desc(d + 1, IOVA_HEADER + STATUS_BYTES + i as u64, 1, D_WRITE, 0);
+        } else {
+            desc(
+                d + 1,
+                data,
+                (count.clamp(1, 8) * alaya_programs::SECTOR as u64) as u32,
+                D_NEXT | if write { 0 } else { D_WRITE },
+                (d + 2) as u16,
+            );
+            desc(d + 2, IOVA_HEADER + STATUS_BYTES + i as u64, 1, D_WRITE, 0);
+        }
         let slot = u64::from(self.avail_idx % QUEUE);
         w16(RING_PAGE + AVAIL + 4 + 2 * slot, d as u16);
         self.avail_idx = self.avail_idx.wrapping_add(1);
@@ -291,9 +313,17 @@ impl Driver {
             let j = &self.jobs.jobs[i];
             let posted = load(&j.posted);
             if posted != load(&j.done) && self.submitted[i] != posted {
-                let (op, sector) = (load(&j.op), load(&j.sector));
+                let (op, sector, count) = (load(&j.op), load(&j.sector), load(&j.count));
                 self.submitted[i] = posted;
-                self.queue(i, op == OP_WRITE, sector, IOVA_DATA + i as u64 * 512);
+                if op == OP_FLUSH && !self.flush {
+                    // No write cache: every finished write is kept already.
+                    store(&j.status, status::OK);
+                    store(&j.done, posted);
+                    self.jobs.finished.fetch_add(1, Ordering::AcqRel);
+                    let _ = alaya_sys::signal(self.keeper, alaya_programs::keeper::DONE_BIT);
+                    continue;
+                }
+                self.queue(i, op, sector, count, IOVA_DATA + i as u64 * 4096);
                 any = true;
             }
         }
@@ -340,7 +370,7 @@ impl Driver {
     /// it gave up or answered. The IOMMU must block the access; the keeper
     /// and the first program check its record of that.
     fn probe(&mut self) {
-        self.queue(0, false, 0, IOVA_FORBIDDEN);
+        self.queue(0, alaya_programs::OP_READ, 0, 1, IOVA_FORBIDDEN);
         self.kick();
         let end = alaya_sys::clock() + self.clock_hz / 4;
         while alaya_sys::clock() < end {
@@ -372,6 +402,7 @@ impl Driver {
         self.used_seen = h.used_seen as u16;
         self.submitted = h.submitted;
         self.sectors = h.sectors;
+        self.flush = h.flush != 0;
         true
     }
 
@@ -391,6 +422,7 @@ impl Driver {
         h.sectors = self.sectors;
         h.notify_offset = self.notify - BARS;
         h.submitted = self.submitted;
+        h.flush = u64::from(self.flush);
         fence(Ordering::SeqCst);
         store(&self.jobs.state, run::PARKED);
         let _ = alaya_sys::signal(self.keeper, alaya_programs::keeper::PARKED_BIT);
@@ -452,6 +484,7 @@ pub fn run(info: &'static StartInfo, version: u64) -> ! {
         sectors: 0,
         finished_here: 0,
         faulty: flags & FLAG_FAULTY != 0,
+        flush: false,
         clock_hz: info.clock_hz.max(1),
     };
     store(&jobs.version, version);

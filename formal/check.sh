@@ -75,4 +75,13 @@ tlc keeper Small.cfg
 must_fail keeper NoReset.cfg "is violated"
 must_fail keeper ForgetJobs.cfg "Temporal properties were violated"
 
+# The store's commits (milestone 5): after a power cut at any moment, even
+# with a bad spot on the newest front page, the store opens at a commit it
+# made and loses nothing it promised. Reusing given-up blocks after one
+# commit instead of two, or writing the front page before the blocks are
+# flushed, breaks that.
+tlc commit Small.cfg
+must_fail commit EarlyReuse.cfg "Invariant AlwaysOpens is violated"
+must_fail commit NoFlush.cfg "Invariant AlwaysOpens is violated"
+
 echo "formal: all checks passed"

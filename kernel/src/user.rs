@@ -204,6 +204,8 @@ pub fn start(platform: &crate::acpi::Platform) -> ! {
             info.fuzz_seconds = secs.parse().unwrap_or(10);
         } else if word == "long" {
             info.flags |= boot_flags::LONG;
+        } else if word == "store-soak" {
+            info.flags |= boot_flags::STORE_SOAK;
         }
     }
     for c in 0..(percpu::count() as usize).min(MAX_CORES) {

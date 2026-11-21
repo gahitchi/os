@@ -325,26 +325,40 @@ impl Keys {
         }
     }
 
-    fn iv(addr: u64, birth: u64) -> [u8; 16] {
-        let mut iv = [0u8; 16];
-        iv[..8].copy_from_slice(&addr.to_le_bytes());
-        iv[8..14].copy_from_slice(&birth.to_le_bytes()[..6]);
-        iv
-    }
-
-    /// Scramble or unscramble a block written at `addr` in commit `birth`.
-    /// Each block is written once per commit and commit numbers never
-    /// repeat, so no two blocks share a key stream.
-    pub fn crypt(&self, addr: u64, birth: u64, data: &mut [u8]) {
-        self.aes.ctr(&Self::iv(addr, birth), data);
-    }
-
-    /// The fingerprint of a scrambled block.
-    pub fn fingerprint(&self, addr: u64, birth: u64, data: &[u8]) -> [u8; 16] {
+    /// The fingerprint of a block's plain contents, written at `addr` in
+    /// commit `birth`.
+    pub fn fingerprint(&self, addr: u64, birth: u64, plain: &[u8]) -> [u8; 16] {
         let m = self
             .mac
-            .mac(&[b"block", &addr.to_le_bytes(), &birth.to_le_bytes(), data]);
+            .mac(&[b"block", &addr.to_le_bytes(), &birth.to_le_bytes(), plain]);
         m[..16].try_into().unwrap()
+    }
+
+    /// Scramble a block in place and return its fingerprint.
+    ///
+    /// The key stream starts from the fingerprint of the plain contents
+    /// (the "synthetic IV" construction of RFC 5297, with HMAC-SHA-256 and
+    /// AES-256-CTR). Two blocks share a key stream only if their address,
+    /// commit and contents are all the same, and then they are the same
+    /// bytes anyway. So even a commit number used twice (a newer front page
+    /// with a bad spot can hide the last number used) leaks nothing.
+    pub fn seal(&self, addr: u64, birth: u64, data: &mut [u8]) -> [u8; 16] {
+        let mac = self.fingerprint(addr, birth, data);
+        self.aes.ctr(&mac, data);
+        mac
+    }
+
+    /// Unscramble a block in place and check it against `mac`. On a
+    /// mismatch the block is damaged (or not what the pointer expects) and
+    /// `data` holds garbage.
+    pub fn open(&self, addr: u64, birth: u64, mac: &[u8; 16], data: &mut [u8]) -> bool {
+        self.aes.ctr(mac, data);
+        same(&self.fingerprint(addr, birth, data), mac)
+    }
+
+    /// Scramble again what `open` unscrambled (to write a repair).
+    pub fn reseal(&self, mac: &[u8; 16], data: &mut [u8]) {
+        self.aes.ctr(mac, data);
     }
 
     /// A full fingerprint of anything else (the front page).

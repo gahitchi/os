@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The scrambling and fingerprints against the official test vectors.
 
-use alaya_store::crypto::{Aes256, Hmac, sha256};
+use alaya_store::crypto::{Aes256, Hmac, Keys, sha256};
 
 fn hex(s: &str) -> Vec<u8> {
     (0..s.len())
@@ -81,5 +81,36 @@ fn hmac_rfc4231() {
     assert_eq!(
         m.to_vec(),
         hex("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
+    );
+}
+
+#[test]
+fn sealing_survives_a_reused_commit_number() {
+    // Two different blocks at the same address and commit number (what a
+    // reused number would produce): the scrambled bytes must not give away
+    // how the plain contents differ, as a shared key stream would.
+    let keys = Keys::new(&[7u8; 32]);
+    let mut a = [0u8; 4096];
+    let mut b = [0u8; 4096];
+    b[0] = 1;
+    let (pa, pb) = (a, b);
+    let ma = keys.seal(300, 9, &mut a);
+    let mb = keys.seal(300, 9, &mut b);
+    assert_ne!(ma, mb);
+    let same_stream = a
+        .iter()
+        .zip(&b)
+        .zip(pa.iter().zip(&pb))
+        .all(|((x, y), (p, q))| x ^ y == p ^ q);
+    assert!(!same_stream, "two blocks shared a key stream");
+    // And each opens back to its contents, and only with its fingerprint.
+    let mut c = a;
+    assert!(keys.open(300, 9, &ma, &mut c) && c == pa);
+    let mut c = a;
+    assert!(!keys.open(300, 9, &mb, &mut c));
+    let mut c = a;
+    assert!(
+        !keys.open(301, 9, &ma, &mut c),
+        "a block moved to another address must not open"
     );
 }

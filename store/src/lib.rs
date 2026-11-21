@@ -152,6 +152,15 @@ pub struct Stat {
     pub is_dir: bool,
 }
 
+/// A document that might be worth cleaning up (see
+/// [`Store::cleanup_suggestions`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub file: FileId,
+    pub size: u64,
+    pub days_unchanged: u64,
+}
+
 /// One recorded change: which app did what to which file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Change {
@@ -258,6 +267,12 @@ fn k_hist(cn: u64, kind: u64, seq: u64) -> Key {
 }
 
 const F_DIR: u64 = 1;
+/// Inode word 4 holds the flags in its low byte and, for caches, the day
+/// the file was last used plus one (0: not known yet) above them.
+const USED_SHIFT: u32 = 8;
+/// The app number the store itself uses for its own changes (cleaning).
+pub const STORE_APP: App = 0;
+const DAY: u64 = 24 * 3600;
 
 fn name_hash(name: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -284,6 +299,8 @@ pub struct Dev<D: Disk> {
     pub stats: Stats,
     /// Skip the cache (the checker reads everything from the disk).
     pub uncached: bool,
+    /// Most tree nodes kept in memory.
+    pub cache_nodes: usize,
 }
 
 const CACHE_NODES: usize = 1024;
@@ -306,18 +323,18 @@ impl<D: Disk> Dev<D> {
                     continue;
                 }
             }
-            let mac = keys.fingerprint(p.addr, p.birth, out);
-            if !crypto::same(&mac, &p.mac) {
+            if !keys.open(p.addr, p.birth, &p.mac, out) {
                 bad_first |= n == 0;
                 continue;
             }
             if bad_first {
                 // Put the good copy back where the damaged one was. The
                 // bytes are exactly what belongs there, so this is safe.
+                keys.reseal(&p.mac, out);
                 let _ = self.disk.write(p.addr, out);
+                keys.reseal(&p.mac, out);
                 self.stats.repaired += 1;
             }
-            keys.crypt(p.addr, p.birth, out);
             return Ok(());
         }
         Err(Error::Damaged(p.addr))
@@ -331,8 +348,7 @@ impl<D: Disk> Dev<D> {
         cn: u64,
         plain: &mut Block,
     ) -> Result<Ptr, Error> {
-        keys.crypt(addr, cn, plain);
-        let mac = keys.fingerprint(addr, cn, plain);
+        let mac = keys.seal(addr, cn, plain);
         self.disk.write(addr, plain)?;
         if addr2 != 0 {
             self.disk.write(addr2, plain)?;
@@ -357,7 +373,7 @@ impl<D: Disk> Io for Dev<D> {
         self.read_block(keys, p, &mut b)?;
         let n = RawNode::decode(&b).ok_or(Error::Damaged(p.addr))?;
         if !self.uncached {
-            if self.cache.len() >= CACHE_NODES {
+            if self.cache.len() >= self.cache_nodes.max(1) {
                 self.cache.pop_first();
             }
             self.cache.insert((p.addr, p.birth), n.clone());
@@ -376,7 +392,7 @@ impl<D: Disk> Io for Dev<D> {
         let node = RawNode::decode(plain);
         let p = self.write_block(keys, addr, addr2, cn, plain)?;
         if let Some(n) = node {
-            if self.cache.len() >= CACHE_NODES {
+            if self.cache.len() >= self.cache_nodes.max(1) {
                 self.cache.pop_first();
             }
             self.cache.insert((addr, cn), n);
@@ -451,6 +467,12 @@ pub struct Store<D: Disk> {
     broken: bool,
     /// Old bitmap blocks replaced in this commit.
     released_bitmaps: Vec<Ptr>,
+    /// The wall-clock label of the newest commit (seconds; 0 until the
+    /// first commit of this mount).
+    now: u64,
+    /// Record which app read which version of a document (on unless a
+    /// measurement turns it off to see what it costs).
+    pub track_reads: bool,
 }
 
 /// The default history budget (decision 33): 15 % of the disk.
@@ -485,6 +507,7 @@ impl<D: Disk> Store<D> {
                 cache: BTreeMap::new(),
                 stats: Stats::default(),
                 uncached: false,
+                cache_nodes: CACHE_NODES,
             },
             machine: Keys::new(machine_secret),
             cn: 0,
@@ -495,6 +518,8 @@ impl<D: Disk> Store<D> {
             history_blocks: 0,
             broken: false,
             released_bitmaps: Vec::new(),
+            track_reads: true,
+            now: 0,
         };
         // Every chunk gets its bitmap block in the first commit.
         for c in 0..s.space.chunks() {
@@ -528,6 +553,7 @@ impl<D: Disk> Store<D> {
             cache: BTreeMap::new(),
             stats: Stats::default(),
             uncached: false,
+            cache_nodes: CACHE_NODES,
         };
         for f in fronts {
             // The newest front page whose system tree is whole.
@@ -551,12 +577,20 @@ impl<D: Disk> Store<D> {
                 history_blocks: f.history_blocks,
                 broken: false,
                 released_bitmaps: Vec::new(),
+                track_reads: true,
+                now: 0,
             };
             s.load_space()?;
-            // Start every new mount at a commit number nothing on the disk
-            // has used, even a commit that was cut off before it finished:
-            // no two blocks are ever scrambled with the same key stream.
-            let bump = highest.unwrap_or(f.cn).max(f.cn) + 1;
+            // Start every new mount past every commit number the front
+            // pages show, and write its front page on the other page than
+            // the one just opened, so that one stays as the older page
+            // (checked in formal/commit). A newer page with a bad spot may
+            // hide the last number used; that is harmless, because blocks
+            // are scrambled from their own fingerprints (crypto::Keys::seal).
+            let mut bump = highest.unwrap_or(f.cn).max(f.cn) + 1;
+            if bump % 2 == f.cn % 2 {
+                bump += 1;
+            }
             s.write_front(bump, f.root)?;
             s.cn = bump;
             return Ok(s);
@@ -607,6 +641,11 @@ impl<D: Disk> Store<D> {
     /// The commit the changes being gathered now will get.
     pub fn pending_gen(&self) -> u64 {
         self.cn + 1
+    }
+
+    /// A commit failed half way: the store must be opened again.
+    pub fn broken(&self) -> bool {
+        self.broken
     }
 
     pub fn into_disk(self) -> D {
@@ -905,6 +944,11 @@ impl<D: Disk> Store<D> {
         }
         self.room(8, false)?;
         let pg = self.pending_gen();
+        let last_used = if dir.class() == Class::Caches {
+            self.today_bits()
+        } else {
+            0
+        };
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&p).ok_or(Error::Locked)?;
         let t = &mut b.trees[dir.class() as usize];
@@ -926,7 +970,13 @@ impl<D: Disk> Store<D> {
             dev,
             &b.keys,
             k_inode(obj),
-            words(&[0, pg, pg, dir.obj(), if is_dir { F_DIR } else { 0 }]),
+            words(&[
+                0,
+                pg,
+                pg,
+                dir.obj(),
+                (if is_dir { F_DIR } else { 0 }) | last_used,
+            ]),
         )?;
         let mut v = [0u8; 40];
         format::set_word(&mut v, 0, obj);
@@ -993,6 +1043,9 @@ impl<D: Disk> Store<D> {
         }
         format::set_word(&mut st, 0, size.max(end));
         format::set_word(&mut st, 1, self.pending_gen());
+        if f.class() == Class::Caches {
+            self.stamp(&mut st);
+        }
         self.put_inode(p, f, st)?;
         self.note(p, app, f, what::WROTE)?;
         Ok(())
@@ -1035,7 +1088,10 @@ impl<D: Disk> Store<D> {
             return Err(Error::IsADirectory);
         }
         let size = word(&st, 0);
-        if f.class() == Class::Documents {
+        if f.class() == Class::Caches {
+            self.touch_cache(p, f, st)?;
+        }
+        if f.class() == Class::Documents && self.track_reads {
             let r = Read {
                 app,
                 file: f,
@@ -1087,6 +1143,9 @@ impl<D: Disk> Store<D> {
         }
         format::set_word(&mut st, 0, size);
         format::set_word(&mut st, 1, self.pending_gen());
+        if f.class() == Class::Caches {
+            self.stamp(&mut st);
+        }
         self.put_inode(p, f, st)?;
         self.note(p, app, f, what::WROTE)
     }
@@ -1489,8 +1548,9 @@ impl<D: Disk> Store<D> {
         }
     }
 
-    /// Make room on a full disk (choice B): give up the oldest moments
-    /// more than a day old until `blocks` are free or none are left, and
+    /// Make room on a full disk (choices B and D): empty caches, least
+    /// recently used first, then give up the oldest moments more than a
+    /// day old until `blocks` are free or none are left, and
     /// commit so the room is really free. True when it made enough room.
     pub fn make_room(&mut self, now: u64, blocks: u64) -> Result<bool, Error> {
         self.ok()?;
@@ -1501,9 +1561,11 @@ impl<D: Disk> Store<D> {
                 return Ok(true);
             }
             let short = target - self.space.free_blocks();
+            // Caches go first (choice D), least recently used first.
+            let freed = self.free_caches(short)?;
             let held = self.history_blocks;
-            let mut dropped = false;
-            while held - self.history_blocks < short {
+            let mut dropped = freed > 0;
+            while freed + (held - self.history_blocks) < short {
                 if !self.drop_oldest(now)? {
                     break;
                 }
@@ -1524,6 +1586,142 @@ impl<D: Disk> Store<D> {
         }
     }
 
+    // ---- Cleaning (choice D) ----
+
+    /// Today's "last used" bits for a cache inode (0 before the first
+    /// commit of this mount, when the date is not known).
+    fn today_bits(&self) -> u64 {
+        if self.now == 0 {
+            0
+        } else {
+            (self.now / DAY + 1) << USED_SHIFT
+        }
+    }
+
+    fn stamp(&self, st: &mut Val) {
+        let today = self.today_bits();
+        if today != 0 {
+            let flags = word(st, 4) & ((1 << USED_SHIFT) - 1);
+            format::set_word(st, 4, flags | today);
+        }
+    }
+
+    /// Note that a cache file was used today. Writes its inode at most
+    /// once a day, so reading caches costs nearly nothing.
+    fn touch_cache(&mut self, p: Person, f: FileId, mut st: Val) -> Result<(), Error> {
+        let today = self.today_bits();
+        if today != 0 && word(&st, 4) >> USED_SHIFT << USED_SHIFT != today {
+            self.stamp(&mut st);
+            self.put_inode(p, f, st)?;
+        }
+        Ok(())
+    }
+
+    /// Every non-empty cache file of the people whose files are open:
+    /// (day last used, or 0 if not known, person, file, blocks).
+    fn cache_files(&mut self) -> Result<Vec<(u64, Person, FileId, u64)>, Error> {
+        let mut out = Vec::new();
+        let Store { dev, branches, .. } = self;
+        for (&p, b) in branches.iter_mut() {
+            let t = &b.trees[Class::Caches as usize];
+            for (k, v) in t.collect(dev, &b.keys, Key(0, 0), Key(u64::MAX, u64::MAX))? {
+                if k.0 & 0xff != K_INODE || k.1 != 0 || word(&v, 4) & F_DIR != 0 {
+                    continue;
+                }
+                let size = word(&v, 0);
+                if size == 0 {
+                    continue;
+                }
+                let day = (word(&v, 4) >> USED_SHIFT).saturating_sub(1);
+                let f = FileId::new(k.0 >> 8, Class::Caches);
+                out.push((day, p, f, size.div_ceil(BLOCK as u64)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Empty the cache files nobody used for `unused_days` days (choice D:
+    /// 30). The files stay, empty, so apps simply make them again. Returns
+    /// how many blocks that gives back (once committed). Works only on the
+    /// branches that are open (a locked person's caches wait for them).
+    pub fn clean_caches(&mut self, now: u64, unused_days: u64) -> Result<u64, Error> {
+        self.ok()?;
+        self.now = self.now.max(now);
+        let today = now / DAY;
+        let mut freed = 0;
+        for (day, p, f, blocks) in self.cache_files()? {
+            if day == 0 {
+                // Not known yet (made before this mount knew the date):
+                // start counting from today.
+                let st = self.inode(p, f)?;
+                self.touch_cache(p, f, st)?;
+            } else if today.saturating_sub(day) >= unused_days {
+                self.truncate(p, STORE_APP, f, 0)?;
+                freed += blocks;
+            }
+        }
+        Ok(freed)
+    }
+
+    /// Empty cache files, least recently used first, until about `blocks`
+    /// blocks are given back. Returns how many it gave back.
+    fn free_caches(&mut self, blocks: u64) -> Result<u64, Error> {
+        let mut files = self.cache_files()?;
+        files.sort();
+        let mut freed = 0;
+        for (_, p, f, n) in files {
+            if freed >= blocks {
+                break;
+            }
+            self.truncate(p, STORE_APP, f, 0)?;
+            freed += n;
+        }
+        Ok(freed)
+    }
+
+    /// Documents that might be worth cleaning up: at least `min_bytes`
+    /// big and not changed for `unused_days` days, biggest first. The
+    /// store never removes a person's own files by itself; this list is
+    /// for asking them (the question screen comes with the desktop).
+    pub fn cleanup_suggestions(
+        &mut self,
+        p: Person,
+        now: u64,
+        min_bytes: u64,
+        unused_days: u64,
+    ) -> Result<Vec<Suggestion>, Error> {
+        let moments = self.history(p)?;
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        let t = &b.trees[Class::Documents as usize];
+        let mut out = Vec::new();
+        for (k, v) in t.collect(dev, &b.keys, Key(0, 0), Key(u64::MAX, u64::MAX))? {
+            if k.0 & 0xff != K_INODE || k.1 != 0 || word(&v, 4) & F_DIR != 0 {
+                continue;
+            }
+            let size = word(&v, 0);
+            if size < min_bytes {
+                continue;
+            }
+            // When its version was made: the moment of that commit, or
+            // the newest kept moment before it (history may be thinned).
+            let version = word(&v, 1);
+            let Some(m) = moments.iter().rev().find(|m| m.cn <= version) else {
+                continue;
+            };
+            let days = now.saturating_sub(m.time) / DAY;
+            if days >= unused_days {
+                out.push(Suggestion {
+                    file: FileId::new(k.0 >> 8, Class::Documents),
+                    size,
+                    days_unchanged: days,
+                });
+            }
+        }
+        out.sort_by_key(|s| core::cmp::Reverse(s.size));
+        Ok(out)
+    }
+
     /// Changes gathered and not yet committed?
     pub fn has_changes(&self) -> bool {
         self.branches.values().any(|b| b.touched)
@@ -1537,6 +1735,7 @@ impl<D: Disk> Store<D> {
     /// any power cut.
     pub fn commit(&mut self, now: u64) -> Result<u64, Error> {
         self.ok()?;
+        self.now = self.now.max(now);
         match self.commit_inner(now) {
             Ok(g) => {
                 self.dev.stats.commits += 1;
