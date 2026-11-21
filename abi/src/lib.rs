@@ -36,6 +36,14 @@
 //!
 //! `call` on any other kind of object is an operation on it (`rsi` is the
 //! operation, [`op`]); `send` on a reply object answers the caller.
+//!
+//! # On ARM64
+//!
+//! The same roles, entered with `svc #0`: the call number and error code
+//! in `x8`, the handle (badge) in `x0`, the operation or info word in `x1`,
+//! the six arguments or data words in `x2` to `x7` (results in `x2` to
+//! `x5`), the capability slots in `x9` and the reply object in `x10`. Every
+//! other register is kept. The table above names the PC's registers.
 
 #![no_std]
 
@@ -66,7 +74,7 @@ pub mod debug {
     /// The core the caller runs on, in result 0.
     pub const CORE: u64 = 3;
     /// Big kernel lock use, summed over all cores since boot: times taken,
-    /// times a core had to wait, TSC ticks spent waiting, and held.
+    /// times a core had to wait, clock ticks spent waiting, and held.
     pub const LOCK_STATS: u64 = 4;
     pub const MAX_PRINT: usize = 256;
 }
@@ -184,8 +192,10 @@ pub mod op {
     /// Deliver it as `bits` on a notification: args = notification handle
     /// (0: stop delivering), bits.
     pub const IRQ_SET: u64 = 112;
-    /// What to program into a device's MSI or MSI-X entry: results =
-    /// address, data.
+    /// What to program into a device's MSI or MSI-X entry: arg = the PCI
+    /// function that raises it (bus << 8 | device << 3 | function; ARM's
+    /// interrupt translator tells devices apart by it); results = address,
+    /// data.
     pub const IRQ_MSI: u64 = 113;
 }
 
@@ -454,8 +464,9 @@ pub struct BootInfo {
     pub sched: u64,
     pub space: u64,
     pub sched_control: u64,
-    /// TSC ticks per second.
-    pub tsc_hz: u64,
+    /// Clock ticks per second (the clock programs read with
+    /// `alaya_sys::clock()`: the TSC on a PC, the generic timer on ARM).
+    pub clock_hz: u64,
     /// Where the program's image lies, for programs that copy it.
     pub image_start: u64,
     pub image_end: u64,
@@ -516,7 +527,8 @@ pub mod protect {
     /// The kernel cannot read or write program memory by accident.
     pub const SMAP: u64 = 1 << 1;
     /// Programs cannot read the kernel's descriptor tables (`sgdt`, `sidt`,
-    /// `sldt`, `smsw`, `str` fault).
+    /// `sldt`, `smsw`, `str` fault on a PC; on ARM every kernel system
+    /// register is always out of a program's reach).
     pub const UMIP: u64 = 1 << 2;
     /// Tagged memory maps: switching programs keeps both TLBs' entries.
     pub const PCID: u64 = 1 << 3;
@@ -599,7 +611,7 @@ pub const PROGRAM_STACK_BYTES: u64 = 64 * 1024;
 pub struct StartInfo {
     pub magic: u64,
     pub name: [u8; 32],
-    pub tsc_hz: u64,
+    pub clock_hz: u64,
     pub cores: u64,
     /// The size of its untyped (`start::UNTYPED`), as a power of two.
     pub untyped_bits: u64,
@@ -618,4 +630,7 @@ pub mod boot_flags {
     pub const FUZZ: u64 = 1 << 0;
     /// `long`: run longer stress tests.
     pub const LONG: u64 = 1 << 1;
+    /// `store-soak`: skip the store checks; open the store on the disk,
+    /// show what survived, and keep saving until the machine is killed.
+    pub const STORE_SOAK: u64 = 1 << 2;
 }

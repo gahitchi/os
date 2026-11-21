@@ -33,6 +33,15 @@ const SCAN: u64 = 0x2200_0000_0000;
 const IMAGES: u64 = 0x2300_0000_0000;
 const TEST: u64 = 0x2400_0000_0000;
 const SCRATCH: u64 = 0x2500_0000_0000;
+/// The store's buffer pages, as the first program holds them.
+const BUFS: u64 = 0x2600_0000_0000;
+/// The store's buffer pages (shared with the keeper), for milestone 5.
+pub static STORE_BUFS: [AtomicU64; k::BUF_SLOTS as usize] =
+    [const { AtomicU64::new(0) }; k::BUF_SLOTS as usize];
+/// The keeper's endpoint, for milestone 5 to mint the store's copy.
+pub static KEEPER_EP: AtomicU64 = AtomicU64::new(0);
+/// The first program's control copy of the keeper's endpoint.
+pub static KEEPER_CTL: AtomicU64 = AtomicU64::new(0);
 
 /// Priorities: the first program is at 200.
 const KEEPER_PRIORITY: u64 = 180;
@@ -359,7 +368,7 @@ fn loadable_len(image: &[u8]) -> usize {
     end.min(image.len())
 }
 
-fn module<'a>(info: &'a BootInfo, name: &str) -> &'a [u8] {
+pub(crate) fn module<'a>(info: &'a BootInfo, name: &str) -> &'a [u8] {
     let m = info.modules[..info.module_count as usize]
         .iter()
         .find(|m| m.name() == name)
@@ -397,7 +406,7 @@ fn no_wrong_answers(t: &TestPage) {
 
 /// Run the checks; returns the next free slot.
 pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str)) -> u64 {
-    HZ.store(info.tsc_hz, SeqCst);
+    HZ.store(info.clock_hz, SeqCst);
     let long = info.flags & boot_flags::LONG != 0;
     let mut k = Kit {
         info,
@@ -580,7 +589,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     let tp = k.page_at(info.space, TEST, map::WRITE);
 
     // Driver images for the keeper: only the parts a starter reads.
-    let mut image_pages = [(0u64, 0u64, 0u64); 64];
+    let mut image_pages = [(0u64, 0u64, 0u64); 128];
     let mut nimg = 0;
     let mut sizes = [0u64; 2];
     for (i, name) in ["blk1", "blk2"].iter().enumerate() {
@@ -601,9 +610,20 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         }
     }
 
+    // The store's buffer pages (milestone 5): the keeper copies blocks
+    // between them and the device's pages.
+    for (i, b) in STORE_BUFS.iter().enumerate() {
+        let h = k.page_at(info.space, BUFS + i as u64 * 4096, map::WRITE);
+        b.store(h, SeqCst);
+        image_pages[nimg] = (h, k::CLIENT_BUF + i as u64 * 4096, map::WRITE);
+        nimg += 1;
+    }
+
     // Start the keeper.
     let ep = k.make(Kind::Endpoint, 0);
+    KEEPER_EP.store(ep, SeqCst);
     let ctl = badged(&mut k, ep, k::CONTROL);
+    KEEPER_CTL.store(ctl, SeqCst);
     let reg_keeper = badged(&mut k, reg, KEEPER);
     let sc = |k: &mut Kit, budget: u64, period: u64| {
         let s = k.make(Kind::SchedContext, 8);
@@ -657,7 +677,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             name: "keeper",
             image: module(info, "keeper"),
             untyped: keeper_ut,
-            table_bits: 9,
+            table_bits: 10,
             own_bits: 23,
             priority: KEEPER_PRIORITY,
             sc: keeper_sc,
@@ -666,7 +686,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             given: &given[..fixed.len() + ncodes],
             shared: &image_pages[..nimg],
             args: &args[..k::ARG_DEV_CODES + ncodes],
-            tsc_hz: info.tsc_hz,
+            clock_hz: info.clock_hz,
             cores: info.cores,
         },
     )
@@ -697,7 +717,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             given: &app_given[..APP_THREADS as usize],
             shared: &[(tp, TEST_PAGE, map::WRITE)],
             args: &[APP_THREADS, APP_SPAN],
-            tsc_hz: info.tsc_hz,
+            clock_hz: info.clock_hz,
             cores: info.cores,
         },
     )
@@ -751,7 +771,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     control(ctl, k::POLICY, &[3, 1000]);
     let ok0 = t.ok.load(SeqCst);
     let s0 = stats(ctl);
-    control(ctl, k::CHAOS, &[1, 400, 900, 0x5eed_0000 ^ info.tsc_hz]);
+    control(ctl, k::CHAOS, &[1, 400, 900, 0x5eed_0000 ^ info.clock_hz]);
     let mut left = chaos_ms;
     while left > 0 {
         let step = left.min(60_000);
@@ -842,7 +862,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     let updates = 1000;
     let ok3 = t.ok.load(SeqCst);
     let u0 = stats(ctl);
-    let begin = alaya_sys::rdtsc();
+    let begin = alaya_sys::clock();
     let mut version = stats(ctl)[4];
     for i in 0..updates {
         // The app must really be using the disk between updates.
@@ -860,7 +880,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         );
         version = r[1];
     }
-    let us = crate::m3::tsc_to_us(alaya_sys::rdtsc() - begin);
+    let us = crate::m3::ticks_to_us(alaya_sys::clock() - begin);
     no_wrong_answers(t);
     let u1 = stats(ctl);
     assert!(

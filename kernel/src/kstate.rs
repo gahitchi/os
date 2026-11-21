@@ -9,12 +9,8 @@
 //! set up afresh. A new kernel-wide variable must be added to this list, and
 //! [`alaya_abi::format::KERNEL_STATE`] bumped if a carried item changes.
 
-use core::mem::size_of_val;
-use core::ptr::addr_of;
-
-use crate::arch::{apic, idt, protect};
 use crate::mm::{self, frames};
-use crate::{fpu, percpu, serial, smp, sync, time};
+use crate::{arch, percpu, serial, smp, sync, time};
 
 /// Whether a new kernel takes an item over or builds it again.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,6 +19,7 @@ pub enum Handover {
     Rebuilt,
 }
 
+#[derive(Clone, Copy)]
 pub struct Item {
     pub name: &'static str,
     pub handover: Handover,
@@ -30,21 +27,23 @@ pub struct Item {
     pub bytes: u64,
 }
 
+#[macro_export]
 macro_rules! item {
-    ($name:literal, $how:ident, $var:expr) => {
-        Item {
+    ($name:literal, $how:ident, $var:expr) => {{
+        let at = core::ptr::addr_of!($var);
+        $crate::kstate::Item {
             name: $name,
-            handover: Handover::$how,
-            address: addr_of!($var) as u64,
+            handover: $crate::kstate::Handover::$how,
+            address: at as u64,
             // SAFETY: only the size is taken; nothing is read.
-            #[allow(unused_unsafe)]
-            bytes: size_of_val(unsafe { &*addr_of!($var) }) as u64,
+            bytes: core::mem::size_of_val(unsafe { &*at }) as u64,
         }
-    };
+    }};
 }
 
-/// Every kernel-wide variable.
-pub fn items() -> [Item; 24] {
+/// Every kernel-wide variable outside the processor wall; the wall lists
+/// its own (`arch::state_items`).
+fn generic_items() -> [Item; 13] {
     [
         // Objects, cores' run queues, address-space ids, counters.
         item!("big kernel lock and its state", Carried, sync::BKL),
@@ -55,19 +54,8 @@ pub fn items() -> [Item; 24] {
         item!("boot allocator total", Carried, frames::TAKEN),
         item!("direct map offset", Carried, frames::HHDM),
         item!("boot allocator frozen", Carried, frames::FROZEN),
-        item!("TSC frequency", Carried, time::TSC_HZ),
-        item!("timer mode", Carried, time::DEADLINE_MODE),
-        item!("APIC timer ratio", Carried, time::APIC_PER_TSC_FIXED),
-        item!("APIC mode", Carried, apic::X2APIC),
-        item!("APIC registers", Carried, apic::MMIO),
-        item!("FPU save method", Carried, fpu::XSAVE),
-        item!("FPU state components", Carried, fpu::MASK),
-        item!("FPU state size", Carried, fpu::SIZE),
-        item!("processor protections", Carried, protect::ON),
+        item!("clock frequency", Carried, time::HZ),
         // Set up again by the new kernel.
-        item!("interrupt table", Rebuilt, idt::IDT),
-        item!("segment tables", Rebuilt, percpu::GDTS),
-        item!("task state segments", Rebuilt, percpu::TSSES),
         item!("serial port lock", Rebuilt, serial::SERIAL),
         item!("core start signal", Rebuilt, smp::GO),
         item!("cores done with self-tests", Rebuilt, smp::DONE),
@@ -75,12 +63,16 @@ pub fn items() -> [Item; 24] {
     ]
 }
 
+/// Every kernel-wide variable.
+pub fn items() -> impl Iterator<Item = Item> + Clone {
+    generic_items().into_iter().chain(arch::state_items())
+}
+
 /// Print a summary at boot.
 pub fn report() {
-    let list = items();
     // No two items may overlap: each is listed once.
-    for (i, a) in list.iter().enumerate() {
-        for b in &list[i + 1..] {
+    for (i, a) in items().enumerate() {
+        for b in items().skip(i + 1) {
             assert!(
                 a.address + a.bytes <= b.address || b.address + b.bytes <= a.address,
                 "kernel state items '{}' and '{}' overlap",
@@ -90,7 +82,7 @@ pub fn report() {
         }
     }
     let (mut carried, mut bytes, mut rebuilt) = (0, 0, 0);
-    for i in &list {
+    for i in items() {
         match i.handover {
             Handover::Carried => {
                 carried += 1;
@@ -102,7 +94,7 @@ pub fn report() {
     crate::kprintln!(
         "state: format {}, {} kernel-wide items: {} carried over a kernel swap ({} KiB), {} rebuilt",
         alaya_abi::format::KERNEL_STATE,
-        list.len(),
+        items().count(),
         carried,
         bytes / 1024,
         rebuilt

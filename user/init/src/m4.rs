@@ -20,13 +20,11 @@ use crate::say;
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static STOP: AtomicU64 = AtomicU64::new(0);
 
-/// Reads the interrupt table's address: UMIP must make this fault.
+/// Reads where the kernel's interrupt table is: the processor must stop it.
 extern "C" fn read_idt(_: u64) -> ! {
-    let mut buf = [0u8; 16];
-    // SAFETY: SIDT writes 10 bytes into the buffer (or faults).
-    unsafe { core::arch::asm!("sidt [{}]", in(reg) buf.as_mut_ptr(), options(nostack)) };
+    let v = alaya_sys::arch::privileged_read();
     loop {
-        core::hint::black_box(&buf);
+        core::hint::black_box(v);
         alaya_sys::yield_now();
     }
 }
@@ -65,7 +63,7 @@ extern "C" fn null_client(ep: u64) -> ! {
 
 /// Run the checks; returns the next free slot.
 pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str)) -> u64 {
-    HZ.store(info.tsc_hz, SeqCst);
+    HZ.store(info.clock_hz, SeqCst);
     let mut k = Kit {
         info,
         ut: 0,
@@ -111,14 +109,22 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         alaya_sys::thread_configure(t, info.table, info.space, fault).unwrap();
         alaya_sys::thread_priority(t, 100, 100).unwrap();
         let top = k.stack();
-        alaya_sys::thread_write(t, read_idt as *const () as u64, top - 8, 0, 0, 0).unwrap();
+        alaya_sys::thread_write(
+            t,
+            read_idt as *const () as u64,
+            alaya_sys::entry_stack(top),
+            0,
+            0,
+            0,
+        )
+        .unwrap();
         alaya_sys::sc_configure(info.sched_control, sc, 1000, 1000, core_type::ANY, 0).unwrap();
         alaya_sys::sc_bind(sc, t).unwrap();
         alaya_sys::thread_start(t).unwrap();
         let f = alaya_sys::recv(fault, rep).unwrap();
         assert!(
-            f.label() == FAULT_LABEL && f.words[0] == 13,
-            "SIDT in user mode did not fault with UMIP on: {f:?}"
+            f.label() == FAULT_LABEL && f.words[0] == alaya_sys::arch::PRIVILEGED_FAULT,
+            "reading the interrupt table's address in user mode did not fault: {f:?}"
         );
         alaya_sys::thread_stop(t).unwrap();
         pass("processor safety switches: a program cannot read the kernel's tables");
@@ -168,12 +174,12 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         k.thread(null_client, ep, 140, 1000, 1000, c + 1);
     }
     let before = alaya_sys::lock_stats();
-    let start = alaya_sys::rdtsc();
+    let start = alaya_sys::clock();
     CALLS.store(0, SeqCst);
     sleep_ms(500);
     let calls = CALLS.load(SeqCst);
     let after = alaya_sys::lock_stats();
-    let elapsed = alaya_sys::rdtsc() - start;
+    let elapsed = alaya_sys::clock() - start;
     STOP.store(1, SeqCst);
     let takes = after[0] - before[0];
     let waits = after[1] - before[1];

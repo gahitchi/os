@@ -123,3 +123,32 @@ pub unsafe fn load(gdt: &'static mut Gdt, tss: &'static Tss) {
         );
     }
 }
+
+pub(crate) static mut GDTS: [Gdt; crate::percpu::MAX_CPUS] =
+    [const { Gdt::new() }; crate::percpu::MAX_CPUS];
+pub(crate) static mut TSSES: [Tss; crate::percpu::MAX_CPUS] =
+    [const { Tss::new() }; crate::percpu::MAX_CPUS];
+
+/// Set up and load this core's GDT and TSS, with its interrupt stacks.
+/// `kernel_top` is where the CPU switches to when an interrupt or a system
+/// call arrives from user mode.
+pub fn load_this_core(index: u32, ist_tops: [u64; IST_COUNT], kernel_top: u64) {
+    use core::ptr::addr_of_mut;
+    let i = index as usize;
+    crate::percpu::get(index)
+        .kernel_stack_top
+        .store(kernel_top, core::sync::atomic::Ordering::Relaxed);
+    // SAFETY: each core touches only its own slot, once, while starting.
+    unsafe {
+        let tss = &mut (*addr_of_mut!(TSSES))[i];
+        let mut rsp = tss.rsp;
+        rsp[0] = kernel_top;
+        tss.rsp = rsp;
+        let mut ist = tss.ist;
+        ist[..ist_tops.len()].copy_from_slice(&ist_tops);
+        tss.ist = ist;
+        load(&mut (*addr_of_mut!(GDTS))[i], tss);
+    }
+    // Loading the segment registers cleared GS base; point it back.
+    crate::percpu::enter(index);
+}

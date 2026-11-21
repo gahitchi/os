@@ -1,25 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! x86-64 4-level page tables, built by the kernel itself.
+//! 4-level page tables of 512 entries, built by the kernel itself. Both
+//! PCs and ARM (with 4 KiB pages) use this shape; what an entry looks like
+//! is behind the processor wall (`arch::paging`).
 //!
 //! Mappings use the largest page that fits: 1 GiB where the CPU has it,
 //! then 2 MiB, then 4 KiB, as the design asks for huge pages from the start.
 
 use super::frames;
 use super::layout::PAGE_SIZE;
+use crate::arch::paging as pte;
 
-pub const PRESENT: u64 = 1 << 0;
-pub const WRITABLE: u64 = 1 << 1;
-/// Reachable from user mode.
-pub const USER: u64 = 1 << 2;
-const WRITE_THROUGH: u64 = 1 << 3;
-const CACHE_DISABLE: u64 = 1 << 4;
-const HUGE: u64 = 1 << 7;
-pub const GLOBAL: u64 = 1 << 8;
-pub const NO_EXECUTE: u64 = 1 << 63;
-/// Strong uncached (PAT entry 3), for device registers.
-pub const UNCACHED: u64 = WRITE_THROUGH | CACHE_DISABLE;
+/// The kernel's own attribute bits; `arch::paging::leaf` turns them into
+/// the processor's.
+pub mod attr {
+    pub const WRITABLE: u64 = 1 << 0;
+    /// Reachable from user mode.
+    pub const USER: u64 = 1 << 1;
+    pub const NO_EXECUTE: u64 = 1 << 2;
+    /// The same in every memory map (the kernel's half).
+    pub const GLOBAL: u64 = 1 << 3;
+    /// Device registers: uncached, in order.
+    pub const DEVICE: u64 = 1 << 4;
+}
+pub use attr::{DEVICE, GLOBAL, NO_EXECUTE, USER, WRITABLE};
 
-const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const GIB: u64 = 1 << 30;
 const MIB2: u64 = 2 << 20;
 
@@ -57,9 +61,11 @@ impl AddressSpace {
             gib_pages,
             mapped: [0; 3],
         };
-        let kernel = space.table(kernel_root);
-        let entries = space.table(space.root);
-        entries[256..].copy_from_slice(&kernel[256..]);
+        if pte::SHARES_KERNEL_HALF {
+            let kernel = space.table(kernel_root);
+            let entries = space.table(space.root);
+            entries[pte::KERNEL_HALF..].copy_from_slice(&kernel[pte::KERNEL_HALF..]);
+        }
         space
     }
 
@@ -90,13 +96,13 @@ impl AddressSpace {
         let mut level = 4;
         loop {
             let e = self.table(table)[(virt >> (12 + 9 * (level - 1))) as usize & 511];
-            if e & PRESENT == 0 {
+            if !pte::present(e) {
                 return false;
             }
-            if level == 1 || e & HUGE != 0 {
+            if level == 1 || pte::is_block(e) {
                 return true;
             }
-            table = e & ADDRESS_MASK;
+            table = pte::address(e);
             level -= 1;
         }
     }
@@ -147,22 +153,25 @@ impl AddressSpace {
             let index = (virt >> (12 + 9 * (level - 1))) as usize & 511;
             let entries = self.table(table);
             let entry = entries[index];
-            if entry & PRESENT == 0 {
+            let user = flags & USER != 0;
+            if !pte::present(entry) {
                 let next = frames::alloc_zeroed();
                 // Upper levels allow everything; the leaf decides.
-                entries[index] = next | PRESENT | WRITABLE | (flags & USER);
+                entries[index] = pte::table(next, user);
                 table = next;
             } else {
-                assert!(entry & HUGE == 0, "mapping {virt:#x} overlaps a huge page");
-                entries[index] = entry | (flags & USER);
-                table = entry & ADDRESS_MASK;
+                assert!(
+                    !pte::is_block(entry),
+                    "mapping {virt:#x} overlaps a huge page"
+                );
+                entries[index] = pte::widen_table(entry, user);
+                table = pte::address(entry);
             }
             level -= 1;
         }
         let index = (virt >> (12 + 9 * (leaf_level - 1))) as usize & 511;
         let entries = self.table(table);
-        assert!(entries[index] & PRESENT == 0, "{virt:#x} is already mapped");
-        let huge = if leaf_level > 1 { HUGE } else { 0 };
-        entries[index] = phys | flags | huge | PRESENT;
+        assert!(!pte::present(entries[index]), "{virt:#x} is already mapped");
+        entries[index] = pte::leaf(phys, flags, leaf_level);
     }
 }

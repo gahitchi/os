@@ -88,17 +88,17 @@ pub fn lookup<M: Memory>(m: &M, t: u64, handle: u64) -> Result<SlotRef, Error> {
     }
     let at = cap::table_slot(table.object, table.size_bits, handle)?;
     // The handle is the program's choice: no speculation past the check.
-    crate::arch::protect::barrier();
+    crate::arch::speculation_barrier();
     if !m.read(at).cap.is_live() {
         return Err(Error::InvalidHandle);
     }
     Ok(at)
 }
 
-/// Make `t` ready with the result `e` in `rax`.
+/// Make `t` ready with the result `e` as its call status.
 pub fn wake(k: &mut sched::Sys, t: u64, e: Error) {
     let th = tcb(t);
-    th.regs.rax = e as u64;
+    th.regs.set_status(e as u64);
     th.state = state::READY;
     th.waiting = 0;
     th.flags &= !(tflag::CALLING | tflag::FAULTING | tflag::SEND_GRANT);
@@ -118,7 +118,7 @@ fn transfer(m: &mut Phys, from: u64, to: u64, badge: u64, grant: bool, called: b
         };
         (Info::new(label, 5).0, [x[0], x[1], x[2], x[3], x[4], 0])
     } else {
-        let i = Info(f.regs.rsi);
+        let i = Info(f.regs.arg1());
         let n = i.words().min(Info::MAX_WORDS) as usize;
         let mut w = [0; 6];
         w[..n].copy_from_slice(&f.regs.words()[..n]);
@@ -130,10 +130,10 @@ fn transfer(m: &mut Phys, from: u64, to: u64, badge: u64, grant: bool, called: b
     if info & Info::CAP != 0 {
         let moving = info & Info::MOVE != 0;
         info &= !(Info::CAP | Info::MOVE);
-        let r = tcb(to).regs.r14 >> 32;
+        let r = tcb(to).regs.cap_slots() >> 32;
         let moved = grant
             && r != 0
-            && lookup(m, from, f.regs.r14 & 0xffff_ffff)
+            && lookup(m, from, f.regs.cap_slots() & 0xffff_ffff)
                 .and_then(|src| {
                     let t = tcb(to).slots[SLOT_TABLE].cap;
                     if !t.is(Kind::Table) {
@@ -153,10 +153,10 @@ fn transfer(m: &mut Phys, from: u64, to: u64, badge: u64, grant: bool, called: b
         info |= Info::CALLED;
     }
     let t = tcb(to);
-    t.regs.rsi = info;
-    t.regs.rdi = badge;
+    t.regs.set_arg1(info);
+    t.regs.set_arg0(badge);
     t.regs.set_words(words);
-    t.regs.rax = 0;
+    t.regs.set_status(0);
 }
 
 /// Hand `sender`'s message to `receiver`, who was waiting in `recv`.
@@ -215,7 +215,7 @@ pub fn send(
         if e.queue.head == 0 {
             e.state = epstate::IDLE;
         }
-        tcb(me).regs.rax = 0;
+        tcb(me).regs.set_status(0);
         deliver(m, me, r, badge, grant, call);
         return Ok(());
     }
@@ -285,9 +285,9 @@ fn take_signal(me: u64) -> bool {
         return false;
     }
     let t = tcb(me);
-    t.regs.rsi = Info::SIGNAL;
-    t.regs.rdi = core::mem::take(&mut ntfn(n).word);
-    t.regs.rax = 0;
+    t.regs.set_arg1(Info::SIGNAL);
+    t.regs.set_arg0(core::mem::take(&mut ntfn(n).word));
+    t.regs.set_status(0);
     true
 }
 
@@ -372,8 +372,8 @@ pub fn signal(k: &mut sched::Sys, n: u64, bits: u64) {
     let w = pop(&mut no.queue);
     if w != 0 {
         let t = tcb(w);
-        t.regs.rdi = core::mem::take(&mut no.word);
-        t.regs.rsi = Info::SIGNAL;
+        t.regs.set_arg0(core::mem::take(&mut no.word));
+        t.regs.set_arg1(Info::SIGNAL);
         wake(k, w, Error::Ok);
         return;
     }
@@ -381,8 +381,8 @@ pub fn signal(k: &mut sched::Sys, n: u64, bits: u64) {
     if b != 0 && tcb(b).state == state::RECEIVING {
         cancel(k, b);
         let t = tcb(b);
-        t.regs.rdi = core::mem::take(&mut no.word);
-        t.regs.rsi = Info::SIGNAL;
+        t.regs.set_arg0(core::mem::take(&mut no.word));
+        t.regs.set_arg1(Info::SIGNAL);
         wake(k, b, Error::Ok);
     }
 }
@@ -392,9 +392,9 @@ pub fn wait(me: u64, n: u64) -> bool {
     let no = ntfn(n);
     let t = tcb(me);
     if no.word != 0 {
-        t.regs.rdi = core::mem::take(&mut no.word);
-        t.regs.rsi = Info::SIGNAL;
-        t.regs.rax = 0;
+        t.regs.set_arg0(core::mem::take(&mut no.word));
+        t.regs.set_arg1(Info::SIGNAL);
+        t.regs.set_status(0);
         return false;
     }
     t.state = state::WAITING_SIGNAL;
@@ -448,7 +448,7 @@ pub fn stop(k: &mut sched::Sys, t: u64) -> bool {
 /// endpoint, or stop it.
 pub fn fault(m: &mut Phys, t: u64, vector: u64, error: u64, addr: u64) {
     let th = tcb(t);
-    th.fault = [vector, error, addr, th.regs.rip, th.regs.rsp];
+    th.fault = [vector, error, addr, th.regs.pc(), th.regs.sp()];
     let fe = th.slots[SLOT_FAULT].cap;
     if fe.is(Kind::Endpoint) && fe.rights & rights::WRITE != 0 {
         th.flags |= tflag::FAULTING;
@@ -458,9 +458,9 @@ pub fn fault(m: &mut Phys, t: u64, vector: u64, error: u64, addr: u64) {
     m.sys.faults += 1;
     if m.sys.faults <= 20 {
         crate::kprintln!(
-            "fault: thread {:#x} stopped: vector {vector}, error {error:#x}, address {addr:#x}, rip {:#x}",
+            "fault: thread {:#x} stopped: vector {vector}, error {error:#x}, address {addr:#x}, pc {:#x}",
             t,
-            th.regs.rip
+            th.regs.pc()
         );
     } else if m.sys.faults == 21 {
         crate::kprintln!("fault: more threads stopped by faults; not reporting them");
@@ -477,7 +477,7 @@ pub fn timeout(m: &mut Phys, t: u64, used_ns: u64, wait_ns: u64) {
     if !fe.is(Kind::Endpoint) || fe.rights & rights::WRITE == 0 {
         return;
     }
-    th.fault = [0, used_ns, wait_ns, th.regs.rip, th.regs.rsp];
+    th.fault = [0, used_ns, wait_ns, th.regs.pc(), th.regs.sp()];
     th.flags |= tflag::FAULTING;
     th.flags2 |= tflag2::TIMED_OUT;
     let _ = send(m, t, fe.object, fe.a, false, true, true);

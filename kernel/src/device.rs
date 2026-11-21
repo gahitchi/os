@@ -5,7 +5,7 @@
 //! - **Device registers.** The device control capability (held by the
 //!   device manager only) makes page capabilities for physical addresses
 //!   that are not RAM. They map uncached. The kernel refuses RAM and its
-//!   own devices (the local APIC, the IOMMU).
+//!   own devices (the interrupt controller, the IOMMU).
 //! - **Interrupts.** The interrupt control capability takes a free vector
 //!   and makes an interrupt capability for it. A driver points it at a
 //!   notification; when the device raises the interrupt, the notification
@@ -17,7 +17,7 @@
 use alaya_abi::{Error, Kind, op, rights};
 use alaya_cap::{self as cap, Cap, Memory, SlotRef};
 
-use crate::arch::apic;
+use crate::arch;
 use crate::caps::{Outcome, Phys};
 use crate::sched::Sys;
 use crate::{iommu, ipc, mm, percpu};
@@ -73,6 +73,9 @@ pub fn forget_notification(k: &mut Sys, n: u64) {
 /// The last capability to interrupt `vector` goes: free the vector.
 pub fn free_vector(k: &mut Sys, vector: u64) {
     if let Some(e) = k.irqs.get_mut(vector as usize) {
+        if e.taken {
+            arch::msi_release(vector as u8);
+        }
         *e = IrqEntry::EMPTY;
     }
 }
@@ -130,13 +133,11 @@ pub fn device_control(m: &mut Phys, me: u64, label: u64, a: [u64; 6]) -> Result<
 }
 
 fn overlaps_kernel_device(k: &Sys, phys: u64, len: u64) -> bool {
-    let apic = apic::mmio_physical_base() & !0xfff;
-    let mut own = [apic, 0];
-    if k.iommu.present() {
-        own[1] = k.iommu.physical;
-    }
-    own.iter()
-        .any(|&p| p != 0 && p < phys + len && phys < p + 4096)
+    let iommu = k.iommu.present().then_some((k.iommu.physical, 4096));
+    arch::kernel_only_device_pages()
+        .into_iter()
+        .chain(iommu)
+        .any(|(p, l)| p < phys + len && phys < p + l)
 }
 
 /// Operations on the interrupt control capability.
@@ -182,12 +183,13 @@ pub fn irq(m: &mut Phys, me: u64, c: Cap, label: u64, a: [u64; 6]) -> Result<Out
         }
         op::IRQ_MSI => {
             let e = m.sys.irqs[v];
+            let rid = u16::try_from(a[0]).map_err(|_| Error::InvalidArgument)?;
             let dest = percpu::get(u32::from(e.core))
-                .apic_id
+                .hw_id
                 .load(core::sync::atomic::Ordering::Relaxed);
-            // Fixed delivery, edge triggered, physical destination.
-            let address = 0xfee0_0000 | u64::from(dest & 0xff) << 12;
-            done([address, v as u64, e.count, 0])
+            let (address, data) =
+                arch::msi_message(e.core, dest, v as u8, rid).ok_or(Error::NoMemory)?;
+            done([address, data, e.count, 0])
         }
         _ => Err(Error::NoSuchCall),
     }

@@ -25,7 +25,7 @@ Your computer remembers everything, and apps only get what you hand them. No oth
 
 Apps only see what you hand them, and you can see everything they did.
 
-- **Always**: an app starts with only its own folder, plus the files of the task it is opened in. Anything else (a file, a folder, the camera, a controller) arrives only when you hand it over: by opening or saving a file, by dragging, or by accepting the app's list when you install it.
+- **Always**: an app starts with only its own folder, plus the files of the protected task it is opened in (a loose group never widens access, decision 85). Anything else (a file, a folder, the camera, a controller) arrives only when you hand it over: by opening or saving a file, by dragging, or by accepting the app's list when you install it.
 - **Always**: let you untick any single thing an app asks for, and show a light whenever the camera, microphone or screen capture is in use.
 - **Always**: keep a log you can read of what each app opened, changed, deleted and connected to, and let you cut any app off.
 - **Always**: lock the whole disk with encryption, and give each person their own key.

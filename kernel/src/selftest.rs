@@ -11,10 +11,10 @@
 //! `page` (write to an unmapped address), `stack` (kernel stack overflow),
 //! `invalid-opcode`, `other-core-page` (a page fault on the last core),
 //! `smap` (the kernel reads a user page) or `smep` (it runs code in one).
+//! (The names are the PC's; each processor maps them to its own guards.)
 
 use core::sync::atomic::Ordering;
 
-use crate::arch::cpu::rdtsc;
 use crate::{percpu, smp, sync, time};
 
 /// Most lock acquisitions per core in the big-lock test.
@@ -26,9 +26,9 @@ pub const BKL_ROUNDS: u64 = 20_000;
 const BKL_TEST_MS: u64 = 200;
 
 pub fn run_on_this_core() {
-    let end = rdtsc() + time::ns_to_tsc(BKL_TEST_MS * 1_000_000);
+    let end = time::now() + time::ns_to_ticks(BKL_TEST_MS * 1_000_000);
     let mut rounds = 0;
-    while rounds < BKL_ROUNDS && rdtsc() < end {
+    while rounds < BKL_ROUNDS && time::now() < end {
         rounds += 1;
         let mut kernel = sync::BKL.lock();
         let counter = &mut kernel.selftest_counter as *mut u64;
@@ -60,10 +60,7 @@ pub fn fault_on_bootstrap_core() {
         Some("stack") => {
             let _ = recurse(0);
         }
-        Some("invalid-opcode") => {
-            // SAFETY: deliberately raises #UD.
-            unsafe { core::arch::asm!("ud2") };
-        }
+        Some("invalid-opcode") => crate::arch::selftest::invalid_instruction(),
         Some("smap") => touch_user_page(false),
         Some("smep") => touch_user_page(true),
         Some(other) => panic!("unknown test-fault={other}"),
@@ -73,31 +70,32 @@ pub fn fault_on_bootstrap_core() {
 /// Map a program-style (user) page and read it, or run code in it, from
 /// the kernel: the safety switches (SMAP, SMEP) must stop both.
 fn touch_user_page(execute: bool) {
-    use crate::arch::cpu;
+    use crate::arch::{paging, selftest};
     use crate::mm::paging::{AddressSpace, NO_EXECUTE, USER, WRITABLE};
     let hhdm = crate::limine::hhdm_offset().unwrap();
     let mut space = AddressSpace::with_root(
         crate::mm::frames::alloc_zeroed(),
         hhdm,
-        cpu::features().gib_pages,
+        paging::gib_pages(),
         crate::mm::kernel_root(),
     );
     let page = crate::mm::frames::alloc_zeroed();
-    // `ret`, so that without SMEP the call would simply come back.
+    // A return instruction, so that without the safety switch the call
+    // would simply come back.
+    let ret = selftest::RETURN;
     // SAFETY: a fresh frame, reached through the direct map.
-    unsafe { *((page + hhdm) as *mut u8) = 0xc3 };
+    unsafe { core::ptr::copy_nonoverlapping(ret.as_ptr(), (page + hhdm) as *mut u8, ret.len()) };
     let flags = if execute {
         USER
     } else {
         USER | WRITABLE | NO_EXECUTE
     };
     space.map(USER_PAGE, page, 4096, flags);
-    // SAFETY: the new tables map the kernel's half like the kernel's own.
-    unsafe { cpu::write_cr3(space.root()) };
+    // The new tables map the kernel's half like the kernel's own.
+    paging::load_raw(space.root());
     if execute {
         crate::kprintln!("selftest: running code in a user page on purpose");
-        // SAFETY: deliberately faults with SMEP on.
-        unsafe { core::arch::asm!("call {}", in(reg) USER_PAGE, clobber_abi("C")) };
+        selftest::call(USER_PAGE);
     } else {
         crate::kprintln!("selftest: reading a user page from the kernel on purpose");
         // SAFETY: deliberately faults with SMAP on.

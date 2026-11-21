@@ -8,7 +8,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::arch::{apic, gdt, idt};
+use crate::arch;
 use crate::limine::MpInfo;
 use crate::mm::layout::Stack;
 use crate::{kprintln, mm, percpu, time};
@@ -19,40 +19,22 @@ pub static GO: AtomicBool = AtomicBool::new(false);
 /// Cores that finished their self-tests.
 pub static DONE: AtomicU32 = AtomicU32::new(0);
 
-/// Set up the calling core: segments, interrupt stacks, IDT, local APIC.
+/// Set up the calling core (behind the wall: its tables, interrupt
+/// controller and protections), and check the hardware agrees on its id.
 pub fn init_this_core(index: u32) {
-    percpu::load_gdt(
-        [
-            Stack::DoubleFault.top(index),
-            Stack::Nmi.top(index),
-            Stack::MachineCheck.top(index),
-        ],
-        Stack::Kernel.top(index),
-    );
-    crate::syscall::init_this_core();
-    crate::fpu::init_this_core();
-    const _: () = assert!(gdt::IST_DOUBLE_FAULT == 1 && gdt::IST_NMI == 2);
-    idt::load();
-    if index == 0 {
-        crate::arch::protect::detect();
-    }
-    crate::arch::protect::init_this_core();
-    let me = percpu::get(index);
-    me.has_idt.store(true, Ordering::Release);
-    apic::init_this_core();
-    let id = apic::id();
-    let expected = me.apic_id.load(Ordering::Relaxed);
+    let id = arch::init_this_core(index);
+    let expected = percpu::get(index).hw_id.load(Ordering::Relaxed);
     assert!(
         id == expected,
-        "cpu {index}: APIC id {id}, but the bootloader said {expected}"
+        "cpu {index}: hardware id {id:#x}, but the bootloader said {expected:#x}"
     );
 }
 
 /// Release every other core. `cpus` lists them in the bootloader's order.
-pub fn start_others(cpus: impl Iterator<Item = &'static MpInfo>, bsp_apic_id: u32) {
+pub fn start_others(cpus: impl Iterator<Item = &'static MpInfo>, bsp_hw_id: u64) {
     let mut next: u32 = 1;
     for info in cpus {
-        if info.lapic_id == bsp_apic_id {
+        if info.hw_id() == bsp_hw_id {
             continue;
         }
         if next as usize >= percpu::MAX_CPUS {
@@ -70,30 +52,19 @@ extern "C" fn ap_entry(info: &'static MpInfo) -> ! {
     percpu::enter(index);
     mm::switch_this_core();
     let top = Stack::Kernel.top(index);
-    // SAFETY: the stack is mapped (see `mm::init`) and nothing on the old
-    // stack is used again.
-    unsafe {
-        core::arch::asm!(
-            "mov rsp, {top}",
-            "xor ebp, ebp",
-            "call {main}",
-            top = in(reg) top,
-            main = sym ap_main,
-            in("edi") index,
-            options(noreturn),
-        )
-    }
+    arch::run_on_stack(top, ap_main, u64::from(index))
 }
 
-extern "C" fn ap_main(index: u32) -> ! {
+extern "C" fn ap_main(index: u64) -> ! {
+    let index = index as u32;
     init_this_core(index);
     time::init_this_core();
     crate::sched::init_this_core(&mut crate::sync::BKL.lock().sys);
     let me = percpu::this();
     me.online.store(true, Ordering::Release);
     kprintln!(
-        "cpu {index}: online, APIC id {}",
-        me.apic_id.load(Ordering::Relaxed)
+        "cpu {index}: online, hardware id {:#x}",
+        me.hw_id.load(Ordering::Relaxed)
     );
 
     while !GO.load(Ordering::Acquire) {
@@ -106,6 +77,6 @@ extern "C" fn ap_main(index: u32) -> ! {
 /// Nothing to run yet: sleep until an interrupt, forever.
 pub fn idle() -> ! {
     loop {
-        crate::arch::cpu::enable_interrupts_and_halt();
+        arch::wait_for_interrupt();
     }
 }

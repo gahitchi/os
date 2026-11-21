@@ -6,7 +6,6 @@
 use alaya_abi::{Error, Kind, flags, op, rights};
 use alaya_cap::{self as cap, Budget, Cap, Destination, Globals, Memory, Progress, Slot, SlotRef};
 
-use crate::arch::cpu::rdtsc;
 use crate::sched::Sys;
 use crate::{ipc, objects, percpu, time};
 
@@ -76,7 +75,7 @@ impl Slice {
         Slice {
             steps: 0,
             min_steps: alaya_abi::RETYPE_BATCH * u64::from(percpu::count()) + 1,
-            deadline: rdtsc() + time::ns_to_tsc(SLICE_US * 1000),
+            deadline: time::now() + time::ns_to_ticks(SLICE_US * 1000),
         }
     }
 }
@@ -84,7 +83,7 @@ impl Slice {
 impl Budget for Slice {
     fn step(&mut self) -> bool {
         self.steps += 1;
-        self.steps >= self.min_steps && rdtsc() >= self.deadline
+        self.steps >= self.min_steps && time::now() >= self.deadline
     }
 }
 

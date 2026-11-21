@@ -1,6 +1,7 @@
 # Alaya
 
-Alaya is a new operating system, written from scratch in Rust for x86-64. It is
+Alaya is a new operating system, written from scratch in Rust for PCs (x86-64)
+and ARM64. It is
 built around a small capability microkernel (in the style of seL4) and a
 signature idea called **history and grants**: every change on the machine is
 kept and attributed, and apps only ever see what the person hands them, with
@@ -11,6 +12,23 @@ The full design is in [`docs/design/`](docs/design/), starting with
 [`roadmap.md`](docs/design/roadmap.md).
 
 ## Status
+
+**Milestone 5: safe storage.** The Alaya store keeps files so that a power
+cut at any moment leaves every file either fully saved or exactly as it was
+before. It never writes over anything: a save writes the changes to free
+places, waits until the disk has them, and only then writes a small front
+page that points at them. Every block is scrambled (each person under their
+own key) and fingerprinted, so damage is noticed and, for the store's own
+map, repaired from a spare copy. Every save records which app changed which
+file, and which app read which version of a document. Documents keep their
+history, apps one step back, caches none, and a full disk can always delete.
+
+Before the code: a [TLA+ model](formal/commit/Commit.tla) of a commit with
+power cuts and a damaged front page. After it: a power cut at every single
+disk write and flush in the host tests (3,168 cuts), every block damaged in
+turn, ten new boot checks (44 to 53) on x86-64 and ARM64, and `cargo xtask
+test --plug <n>`, which kills QEMU at random moments and boots again from
+the same disk. How it works: [`docs/store.md`](docs/store.md).
 
 **Milestone 4: the engine.** Drivers run as ordinary programs, each locked to
 its own device by the processor's device memory guard (IOMMU), and each looked
@@ -28,6 +46,15 @@ crash-and-resend rule. After it: 43 boot checks on 1 to 8 cores, a 10-minute
 run that kills the driver at random every half second, 1,000 live updates in a
 row, and a fuzzer that now attacks the helpers too. How it all works:
 [`docs/engine.md`](docs/engine.md).
+
+**Milestone 4b: the processor wall.** Everything in the kernel that only
+makes sense on one kind of processor sits in one folder behind a fixed list
+of things every processor must provide (`kernel/src/arch/`), and a CI check
+keeps the wall whole. Behind it there are now two: the PC (x86-64) and
+ARM64. The ARM64 build passes the same 43 boot checks, fault reports and
+fuzzer in QEMU's ARM board, with ARM's interrupt controller (GICv3 and its
+ITS) and device memory guard (SMMUv3). It is tested in QEMU only. How it
+works: [`docs/processor-wall.md`](docs/processor-wall.md).
 
 Milestone 3 (threads, time budgets and messages) is described in
 [`docs/threads-and-messages.md`](docs/threads-and-messages.md), with its own
@@ -54,6 +81,8 @@ cargo xtask image            # only build build/alaya-x86_64.iso
 cargo xtask test --fuzz 60   # boot checks, then a minute of kernel fuzzing
 cargo xtask test --cpus 8 --long  # also kill the disk driver at random for 10 minutes
 cargo test -p alaya-cap -p alaya-sched  # capability and time-budget tests on the host
+cargo xtask test --arch aarch64 --cpus 4  # the ARM64 build, in QEMU's ARM board
+                             # (needs qemu-system-arm and qemu-efi-aarch64)
 formal/check.sh              # TLA+ model checks (needs Java)
 cargo kani -p alaya-cap      # Kani proofs (needs cargo install kani-verifier)
 ```
@@ -80,10 +109,11 @@ bash alaya.sh run
 | `kernel/` | The kernel (`no_std`, target `x86_64-unknown-none`) |
 | `cap/` | Capability tables, untyped memory, retype and revoke (used by the kernel; tested on the host and with Kani) |
 | `sched/` | Time budgets with sporadic refills (used by the kernel; tested on the host) |
+| `store/` | The Alaya store: files, people, history, encryption and safe saving (used by the store server; tested on the host) |
 | `abi/` | Numbers and layouts shared by the kernel and programs |
 | `user/init/` | The first program: the boot checks and the kernel fuzzer |
 | `user/sys/` | System call wrappers, the program starter and the small runtime for programs |
-| `user/programs/` | Programs in the boot image: the driver keeper, the disk driver (two versions) and a disk test app |
+| `user/programs/` | Programs in the boot image: the driver keeper, the disk driver (two versions), a disk test app and the store server |
 | `formal/` | TLA+ models, checked with TLC (`formal/check.sh`) |
 | `xtask/` | Build, image and QEMU runner (`cargo xtask`) |
 | `boot/limine.conf` | Bootloader configuration |

@@ -148,9 +148,9 @@ fn main(info: &'static StartInfo) -> ! {
             .map(|m| m.words[0])
             .unwrap_or(0)
     };
-    let give_up = alaya_sys::rdtsc() + 30 * info.tsc_hz;
+    let give_up = alaya_sys::clock() + 30 * info.clock_hz;
     let mut sectors = size();
-    while sectors == 0 && alaya_sys::rdtsc() < give_up {
+    while sectors == 0 && alaya_sys::clock() < give_up {
         alaya_sys::yield_now();
         sectors = size();
     }

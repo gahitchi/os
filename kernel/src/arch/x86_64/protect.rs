@@ -162,6 +162,36 @@ pub fn init_this_core() {
     }
 }
 
+/// Print what the protections are, at boot.
+pub fn report() {
+    use alaya_abi::protect as p;
+    let on = enabled();
+    let yes = |b: bool| if b { "yes" } else { "no" };
+    let has = |bit| yes(on & bit != 0);
+    crate::kprintln!(
+        "protect: SMEP {}, SMAP {}, UMIP {}, tagged memory maps (PCID) {}",
+        has(p::SMEP),
+        has(p::SMAP),
+        has(p::UMIP),
+        has(p::PCID)
+    );
+    crate::kprintln!(
+        "protect: speculation guards: enhanced IBRS {}, IBPB on program switch {}, return-stack refill yes, buffer clearing (MDS) {}, bounds-check barriers yes",
+        has(p::EIBRS),
+        has(p::IBPB),
+        if on & p::VERW != 0 {
+            "yes"
+        } else {
+            "not needed or not offered"
+        }
+    );
+    if on & p::NO_MELTDOWN == 0 {
+        crate::kprintln!(
+            "protect: this CPU does not say it is safe from Meltdown; kernel page-table isolation is not built yet"
+        );
+    }
+}
+
 /// Clear the alignment-check flag (SMAP's "allow access" switch) on entry
 /// from an interrupt: user mode may have left it set.
 #[inline]

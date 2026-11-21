@@ -23,20 +23,16 @@ use core::sync::atomic::Ordering;
 use alaya_abi::{Error, Kind, map, rights};
 use alaya_cap::{self as cap, INTERNAL, Memory, SlotRef};
 
-use crate::arch::apic;
-use crate::arch::cpu;
-use crate::arch::trap::RESCHED_VECTOR;
+use crate::arch::paging as pte;
 use crate::caps::Phys;
+use crate::mm::paging::attr;
 use crate::obj::{self, SPACE_META, internal, space_meta};
 use crate::syscall::USER_END;
 use crate::{mm, percpu};
 
 /// Most address spaces at once. An address space's id is also its tag in
-/// the TLB (PCID), which has 12 bits, and tag 0 is the kernel's.
-pub const MAX_SPACES: usize = 4095;
-
-/// Tells `mov cr3` to keep the TLB entries of the new tag.
-const CR3_NOFLUSH: u64 = 1 << 63;
+/// the TLB (PCID on a PC, ASID on ARM), and tag 0 is the kernel's.
+pub const MAX_SPACES: usize = pte::MAX_TAGS;
 
 /// Per core: the tags whose TLB entries may be stale there, because a
 /// mapping changed while that core had another address space loaded. The
@@ -68,26 +64,14 @@ impl Stale {
 /// Load `space` on this core (`core`), with its tag when tagged memory
 /// maps are on, keeping its TLB entries unless they may be stale.
 pub fn load(k: &mut crate::sched::Sys, core: usize, space: u64) {
-    let mut cr3 = space;
-    if crate::arch::protect::pcid() {
-        let id = space_meta(space).id;
-        cr3 |= id;
-        if !k.stale.take(core, id) {
-            cr3 |= CR3_NOFLUSH;
-        }
-    }
-    // SAFETY: the address space maps the kernel's half too.
-    unsafe { cpu::write_cr3(cr3) };
+    let id = space_meta(space).id;
+    let stale = k.stale.take(core, id);
+    pte::load_space(space, id, stale);
 }
 
 /// Load the kernel's own tables (tag 0) on this core.
 pub fn load_kernel() {
-    let mut cr3 = mm::kernel_root();
-    if crate::arch::protect::pcid() {
-        cr3 |= CR3_NOFLUSH;
-    }
-    // SAFETY: the kernel's own tables.
-    unsafe { cpu::write_cr3(cr3) };
+    pte::load_kernel(mm::kernel_root());
 }
 
 #[derive(Clone, Copy)]
@@ -103,15 +87,6 @@ impl SpaceEntry {
         generation: 0,
     };
 }
-
-const PRESENT: u64 = 1;
-const WRITABLE: u64 = 1 << 1;
-const USER: u64 = 1 << 2;
-const HUGE: u64 = 1 << 7;
-const NO_EXECUTE: u64 = 1 << 63;
-/// Strong uncached (PAT entry 3).
-const UNCACHED: u64 = 1 << 3 | 1 << 4;
-const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 
 fn table(phys: u64) -> &'static mut [u64; 512] {
     obj::get(phys)
@@ -159,8 +134,10 @@ pub fn assign(m: &mut Phys, space: u64, pool: SlotRef) -> Result<(), Error> {
         // some core's TLB under the same tag.
         m.sys.stale.mark_all(meta.id);
         // The kernel's half of every address space is the kernel's own.
-        let kernel = table(mm::kernel_root());
-        table(space)[256..].copy_from_slice(&kernel[256..]);
+        if pte::SHARES_KERNEL_HALF {
+            let kernel = table(mm::kernel_root());
+            table(space)[pte::KERNEL_HALF..].copy_from_slice(&kernel[pte::KERNEL_HALF..]);
+        }
     }
     let dst = space + SPACE_META;
     cap::move_cap(m, pool, dst)?;
@@ -222,7 +199,7 @@ pub fn map_page(m: &mut Phys, at: SlotRef, space: u64, virt: u64, flags: u64) ->
     if flags & map::WRITE != 0 && c.rights & rights::WRITE == 0 {
         return Err(Error::NoRights);
     }
-    if c.size_bits == 30 && !cpu::features().gib_pages {
+    if c.size_bits == 30 && !pte::gib_pages() {
         return Err(Error::InvalidArgument);
     }
     let leaf = level_of(c.size_bits);
@@ -231,36 +208,33 @@ pub fn map_page(m: &mut Phys, at: SlotRef, space: u64, virt: u64, flags: u64) ->
     while level > leaf {
         let i = (virt >> (12 + 9 * (level - 1))) as usize & 511;
         let e = table(t)[i];
-        if e & PRESENT == 0 {
+        if !pte::present(e) {
             let new = take_table(m, space).ok_or(Error::NoMemory)?;
-            table(t)[i] = new | PRESENT | WRITABLE | USER;
+            table(t)[i] = pte::table(new, true);
             t = new;
-        } else if e & HUGE != 0 {
+        } else if pte::is_block(e) {
             return Err(Error::SlotInUse);
         } else {
-            t = e & ADDRESS;
+            t = pte::address(e);
         }
         level -= 1;
     }
     let i = (virt >> (12 + 9 * (leaf - 1))) as usize & 511;
-    if table(t)[i] & PRESENT != 0 {
+    if pte::present(table(t)[i]) {
         return Err(Error::SlotInUse);
     }
-    let mut e = c.object | PRESENT | USER;
+    let mut a = attr::USER;
     if flags & map::WRITE != 0 {
-        e |= WRITABLE;
+        a |= attr::WRITABLE;
     }
     if flags & map::EXECUTE == 0 {
-        e |= NO_EXECUTE;
-    }
-    if leaf > 1 {
-        e |= HUGE;
+        a |= attr::NO_EXECUTE;
     }
     if !mm::is_ram(c.object, size) {
         // Device registers (made by DEVICE_PAGE): strong uncached.
-        e |= UNCACHED;
+        a |= attr::DEVICE;
     }
-    table(t)[i] = e;
+    table(t)[i] = pte::leaf(c.object, a, leaf);
     s.cap.a = virt | flags;
     s.cap.b = stamp(m.sys, meta.id);
     m.write(at, &s);
@@ -290,17 +264,17 @@ pub fn unmap_page(m: &mut Phys, at: SlotRef) {
     let mut level = 4;
     while level > leaf {
         let e = table(t)[(virt >> (12 + 9 * (level - 1))) as usize & 511];
-        if e & PRESENT == 0 || e & HUGE != 0 {
+        if !pte::present(e) || pte::is_block(e) {
             return;
         }
-        t = e & ADDRESS;
+        t = pte::address(e);
         level -= 1;
     }
     let i = (virt >> (12 + 9 * (leaf - 1))) as usize & 511;
     let e = table(t)[i];
     // Only if it still maps this page (the pool may have been taken away
     // and the tables cleared meanwhile).
-    if e & PRESENT != 0 && e & ADDRESS & !((1u64 << c.size_bits) - 1) == c.object {
+    if pte::present(e) && pte::address(e) & !((1u64 << c.size_bits) - 1) == c.object {
         table(t)[i] = 0;
         flush(m.sys, space);
     }
@@ -308,7 +282,7 @@ pub fn unmap_page(m: &mut Phys, at: SlotRef) {
 
 /// The pool was taken away: drop every user mapping.
 pub fn clear(m: &mut Phys, space: u64) {
-    table(space)[..256].fill(0);
+    table(space)[..pte::KERNEL_HALF].fill(0);
     space_meta(space).tables = 0;
     flush(m.sys, space);
 }
@@ -356,12 +330,11 @@ fn flush(k: &mut crate::sched::Sys, space: u64) {
             continue;
         }
         if c == me {
-            // SAFETY: reloading CR3 only drops cached translations.
-            unsafe { cpu::write_cr3(cpu::cr3()) };
+            pte::flush_local();
         } else {
             let p = percpu::get(c as u32);
             p.flush.store(true, Ordering::Release);
-            apic::send_ipi(p.apic_id.load(Ordering::Relaxed), RESCHED_VECTOR);
+            crate::arch::wake_core(p.hw_id.load(Ordering::Relaxed));
         }
     }
     for c in 0..percpu::count() as usize {
@@ -378,8 +351,7 @@ fn flush(k: &mut crate::sched::Sys, space: u64) {
 pub fn poll_flush() {
     let p = percpu::this();
     if p.flush.load(Ordering::Acquire) {
-        // SAFETY: reloading CR3 only drops cached translations.
-        unsafe { cpu::write_cr3(cpu::cr3()) };
+        pte::flush_local();
         p.flush.store(false, Ordering::Release);
     }
 }
@@ -390,14 +362,17 @@ pub fn translate(space: u64, virt: u64) -> Option<u64> {
     let mut level = 4;
     loop {
         let e = table(t)[(virt >> (12 + 9 * (level - 1))) as usize & 511];
-        if e & PRESENT == 0 || e & USER == 0 {
+        if !pte::present(e) {
             return None;
         }
-        if level == 1 || e & HUGE != 0 {
+        if level == 1 || pte::is_block(e) {
+            if !pte::user(e) {
+                return None;
+            }
             let size = 1u64 << (12 + 9 * (level - 1));
-            return Some((e & ADDRESS & !(size - 1)) + (virt & (size - 1)));
+            return Some((pte::address(e) & !(size - 1)) + (virt & (size - 1)));
         }
-        t = e & ADDRESS;
+        t = pte::address(e);
         level -= 1;
     }
 }
