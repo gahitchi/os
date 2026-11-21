@@ -150,6 +150,7 @@ options:
   --plug <n>        test only: pull the plug n times. Each boot opens the
                     store the last boot left, checks what survived, keeps
                     saving, and QEMU is killed at a random moment
+                    (with image: build the pull-the-plug image instead)
   --timeout <secs>  give up after this long (test only, default 180, or
                     the fuzz time plus 180, or 15 minutes with --long)
   --image <path>    boot this image instead of building one (run and test)
@@ -276,6 +277,14 @@ fn main() -> ExitCode {
         "build" => build_kernel(opts.arch, opts.release)
             .and_then(|_| build_init(opts.arch, opts.release))
             .map(|_| ()),
+        // `image --plug 1` makes the pull-the-plug image the phone script
+        // downloads (alaya-<arch>-plug.iso), so phones can run that test.
+        "image" if opts.plug.is_some() => image_for(&opts).and_then(|test| {
+            let plug = test.with_file_name(format!("alaya-{}-plug.iso", opts.arch.name()));
+            fs::rename(&test, &plug).map_err(|e| format!("rename image: {e}"))?;
+            println!("image: {}", plug.display());
+            Ok(())
+        }),
         "image" => {
             build_image(opts.arch, opts.release, None).map(|p| println!("image: {}", p.display()))
         }
