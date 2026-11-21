@@ -171,10 +171,12 @@ pub mod driver {
     pub const G_KEEPER: u64 = 2;
     pub const G_IRQ: u64 = 3;
 
-    /// Args: flags, device page count, then the device page codes.
+    /// Args: flags, device page count, the device's PCI function (bus << 8
+    /// | device << 3 | function), then the device page codes.
     pub const ARG_FLAGS: usize = 0;
     pub const ARG_DEV_PAGES: usize = 1;
-    pub const ARG_DEV_CODES: usize = 2;
+    pub const ARG_BDF: usize = 2;
+    pub const ARG_DEV_CODES: usize = 3;
     /// Take the device over from the handover page instead of resetting it.
     pub const FLAG_HANDOVER: u64 = 1;
     /// Before starting, point the device at memory it does not own once,

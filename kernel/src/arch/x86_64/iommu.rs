@@ -20,6 +20,9 @@
 //! every VT-d unit has. Only the unit that covers all PCI devices of segment
 //! 0 is used for now; interrupt remapping is not on yet.
 
+/// What to add to a virtual machine to get one, said when none is found.
+pub const HINT: &str = "add QEMU's intel-iommu";
+
 use alaya_abi::{Error, Kind, iomap, rights};
 use alaya_cap::{self as cap, INTERNAL, Memory, SlotRef};
 

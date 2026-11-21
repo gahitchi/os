@@ -15,7 +15,6 @@
 //! started again. At the end everything is taken back with one revoke
 //! while the threads still run, and the kernel must still work.
 
-use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed, Ordering::SeqCst};
 
 use alaya_sys::abi::{BootInfo, call, core_type, map, op, state};
@@ -116,30 +115,9 @@ impl Rng {
 
 /// One system call with every register of the message ABI set.
 #[inline(never)]
-fn raw(nr: u64, rdi: u64, rsi: u64, a: [u64; 6], r14: u64, r15: u64) -> u64 {
-    let err;
-    // SAFETY: a system call only changes the registers named here; the
-    // kernel must cope with any values in them.
-    unsafe {
-        asm!(
-            "syscall",
-            inout("rax") nr => err,
-            inout("rdi") rdi => _,
-            inout("rsi") rsi => _,
-            inout("rdx") a[0] => _,
-            inout("r10") a[1] => _,
-            inout("r8") a[2] => _,
-            inout("r9") a[3] => _,
-            inout("r12") a[4] => _,
-            inout("r13") a[5] => _,
-            in("r14") r14,
-            in("r15") r15,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    err
+fn raw(nr: u64, handle: u64, info: u64, a: [u64; 6], caps: u64, reply: u64) -> u64 {
+    // The kernel must cope with any values in these registers.
+    alaya_sys::arch::raw_call(nr, handle, info, a, caps, reply).0
 }
 
 const OPS: [u64; 23] = [
@@ -425,7 +403,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
     alaya_sys::thread_write(
         t,
         ticker as *const () as u64,
-        TICKER_STACK + 0x4000 - 8,
+        alaya_sys::entry_stack(TICKER_STACK + 0x4000),
         tick,
         0,
         0,
@@ -508,7 +486,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, seconds: u64) {
         alaya_sys::thread_write(
             t,
             fuzzer as *const () as u64,
-            STACKS + i * 0x10000 + 0x10000 - 8,
+            alaya_sys::entry_stack(STACKS + i * 0x10000 + 0x10000),
             i,
             seed,
             0,

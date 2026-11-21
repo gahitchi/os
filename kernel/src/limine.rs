@@ -111,6 +111,7 @@ pub struct MpResponse {
 
 /// Set in [`MpResponse::flags`] when Limine switched every core to x2APIC
 /// (PC only).
+#[allow(dead_code)] // used by one processor family only
 pub const MP_X2APIC: u32 = 1;
 
 impl MpResponse {
@@ -119,7 +120,7 @@ impl MpResponse {
         #[cfg(target_arch = "x86_64")]
         return u64::from(self.bsp_lapic_id);
         #[cfg(target_arch = "aarch64")]
-        return self.bsp_mpidr;
+        return self.bsp_mpidr & 0xff_00ff_ffff;
     }
 
     /// One entry per core, the bootstrap core included.
@@ -158,7 +159,7 @@ impl MpInfo {
         #[cfg(target_arch = "x86_64")]
         return u64::from(self.lapic_id);
         #[cfg(target_arch = "aarch64")]
-        return self.mpidr;
+        return self.mpidr & 0xff_00ff_ffff;
     }
 
     /// Start this core at `entry`, which receives a pointer to this

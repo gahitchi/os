@@ -230,12 +230,16 @@ pub fn stop_core(hw_id: u64) {
     apic::send_nmi(hw_id as u32);
 }
 
-/// The message a device writes to raise device interrupt `irq` on the
-/// core with hardware id `hw_id` (MSI address and data).
-pub fn msi_message(hw_id: u64, irq: u8) -> (u64, u64) {
+/// The message a device writes to raise device interrupt `irq` on core
+/// `core` (hardware id `hw_id`): MSI address and data. A PC's local APICs
+/// take the message whichever device (`_rid`) writes it.
+pub fn msi_message(_core: u16, hw_id: u64, irq: u8, _rid: u16) -> Option<(u64, u64)> {
     // Fixed delivery, edge triggered, physical destination.
-    (0xfee0_0000 | (hw_id & 0xff) << 12, u64::from(irq))
+    Some((0xfee0_0000 | (hw_id & 0xff) << 12, u64::from(irq)))
 }
+
+/// Device interrupt `irq` was given up. Nothing to undo on a PC.
+pub fn msi_release(_irq: u8) {}
 
 /// The protections the processor offers and the kernel turned on, as
 /// `alaya_abi::protect` bits.

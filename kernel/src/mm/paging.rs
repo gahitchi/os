@@ -61,9 +61,11 @@ impl AddressSpace {
             gib_pages,
             mapped: [0; 3],
         };
-        let kernel = space.table(kernel_root);
-        let entries = space.table(space.root);
-        entries[pte::KERNEL_HALF..].copy_from_slice(&kernel[pte::KERNEL_HALF..]);
+        if pte::SHARES_KERNEL_HALF {
+            let kernel = space.table(kernel_root);
+            let entries = space.table(space.root);
+            entries[pte::KERNEL_HALF..].copy_from_slice(&kernel[pte::KERNEL_HALF..]);
+        }
         space
     }
 

@@ -113,7 +113,15 @@ fn spawn(
     alaya_sys::thread_configure(t, k.info.table, k.info.space, fault).unwrap();
     alaya_sys::thread_priority(t, prio, prio).unwrap();
     let top = k.stack();
-    alaya_sys::thread_write(t, entry as *const () as u64, top - 8, arg, 0, 0).unwrap();
+    alaya_sys::thread_write(
+        t,
+        entry as *const () as u64,
+        alaya_sys::entry_stack(top),
+        arg,
+        0,
+        0,
+    )
+    .unwrap();
     alaya_sys::sc_configure(
         k.info.sched_control,
         sc,

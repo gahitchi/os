@@ -134,8 +134,10 @@ pub fn assign(m: &mut Phys, space: u64, pool: SlotRef) -> Result<(), Error> {
         // some core's TLB under the same tag.
         m.sys.stale.mark_all(meta.id);
         // The kernel's half of every address space is the kernel's own.
-        let kernel = table(mm::kernel_root());
-        table(space)[pte::KERNEL_HALF..].copy_from_slice(&kernel[pte::KERNEL_HALF..]);
+        if pte::SHARES_KERNEL_HALF {
+            let kernel = table(mm::kernel_root());
+            table(space)[pte::KERNEL_HALF..].copy_from_slice(&kernel[pte::KERNEL_HALF..]);
+        }
     }
     let dst = space + SPACE_META;
     cap::move_cap(m, pool, dst)?;

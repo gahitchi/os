@@ -22,15 +22,7 @@ mod m4;
 mod m4b;
 mod m4c;
 
-core::arch::global_asm!(
-    ".section .text._start, \"ax\"",
-    ".global _start",
-    "_start:",
-    "    and rsp, -16",
-    "    call {main}",
-    "    ud2",
-    main = sym main,
-);
+alaya_sys::start_code!(main);
 
 /// One line of output, printed in a single call.
 struct Line {

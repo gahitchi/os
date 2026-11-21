@@ -261,7 +261,7 @@ pub fn start(parent: &mut Parent, spec: &Spec) -> Result<Program, Error> {
     crate::thread_write(
         thread,
         elf.entry,
-        PROGRAM_STACK_TOP - 8,
+        crate::entry_stack(PROGRAM_STACK_TOP),
         START_INFO_ADDRESS,
         0,
         0,

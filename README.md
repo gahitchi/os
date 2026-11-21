@@ -1,6 +1,7 @@
 # Alaya
 
-Alaya is a new operating system, written from scratch in Rust for x86-64. It is
+Alaya is a new operating system, written from scratch in Rust for PCs (x86-64)
+and ARM64. It is
 built around a small capability microkernel (in the style of seL4) and a
 signature idea called **history and grants**: every change on the machine is
 kept and attributed, and apps only ever see what the person hands them, with
@@ -29,11 +30,14 @@ run that kills the driver at random every half second, 1,000 live updates in a
 row, and a fuzzer that now attacks the helpers too. How it all works:
 [`docs/engine.md`](docs/engine.md).
 
-**Milestone 4b, step 1: the processor wall.** Everything in the kernel that
-only makes sense on a PC now sits in one folder behind a fixed list of
-things every processor must provide, so an ARM build can follow without
-slowing the PC path. Nothing changes on a PC; a CI check keeps the wall
-whole. How it works: [`docs/processor-wall.md`](docs/processor-wall.md).
+**Milestone 4b: the processor wall.** Everything in the kernel that only
+makes sense on one kind of processor sits in one folder behind a fixed list
+of things every processor must provide (`kernel/src/arch/`), and a CI check
+keeps the wall whole. Behind it there are now two: the PC (x86-64) and
+ARM64. The ARM64 build passes the same 43 boot checks, fault reports and
+fuzzer in QEMU's ARM board, with ARM's interrupt controller (GICv3 and its
+ITS) and device memory guard (SMMUv3). It is tested in QEMU only. How it
+works: [`docs/processor-wall.md`](docs/processor-wall.md).
 
 Milestone 3 (threads, time budgets and messages) is described in
 [`docs/threads-and-messages.md`](docs/threads-and-messages.md), with its own
@@ -60,6 +64,8 @@ cargo xtask image            # only build build/alaya-x86_64.iso
 cargo xtask test --fuzz 60   # boot checks, then a minute of kernel fuzzing
 cargo xtask test --cpus 8 --long  # also kill the disk driver at random for 10 minutes
 cargo test -p alaya-cap -p alaya-sched  # capability and time-budget tests on the host
+cargo xtask test --arch aarch64 --cpus 4  # the ARM64 build, in QEMU's ARM board
+                             # (needs qemu-system-arm and qemu-efi-aarch64)
 formal/check.sh              # TLA+ model checks (needs Java)
 cargo kani -p alaya-cap      # Kani proofs (needs cargo install kani-verifier)
 ```

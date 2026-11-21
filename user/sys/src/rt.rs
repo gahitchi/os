@@ -80,8 +80,7 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(at) = info.location() {
         say(format_args!("  at {}:{}", at.file(), at.line()));
     }
-    // SAFETY: deliberately faults.
-    unsafe { core::arch::asm!("ud2", options(noreturn)) }
+    crate::crash()
 }
 
 /// Define `_start` and the panic handler of a program whose main function
@@ -89,20 +88,12 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
 #[macro_export]
 macro_rules! entry {
     ($main:path) => {
-        core::arch::global_asm!(
-            ".section .text._start, \"ax\"",
-            ".global _start",
-            "_start:",
-            "    and rsp, -16",
-            "    call {main}",
-            "    ud2",
-            main = sym __alaya_start,
-        );
+        $crate::start_code!(__alaya_start);
 
         extern "C" fn __alaya_start(info: &'static $crate::abi::StartInfo) -> ! {
             if info.magic != $crate::abi::start::MAGIC {
-                // SAFETY: no start information: crash at once.
-                unsafe { core::arch::asm!("ud2", options(noreturn)) }
+                // No start information: crash at once.
+                $crate::crash()
             }
             $crate::rt::init(info);
             $main(info)
@@ -200,7 +191,14 @@ impl Mem {
         let stack = self.pages(4)? + 4 * 4096;
         crate::thread_configure(t, start::TABLE, start::SPACE, 0)?;
         crate::thread_priority(t, priority, priority)?;
-        crate::thread_write(t, entry as *const () as u64, stack - 8, arg, 0, 0)?;
+        crate::thread_write(
+            t,
+            entry as *const () as u64,
+            crate::entry_stack(stack),
+            arg,
+            0,
+            0,
+        )?;
         crate::sc_bind(sc, t)?;
         crate::thread_start(t)?;
         Ok(t)

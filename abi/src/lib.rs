@@ -36,6 +36,14 @@
 //!
 //! `call` on any other kind of object is an operation on it (`rsi` is the
 //! operation, [`op`]); `send` on a reply object answers the caller.
+//!
+//! # On ARM64
+//!
+//! The same roles, entered with `svc #0`: the call number and error code
+//! in `x8`, the handle (badge) in `x0`, the operation or info word in `x1`,
+//! the six arguments or data words in `x2` to `x7` (results in `x2` to
+//! `x5`), the capability slots in `x9` and the reply object in `x10`. Every
+//! other register is kept. The table above names the PC's registers.
 
 #![no_std]
 
@@ -184,8 +192,10 @@ pub mod op {
     /// Deliver it as `bits` on a notification: args = notification handle
     /// (0: stop delivering), bits.
     pub const IRQ_SET: u64 = 112;
-    /// What to program into a device's MSI or MSI-X entry: results =
-    /// address, data.
+    /// What to program into a device's MSI or MSI-X entry: arg = the PCI
+    /// function that raises it (bus << 8 | device << 3 | function; ARM's
+    /// interrupt translator tells devices apart by it); results = address,
+    /// data.
     pub const IRQ_MSI: u64 = 113;
 }
 
@@ -517,7 +527,8 @@ pub mod protect {
     /// The kernel cannot read or write program memory by accident.
     pub const SMAP: u64 = 1 << 1;
     /// Programs cannot read the kernel's descriptor tables (`sgdt`, `sidt`,
-    /// `sldt`, `smsw`, `str` fault).
+    /// `sldt`, `smsw`, `str` fault on a PC; on ARM every kernel system
+    /// register is always out of a program's reach).
     pub const UMIP: u64 = 1 << 2;
     /// Tagged memory maps: switching programs keeps both TLBs' entries.
     pub const PCID: u64 = 1 << 3;

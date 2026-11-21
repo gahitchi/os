@@ -309,6 +309,7 @@ impl Keeper {
         let mut args = [0u64; 16];
         args[d::ARG_FLAGS] = flags;
         args[d::ARG_DEV_PAGES] = self.ndev as u64;
+        args[d::ARG_BDF] = self.info.args[k::ARG_BDF];
         for i in 0..self.ndev {
             let (h, code) = self.dev[i];
             shared[ns] = (h, d::bar_page(code >> 16, code & 0xffff), map::WRITE);
@@ -337,7 +338,7 @@ impl Keeper {
             fault: x.fault,
             given: &[self.dntfn, self.park, self.me, self.irq],
             shared: &shared[..ns],
-            args: &args[..2 + self.ndev],
+            args: &args[..d::ARG_DEV_CODES + self.ndev],
             clock_hz: self.info.clock_hz,
             cores: self.info.cores,
         };

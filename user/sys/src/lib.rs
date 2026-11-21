@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! System calls for Alaya programs: thin wrappers over the `syscall`
-//! instruction, following the register layout in `alaya-abi`.
+//! System calls for Alaya programs: thin wrappers over the system call
+//! instruction (`syscall` on a PC, `svc` on ARM), following the register
+//! layout in `alaya-abi` and [`arch`].
 //!
 //! This is the start of the SDK (decision 41). It will carry the library
 //! linking exception (`LICENSE-EXCEPTION.md`) once that text is final.
@@ -8,33 +9,17 @@
 #![no_std]
 
 pub use alaya_abi::{self as abi, Error, Kind, rights};
-use core::arch::asm;
 
-/// Make a call: `nr` in rax, `a0` in rdi, `a1` in rsi, `args` in rdx, r10,
-/// r8, r9, r12, r13. Returns the error code and four results.
+pub mod arch;
+pub use arch::{clock, crash, entry_stack};
+
+/// Make a call: the call number, a handle, a second argument and six
+/// data words (registers in [`arch`]). Returns the error code and four
+/// results.
 #[inline]
 pub fn syscall(nr: u64, a0: u64, a1: u64, args: [u64; 6]) -> (u64, [u64; 4]) {
-    let (err, r0, r1, r2, r3);
-    // SAFETY: the kernel keeps every register but rcx and r11, and the
-    // ones it returns results in.
-    unsafe {
-        asm!(
-            "syscall",
-            inout("rax") nr => err,
-            in("rdi") a0,
-            in("rsi") a1,
-            inout("rdx") args[0] => r0,
-            inout("r10") args[1] => r1,
-            inout("r8") args[2] => r2,
-            inout("r9") args[3] => r3,
-            in("r12") args[4],
-            in("r13") args[5],
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    (err, [r0, r1, r2, r3])
+    let (err, _, _, w) = arch::raw_call(nr, a0, a1, args, 0, 0);
+    (err, [w[0], w[1], w[2], w[3]])
 }
 
 fn result(r: (u64, [u64; 4])) -> Result<[u64; 4], Error> {
@@ -227,32 +212,19 @@ pub struct Caps {
 /// A message call: the full register set of the message ABI.
 #[inline]
 pub fn msg_call(nr: u64, handle: u64, m: &Msg, caps: Caps) -> Result<Msg, Error> {
-    let (err, badge, info, w0, w1, w2, w3, w4, w5);
-    // SAFETY: the kernel keeps every register but rcx, r11 and the outputs.
-    unsafe {
-        asm!(
-            "syscall",
-            inout("rax") nr => err,
-            inout("rdi") handle => badge,
-            inout("rsi") m.info.0 => info,
-            inout("rdx") m.words[0] => w0,
-            inout("r10") m.words[1] => w1,
-            inout("r8") m.words[2] => w2,
-            inout("r9") m.words[3] => w3,
-            inout("r12") m.words[4] => w4,
-            inout("r13") m.words[5] => w5,
-            in("r14") caps.send | caps.recv << 32,
-            in("r15") caps.reply,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
+    let (err, badge, info, words) = arch::raw_call(
+        nr,
+        handle,
+        m.info.0,
+        m.words,
+        caps.send | caps.recv << 32,
+        caps.reply,
+    );
     match err {
         0 => Ok(Msg {
             info: MsgInfo(info),
             badge,
-            words: [w0, w1, w2, w3, w4, w5],
+            words,
         }),
         e => Err(Error::from_u64(e)),
     }
@@ -424,15 +396,6 @@ pub fn lock_stats() -> [u64; 4] {
     syscall(abi::call::DEBUG, abi::debug::LOCK_STATS, 0, [0; 6]).1
 }
 
-/// The clock, in ticks (`BootInfo::clock_hz` per second): the same clock
-/// the kernel uses for budgets and deadlines. On a PC it is the time-stamp
-/// counter.
-#[inline]
-pub fn clock() -> u64 {
-    // SAFETY: reading the TSC has no side effects.
-    unsafe { core::arch::x86_64::_rdtsc() }
-}
-
 /// Physical address of a page (drivers).
 pub fn page_address(page: u64) -> Result<u64, Error> {
     call(page, abi::op::PAGE_ADDRESS, [0; 6]).map(|r| r[0])
@@ -490,9 +453,10 @@ pub fn irq_set(irq: u64, ntfn: u64, bits: u64) -> Result<(), Error> {
     call(irq, abi::op::IRQ_SET, [ntfn, bits, 0, 0, 0, 0]).map(|_| ())
 }
 
-/// MSI address and data for `irq`, and how many times it fired.
-pub fn irq_msi(irq: u64) -> Result<(u64, u64, u64), Error> {
-    call(irq, abi::op::IRQ_MSI, [0; 6]).map(|r| (r[0], r[1], r[2]))
+/// MSI address and data for `irq`, raised by PCI function `bdf` (bus << 8
+/// | device << 3 | function), and how many times it fired.
+pub fn irq_msi(irq: u64, bdf: u16) -> Result<(u64, u64, u64), Error> {
+    call(irq, abi::op::IRQ_MSI, [u64::from(bdf), 0, 0, 0, 0, 0]).map(|r| (r[0], r[1], r[2]))
 }
 
 /// Set the deadline of the work `sc` pays for, in clock
