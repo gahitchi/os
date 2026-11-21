@@ -661,7 +661,12 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
 /// finds both files equal and no saved change lost.
 fn soak(env: &mut Env, alice: App, data: &mut [u8]) -> ! {
     env.start(false, 0);
-    if alice.call(fs::UNLOCK, &ALICE)[0] != st::OK {
+    let fresh = alice.call(fs::UNLOCK, &ALICE)[0] != st::OK
+        || alice.lookup(alice.root(DOCS), "soak-a").is_none();
+    if fresh {
+        // The first soak boot: start from a fresh store over the whole
+        // disk (the last boot checks may have left a small one).
+        env.start(true, 0);
         alice.ok(fs::ADD_PERSON, &ALICE);
         alice.save();
     }
@@ -713,7 +718,17 @@ fn soak(env: &mut Env, alice: App, data: &mut [u8]) -> ! {
         }
         for f in pair {
             alice.ok(fs::TRUNCATE, &[f, 0]);
-            assert!(alice.write(f, 0, &data[..len]) == st::OK);
+            let mut r = alice.write(f, 0, &data[..len]);
+            if r == st::FULL {
+                // Every save keeps a version, so the disk fills up. Make
+                // room as if a week had passed (choice B never gives up
+                // the last day), which also runs the full-disk path under
+                // the plug pulls.
+                say!("soak: disk full at {counter}: making room");
+                alice.ok(fs::MAKE_ROOM, &[2000, 7 * 24 * 3600 * (counter + 1)]);
+                r = alice.write(f, 0, &data[..len]);
+            }
+            assert!(r == st::OK, "soak: write failed with status {r}");
         }
         say!("soak: saving {counter}");
         alice.save();
