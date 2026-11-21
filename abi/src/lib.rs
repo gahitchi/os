@@ -630,4 +630,7 @@ pub mod boot_flags {
     pub const FUZZ: u64 = 1 << 0;
     /// `long`: run longer stress tests.
     pub const LONG: u64 = 1 << 1;
+    /// `store-soak`: skip the store checks; open the store on the disk,
+    /// show what survived, and keep saving until the machine is killed.
+    pub const STORE_SOAK: u64 = 1 << 2;
 }

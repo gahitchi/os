@@ -65,6 +65,8 @@ One thing still open from milestone 3: the "call and answer" speed measured on y
 
 ### Milestone 5. Safe storage (large)
 
+**Status: built** (see [`../store.md`](../store.md)).
+
 **What you'll see.** A virtual disk inside QEMU that you can "pull the plug" on at any moment. After restarting, every file is either fully there or as it was just before, every time.
 
 **What it includes.**

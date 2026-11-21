@@ -103,5 +103,9 @@ A record of what we have decided, in order. Each line is final until we change i
 | 97 | Milestone 4b in two steps | First the processor wall alone (no change you can see on a PC, its own pull request), then the ARM build in QEMU as a second step | 2026-11-20 |
 | 98 | Oldest ARM chips Alaya supports | ARMv8.0, chips from about 2016 on (such as the PinePhone Pro, Librem 5 and Raspberry Pi 4), so the open phones of decision 94 stay possible; newer chip features are used only when present | 2026-11-20 |
 | 99 | ARM tests on the phone | The Termux script gets an ARM option (QEMU only, never the real phone), run whenever the person likes; GitHub's ARM machines run the ARM tests on every change | 2026-11-20 |
+| 100 | How often the store saves by itself (milestone 5) | Every 5 seconds, and whenever an app asks; at most the last 5 seconds of typing can be lost in a power cut (user confirmed my recommendation) | 2026-11-21 |
+| 101 | A full disk (milestone 5, with 33) | Caches go first; then the oldest history of your files, never the last day. Your current files are never dropped (user confirmed my recommendation) | 2026-11-21 |
+| 102 | Spare copies on the same disk (milestone 5) | The store's own map keeps a spare copy of every block, so a bad spot there is repaired by itself; your files can have spare copies as an option (user confirmed my recommendation) | 2026-11-21 |
+| 103 | Cleaning by itself (milestone 5) | Caches nobody used for 30 days are emptied, and more (least used first) when the disk runs low; leftover app data such as the copy kept during an update is let go by itself. Files a person made are never removed without asking them; the store only lists big, long-unchanged files for the desktop to ask about (user's request; user confirmed my recommendation on timing) | 2026-11-21 |
 
 The rules attached to the other decisions are in `battle-test.md` and are part of them.

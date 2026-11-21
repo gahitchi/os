@@ -121,9 +121,10 @@ arm_firmware() {
 
 disk_image() {
     local disk="$DIR/disk.img"
-    if [ ! -f "$disk" ]; then
+    # 64 MiB: the first MiB for the disk tests, the rest for the store.
+    if [ ! -f "$disk" ] || [ "$(wc -c <"$disk")" -lt 67108864 ]; then
         mkdir -p "$DIR"
-        head -c 1048576 /dev/zero >"$disk"
+        truncate -s 64M "$disk"
     fi
     echo "$disk"
 }
@@ -136,7 +137,7 @@ qemu_args() {
             printf '%s\n' -accel tcg -cpu max,pauth-impdef=on
         fi
         # QEMU's generic ARM board: GICv3 with its message translator, the
-        # SMMUv3 device memory guard, and the small virtual disk.
+        # SMMUv3 device memory guard, and the virtual disk.
         printf '%s\n' -machine virt,gic-version=3,iommu=smmuv3 -m 512M -smp "$CPUS" -no-reboot \
             -display none -monitor none -bios "$(arm_firmware)" \
             -drive "file=$(disk_image),if=none,id=disk0,format=raw" \
@@ -151,7 +152,7 @@ qemu_args() {
     else
         printf '%s\n' -accel tcg
     fi
-    # The device memory guard (IOMMU) and the small virtual disk the boot
+    # The device memory guard (IOMMU) and the virtual disk the boot
     # checks use (milestone 4).
     local disk
     disk=$(disk_image)

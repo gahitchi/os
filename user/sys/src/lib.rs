@@ -475,5 +475,6 @@ pub fn thread_timeouts(t: u64, on: bool) -> Result<(), Error> {
 
 pub mod cores;
 pub mod elf;
+pub mod heap;
 pub mod program;
 pub mod rt;

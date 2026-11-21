@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["abi", "cap", "sched", "kernel", "user/init", "user/programs", "user/sys", "xtask"]
+members = ["abi", "cap", "sched", "store", "kernel", "user/init", "user/programs", "user/sys", "xtask"]
 default-members = ["xtask"]
 
 [workspace.package]
@@ -15,3 +15,10 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 debug = true
+
+# The store's tests run tens of thousands of commits; its scrambling and
+# fingerprints are too slow unoptimised.
+[profile.dev.package.alaya-store]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true

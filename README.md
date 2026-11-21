@@ -13,6 +13,23 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 5: safe storage.** The Alaya store keeps files so that a power
+cut at any moment leaves every file either fully saved or exactly as it was
+before. It never writes over anything: a save writes the changes to free
+places, waits until the disk has them, and only then writes a small front
+page that points at them. Every block is scrambled (each person under their
+own key) and fingerprinted, so damage is noticed and, for the store's own
+map, repaired from a spare copy. Every save records which app changed which
+file, and which app read which version of a document. Documents keep their
+history, apps one step back, caches none, and a full disk can always delete.
+
+Before the code: a [TLA+ model](formal/commit/Commit.tla) of a commit with
+power cuts and a damaged front page. After it: a power cut at every single
+disk write and flush in the host tests (3,168 cuts), every block damaged in
+turn, ten new boot checks (44 to 53) on x86-64 and ARM64, and `cargo xtask
+test --plug <n>`, which kills QEMU at random moments and boots again from
+the same disk. How it works: [`docs/store.md`](docs/store.md).
+
 **Milestone 4: the engine.** Drivers run as ordinary programs, each locked to
 its own device by the processor's device memory guard (IOMMU), and each looked
 after by a *keeper*. A driver can crash, freeze or be replaced by a new version
@@ -92,10 +109,11 @@ bash alaya.sh run
 | `kernel/` | The kernel (`no_std`, target `x86_64-unknown-none`) |
 | `cap/` | Capability tables, untyped memory, retype and revoke (used by the kernel; tested on the host and with Kani) |
 | `sched/` | Time budgets with sporadic refills (used by the kernel; tested on the host) |
+| `store/` | The Alaya store: files, people, history, encryption and safe saving (used by the store server; tested on the host) |
 | `abi/` | Numbers and layouts shared by the kernel and programs |
 | `user/init/` | The first program: the boot checks and the kernel fuzzer |
 | `user/sys/` | System call wrappers, the program starter and the small runtime for programs |
-| `user/programs/` | Programs in the boot image: the driver keeper, the disk driver (two versions) and a disk test app |
+| `user/programs/` | Programs in the boot image: the driver keeper, the disk driver (two versions), a disk test app and the store server |
 | `formal/` | TLA+ models, checked with TLC (`formal/check.sh`) |
 | `xtask/` | Build, image and QEMU runner (`cargo xtask`) |
 | `boot/limine.conf` | Bootloader configuration |

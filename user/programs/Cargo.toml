@@ -38,3 +38,10 @@ bench = false
 
 [dependencies]
 alaya-sys = { path = "../sys" }
+alaya-store = { path = "../../store" }
+
+[[bin]]
+name = "store"
+path = "src/bin/store.rs"
+test = false
+bench = false
