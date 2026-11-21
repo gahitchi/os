@@ -120,8 +120,16 @@ jobs:
           ALAYA_ACCEL=tcg ALAYA_CPUS=2 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
           ALAYA_ACCEL=kvm ALAYA_CPUS=8 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
 
+      - name: Pull-the-plug image for the Termux script
+        run: |
+          cargo xtask image --plug 1
+          ALAYA_ACCEL=kvm ALAYA_CPUS=2 ALAYA_PLUG_IMAGE=build/alaya-x86_64-plug.iso bash tools/termux/alaya.sh plug 3
+
       - name: Checksum
-        run: cd build && sha256sum alaya-x86_64.iso > alaya-x86_64.iso.sha256
+        run: |
+          cd build
+          sha256sum alaya-x86_64.iso > alaya-x86_64.iso.sha256
+          sha256sum alaya-x86_64-plug.iso > alaya-x86_64-plug.iso.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -129,6 +137,8 @@ jobs:
           path: |
             build/alaya-x86_64.iso
             build/alaya-x86_64.iso.sha256
+            build/alaya-x86_64-plug.iso
+            build/alaya-x86_64-plug.iso.sha256
           if-no-files-found: error
 
   # The same kernel and programs for ARM64 (milestone 4b), on GitHub's ARM
@@ -193,8 +203,16 @@ jobs:
       - name: Boot with the Termux script
         run: ALAYA_ARCH=aarch64 ALAYA_ACCEL=tcg ALAYA_CPUS=2 ALAYA_TIMEOUT=900 bash tools/termux/alaya.sh test build/alaya-aarch64.iso
 
+      - name: Pull-the-plug image for the Termux script
+        run: |
+          cargo xtask image --plug 1 --arch aarch64
+          ALAYA_ARCH=aarch64 ALAYA_CPUS=2 ALAYA_TIMEOUT=900 ALAYA_PLUG_IMAGE=build/alaya-aarch64-plug.iso bash tools/termux/alaya.sh plug 3
+
       - name: Checksum
-        run: cd build && sha256sum alaya-aarch64.iso > alaya-aarch64.iso.sha256
+        run: |
+          cd build
+          sha256sum alaya-aarch64.iso > alaya-aarch64.iso.sha256
+          sha256sum alaya-aarch64-plug.iso > alaya-aarch64-plug.iso.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -202,6 +220,8 @@ jobs:
           path: |
             build/alaya-aarch64.iso
             build/alaya-aarch64.iso.sha256
+            build/alaya-aarch64-plug.iso
+            build/alaya-aarch64-plug.iso.sha256
           if-no-files-found: error
 
   # The TLA+ models (formal/): capabilities and revoke, the scheduler with
@@ -250,6 +270,8 @@ jobs:
           gh release delete nightly --cleanup-tag --yes || true
           gh release create nightly alaya-x86_64.iso alaya-x86_64.iso.sha256 \
             alaya-aarch64.iso alaya-aarch64.iso.sha256 \
+            alaya-x86_64-plug.iso alaya-x86_64-plug.iso.sha256 \
+            alaya-aarch64-plug.iso alaya-aarch64-plug.iso.sha256 \
             --prerelease --target "$GITHUB_SHA" --title "Nightly" \
             --notes "Bootable Alaya images (PC and ARM64) built from main at $GITHUB_SHA. Boot them with tools/termux/alaya.sh or cargo xtask run --image."
 

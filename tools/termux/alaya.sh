@@ -8,7 +8,11 @@
 #
 #   alaya.sh run  [image]   boot and show the serial console (Ctrl+A then x quits)
 #   alaya.sh test [image]   boot, pass if the kernel reports a clean boot
-#   alaya.sh fetch          only download the latest image
+#   alaya.sh plug [n]       pull the plug n times (default 3): each boot opens
+#                           the saved files the last boot left, checks nothing
+#                           promised was lost, keeps saving, and is then
+#                           switched off at a random moment (milestone 5)
+#   alaya.sh fetch          only download the latest images
 #
 # Options (environment):
 #   ALAYA_ARCH=aarch64      boot the ARM64 image instead of the PC one
@@ -16,6 +20,7 @@
 #   ALAYA_ACCEL=auto        kvm, tcg or auto (default: kvm if /dev/kvm is usable)
 #   ALAYA_TIMEOUT=600       seconds before "test" gives up (default 600)
 #   ALAYA_IMAGE_URL=...     download from somewhere else
+#   ALAYA_PLUG_IMAGE=...    use this pull-the-plug image (no download)
 #   ALAYA_DIR=...           where images are kept (default ~/alaya)
 
 set -euo pipefail
@@ -28,8 +33,11 @@ case "$ARCH" in
     *) printf 'alaya.sh: ALAYA_ARCH must be x86_64 or aarch64\n' >&2; exit 1 ;;
 esac
 IMAGE_NAME="alaya-$ARCH.iso"
+PLUG_NAME="alaya-$ARCH-plug.iso"
 QEMU="qemu-system-$ARCH"
-IMAGE_URL="${ALAYA_IMAGE_URL:-$REPO_URL/releases/download/nightly/$IMAGE_NAME}"
+RELEASE_URL="$REPO_URL/releases/download/nightly"
+IMAGE_URL="${ALAYA_IMAGE_URL:-$RELEASE_URL/$IMAGE_NAME}"
+PLUG_URL="${ALAYA_PLUG_URL:-$RELEASE_URL/$PLUG_NAME}"
 DIR="${ALAYA_DIR:-$HOME/alaya}"
 CPUS="${ALAYA_CPUS:-1}"
 ACCEL="${ALAYA_ACCEL:-auto}"
@@ -66,12 +74,14 @@ need_tools() {
     fi
 }
 
+# fetch [name url]: download one image (default: the normal boot image).
 fetch() {
+    local name="${1:-$IMAGE_NAME}" url="${2:-$IMAGE_URL}"
     mkdir -p "$DIR"
-    local image="$DIR/$IMAGE_NAME"
-    say "downloading $IMAGE_URL"
-    curl -fL --retry 3 -o "$image.part" "$IMAGE_URL" || die "download failed"
-    if curl -fsL -o "$image.sha256" "$IMAGE_URL.sha256" 2>/dev/null; then
+    local image="$DIR/$name"
+    say "downloading $url"
+    curl -fL --retry 3 -o "$image.part" "$url" || die "download failed"
+    if curl -fsL -o "$image.sha256" "$url.sha256" 2>/dev/null; then
         local want have
         want=$(cut -d' ' -f1 <"$image.sha256")
         have=$(sha256sum "$image.part" | cut -d' ' -f1)
@@ -204,6 +214,99 @@ test_boot() {
     esac
 }
 
+# Pull the plug (milestone 5). A plug image opens the store the last boot
+# left on the virtual disk and prints "soak: found C" (the counter it found
+# in two files it keeps equal), then keeps changing both files and saving:
+# "soak: saving C" before each save, "soak: promised C" once that save is
+# safe. We switch QEMU off at a random moment and boot again. Every boot
+# must find at least what was promised and nothing that was never saved.
+plug_test() {
+    local image="$1" boots="$2" log boot
+    case "$boots" in '' | *[!0-9]* | 0) die "plug needs a number of boots, like: alaya.sh plug 3" ;; esac
+    local promised='' saving=''
+    say "pulling the plug $boots times on $CPUS core(s) with $(accel_name)"
+    say "(each boot first runs all the boot checks again, so this takes a while)"
+    for ((boot = 1; boot <= boots; boot++)); do
+        log=$(mktemp "${TMPDIR:-/tmp}/alaya-plug.XXXXXX")
+        mapfile -t args < <(qemu_args "$image")
+        "$QEMU" "${args[@]}" -serial "file:$log" </dev/null &
+        local pid=$! start=$SECONDS saves=$((1 + RANDOM % 12)) result=timeout found=''
+        while [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
+            if grep -qE "$PANIC_MARKER|FAILED" "$log"; then result=panic; break; fi
+            if [ -z "$found" ]; then
+                found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\) (.*/\1/p' | head -n1 || true)
+            fi
+            if [ -n "$found" ] && [ "$(grep -c 'soak: saving ' "$log")" -ge "$saves" ]; then
+                # Inside a save or between two: a random 0-0.4 s later.
+                sleep "0.$((RANDOM % 4))$((RANDOM % 10))"
+                result=pulled
+                break
+            fi
+            kill -0 "$pid" 2>/dev/null || { result=exited; break; }
+            sleep 0.2
+        done
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        [ -n "$found" ] && tr -d '\r' <"$log" | grep -m1 'soak: found' | sed 's/^/  | /'
+        case "$result" in
+            pulled) ;;
+            panic) tr -d '\r' <"$log" | tail -n 20 | sed 's/^/  | /'; rm -f "$log"
+                   die "FAIL on boot $boot: Alaya reported a problem (see above)" ;;
+            exited) tr -d '\r' <"$log" | tail -n 20 | sed 's/^/  | /'; rm -f "$log"
+                    die "FAIL on boot $boot: QEMU stopped on its own" ;;
+            *) tr -d '\r' <"$log" | tail -n 20 | sed 's/^/  | /'; rm -f "$log"
+               die "FAIL on boot $boot: no progress within ${TIMEOUT}s" ;;
+        esac
+        if [ -n "$promised" ] && [ "$found" -lt "$promised" ]; then
+            rm -f "$log"; die "FAIL on boot $boot: found $found, but save $promised was promised (a saved change was lost)"
+        fi
+        if [ -n "$saving" ] && [ "$found" -gt "$saving" ]; then
+            rm -f "$log"; die "FAIL on boot $boot: found $found, but only $saving was ever saved"
+        fi
+        if [ -n "$promised" ]; then
+            say "boot $boot: found save $found (promised $promised): nothing lost, good"
+        else
+            say "boot $boot: started with save $found"
+        fi
+        # What the boot printed before it was switched off. Only whole
+        # lines count: a kill while printing "soak: saving 400" can leave
+        # "soak: saving 40" as the last, unfinished line.
+        local p s
+        if [ -n "$(tail -c1 "$log")" ]; then
+            sed -i '$d' "$log"
+        fi
+        p=$(tr -d '\r' <"$log" | sed -n 's/.*soak: promised \([0-9]*\).*/\1/p' | tail -n1)
+        s=$(tr -d '\r' <"$log" | sed -n 's/.*soak: saving \([0-9]*\).*/\1/p' | tail -n1)
+        promised="${p:-$found}"
+        saving="${s:-$found}"
+        rm -f "$log"
+        say "boot $boot: plug pulled after save $promised was promised (save $saving was under way)"
+    done
+    # One more boot to check what the last pull left behind.
+    say "one last boot to check what the last pull left"
+    log=$(mktemp "${TMPDIR:-/tmp}/alaya-plug.XXXXXX")
+    mapfile -t args < <(qemu_args "$image")
+    "$QEMU" "${args[@]}" -serial "file:$log" </dev/null &
+    local pid=$! start=$SECONDS found=''
+    while [ $((SECONDS - start)) -lt "$TIMEOUT" ] && [ -z "$found" ]; do
+        if grep -qE "$PANIC_MARKER|FAILED" "$log"; then break; fi
+        kill -0 "$pid" 2>/dev/null || break
+        found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\) (.*/\1/p' | head -n1 || true)
+        sleep 0.2
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    if [ -z "$found" ]; then
+        tr -d '\r' <"$log" | tail -n 20 | sed 's/^/  | /'; rm -f "$log"
+        die "FAIL on the last boot: the saved files could not be opened"
+    fi
+    tr -d '\r' <"$log" | grep -m1 'soak: found' | sed 's/^/  | /'
+    rm -f "$log"
+    [ "$found" -ge "$promised" ] || die "FAIL: found $found, but save $promised was promised (a saved change was lost)"
+    [ "$found" -le "$saving" ] || die "FAIL: found $found, but only $saving was ever saved"
+    say "PASS: pulled the plug $boots times; nothing promised was lost"
+}
+
 image_arg() {
     if [ -n "${1:-}" ]; then
         [ -f "$1" ] || die "no such image: $1"
@@ -222,7 +325,17 @@ resolve_accel
 case "$cmd" in
     run) run "$(image_arg "${1:-}")" ;;
     test) test_boot "$(image_arg "${1:-}")" ;;
-    fetch) fetch >/dev/null ;;
-    -h | --help | help) sed -n '4,19p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) die "unknown command $cmd (use run, test or fetch)" ;;
+    plug)
+        if [ -n "${ALAYA_PLUG_IMAGE:-}" ]; then
+            plug_image="$ALAYA_PLUG_IMAGE"
+            [ -f "$plug_image" ] || die "no such image: $plug_image"
+        elif [ -f "$DIR/$PLUG_NAME" ]; then
+            plug_image="$DIR/$PLUG_NAME"
+        else
+            plug_image=$(fetch "$PLUG_NAME" "$PLUG_URL")
+        fi
+        plug_test "$plug_image" "${1:-3}" ;;
+    fetch) fetch >/dev/null; fetch "$PLUG_NAME" "$PLUG_URL" >/dev/null ;;
+    -h | --help | help) sed -n '4,24p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "unknown command $cmd (use run, test, plug or fetch)" ;;
 esac

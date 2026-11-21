@@ -54,12 +54,34 @@ device memory guard as on a PC. Everything else works the same; the image
 is `alaya-aarch64.iso` from the same nightly release. Plain emulation of
 ARM is slower than of a PC, so give `test` a few minutes.
 
+## Pull the plug (safe storage)
+
+Milestone 5 promises that a saved change survives the power going off at
+any moment. `plug` checks that on your phone: it boots a special image
+that keeps saving two files, switches the virtual machine off at a random
+moment (like pulling the plug), boots again from the same virtual disk,
+and checks that every change Alaya said was safe is still there and that
+nothing appeared that was never saved:
+
+```sh
+bash alaya.sh plug        # 3 pulls; "bash alaya.sh plug 10" for 10
+```
+
+Each boot first runs all the boot checks again, so give it a few minutes
+per pull. It ends with `PASS: pulled the plug 3 times; nothing promised
+was lost`. QEMU may print lines like `vtd_iommu_translate: detected
+translation failure`: those are the device memory guard blocking a test
+device on purpose, not a problem. The image is `alaya-x86_64-plug.iso`
+(or `alaya-aarch64-plug.iso` with `ALAYA_ARCH=aarch64`) from the same
+nightly release.
+
 Other commands:
 
 | Command | What it does |
 | --- | --- |
 | `bash alaya.sh test` | Boot, and report PASS or FAIL from the kernel's output |
-| `bash alaya.sh fetch` | Download the newest image again |
+| `bash alaya.sh plug [n]` | Pull the plug n times (default 3) and check no saved change was lost |
+| `bash alaya.sh fetch` | Download the newest images again (do this after each new milestone) |
 | `bash alaya.sh run path/to/image.iso` | Boot a specific image, for example one from a pull request's CI run |
 
 Settings, given in front of the command:
@@ -69,8 +91,9 @@ Settings, given in front of the command:
 | `ALAYA_ARCH` | x86_64 | `aarch64` boots the ARM64 image (in QEMU) instead of the PC one |
 | `ALAYA_CPUS` | 1 | Number of virtual cores, for example `ALAYA_CPUS=4 bash alaya.sh run`; `all` uses as many as the device has |
 | `ALAYA_ACCEL` | auto | `kvm`, `tcg` (plain emulation) or `auto` (KVM if `/dev/kvm` is usable, which it is not on a phone) |
-| `ALAYA_TIMEOUT` | 300 | Seconds before `test` gives up |
+| `ALAYA_TIMEOUT` | 600 | Seconds before `test` gives up |
 | `ALAYA_IMAGE_URL` | nightly release | Download the image from somewhere else |
+| `ALAYA_PLUG_IMAGE` | (downloaded) | Use this pull-the-plug image instead of downloading one |
 | `ALAYA_DIR` | `~/alaya` | Where the image is kept |
 
 ## Images from a pull request
