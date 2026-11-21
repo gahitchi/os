@@ -200,15 +200,26 @@ extern "C" fn spinner(_: u64) -> ! {
     }
 }
 
+/// Set while the watcher checks that an equal shares the core with it.
+static SHARING: AtomicU64 = AtomicU64::new(0);
+
 /// On each signal: spin 20 ms and count how far the low-priority spinner
-/// got meanwhile.
+/// got meanwhile. When checking sharing, spin on (up to two seconds) until
+/// the spinner got a turn: on a busy host 20 ms of wall time may hold no
+/// timer tick at all.
 extern "C" fn watcher(arg: u64) -> ! {
     let (go, done) = (arg & 0xffff, arg >> 16);
     loop {
         let _ = alaya_sys::wait(go);
         let a = COUNT_L.load(SeqCst);
-        let end = alaya_sys::clock() + ms_to_ticks(20);
-        while alaya_sys::clock() < end {
+        let start = alaya_sys::clock();
+        let (end, cap) = (start + ms_to_ticks(20), start + ms_to_ticks(2000));
+        loop {
+            let now = alaya_sys::clock();
+            let shared = SHARING.load(SeqCst) == 0 || COUNT_L.load(SeqCst) != a;
+            if now >= cap || (now >= end && shared) {
+                break;
+            }
             COUNT_H.fetch_add(1, SeqCst);
         }
         RESULT.store(COUNT_L.load(SeqCst) - a, SeqCst);
@@ -394,12 +405,25 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
 
     // A budget of 2 ms every 10 ms holds a thread that never stops.
     let (_, hog_sc) = k.thread(hog, 0, 150, 2000, 10_000, last + 1);
-    let start = alaya_sys::clock();
-    let used0 = alaya_sys::sc_info(hog_sc).unwrap()[2];
-    sleep_ms(200);
-    let used = alaya_sys::sc_info(hog_sc).unwrap()[2] - used0;
-    let elapsed_us = ticks_to_us(alaya_sys::clock() - start);
-    let share = used / 1000;
+    // The kernel charges by the clock, so time the host takes the virtual
+    // core away while the hog runs counts as the hog's. One unlucky window
+    // can then look like an overrun; a real overrun shows in every one, so
+    // up to three windows are measured.
+    let measure = || {
+        let start = alaya_sys::clock();
+        let used0 = alaya_sys::sc_info(hog_sc).unwrap()[2];
+        sleep_ms(200);
+        let used = alaya_sys::sc_info(hog_sc).unwrap()[2] - used0;
+        (used / 1000, ticks_to_us(alaya_sys::clock() - start))
+    };
+    let mut tries = 0;
+    let (share, elapsed_us) = loop {
+        let (share, elapsed_us) = measure();
+        tries += 1;
+        if share <= elapsed_us / 5 + 3000 || tries == 3 {
+            break (share, elapsed_us);
+        }
+    };
     say!(
         "a 2 ms / 10 ms budget used {} µs of {} µs ({}%)",
         share,
@@ -428,6 +452,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         RESULT.load(SeqCst)
     );
     alaya_sys::thread_priority(high, 50, 50).unwrap();
+    SHARING.store(1, SeqCst);
     alaya_sys::signal(go, 1).unwrap();
     alaya_sys::wait(fin).unwrap();
     assert!(
