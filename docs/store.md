@@ -180,10 +180,13 @@ a disk that keeps writes in a cache until a flush, power cuts at any
 moment (any part of the cache reaches the disk, a front page may be torn),
 a bad spot on the newest front page, and the reopening. TLC checks that the
 store always opens, and never loses a promised commit (one step back only
-when the newest front page itself was damaged). It also checks that the
-model has teeth: reusing given-up blocks after one commit instead of two
-(`EarlyReuse.cfg`), or writing the front page without flushing the blocks
-first (`NoFlush.cfg`), each break it.
+when the newest front page itself was damaged), with states of one block
+over four commits (`Small.cfg`) and of two blocks over three
+(`TwoBlocks.cfg`). It also checks that the model has teeth: reusing
+given-up blocks after one commit instead of two (`EarlyReuse.cfg`), or
+writing the front page without flushing the blocks
+first and then losing the older page to a bad spot (`NoFlush.cfg`), each
+break it.
 
 **Inside Alaya** (`cargo xtask test`), checks 44 to 53:
 

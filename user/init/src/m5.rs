@@ -209,24 +209,23 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         next: first_free,
         stacks: 128,
     };
-    // 32 MiB for the store server and the checks, from a block the
-    // earlier checks left alone if there is one.
-    let h = k.slot();
-    let mut got = false;
-    for b in info.untyped[..info.untyped_count as usize].iter() {
-        if b.handle != big
-            && b.size_bits >= 25
-            && alaya_sys::retype(b.handle, Kind::Untyped, 25, 1, k.at(h)).is_ok()
-        {
-            got = true;
-            break;
+    // 16 MiB for the store server and 8 MiB for the checks, each from a
+    // block the earlier checks left alone if there is one (UEFI firmware
+    // leaves less memory in one piece than a PC BIOS does).
+    let carve = |k: &mut Kit, bits: u8, what: &str| {
+        let h = k.slot();
+        let free = info.untyped[..info.untyped_count as usize].iter().any(|b| {
+            b.handle != big
+                && b.size_bits >= u64::from(bits)
+                && alaya_sys::retype(b.handle, Kind::Untyped, bits, 1, k.at(h)).is_ok()
+        });
+        if !free {
+            alaya_sys::retype(big, Kind::Untyped, bits, 1, k.at(h)).expect(what);
         }
-    }
-    if !got {
-        alaya_sys::retype(big, Kind::Untyped, 25, 1, k.at(h)).expect("32 MiB for the store");
-    }
-    k.ut = h;
-    let store_ut = k.make(Kind::Untyped, 24);
+        h
+    };
+    let store_ut = carve(&mut k, 24, "16 MiB for the store");
+    k.ut = carve(&mut k, 23, "8 MiB for the store checks");
     STORE_UT.store(store_ut, SeqCst);
     let ep = k.make(Kind::Endpoint, 0);
     let dying = k.make(Kind::Notification, 0);

@@ -81,6 +81,7 @@ must_fail keeper ForgetJobs.cfg "Temporal properties were violated"
 # commit instead of two, or writing the front page before the blocks are
 # flushed, breaks that.
 tlc commit Small.cfg
+tlc commit TwoBlocks.cfg
 must_fail commit EarlyReuse.cfg "Invariant AlwaysOpens is violated"
 must_fail commit NoFlush.cfg "Invariant AlwaysOpens is violated"
 

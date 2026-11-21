@@ -136,7 +136,7 @@ fn put_words(buf: &mut [u8], at: usize, w: &[u64]) {
 fn main(info: &'static StartInfo) -> ! {
     let g = start::FIRST_GIVEN;
     let mut mem = Mem::new(info);
-    alaya_sys::heap::init(&mut mem, 6).expect("heap");
+    alaya_sys::heap::init(&mut mem, 4).expect("heap");
     let ep = g + fs::G_ENDPOINT;
     let keeper = g + fs::G_KEEPER;
     let me = mem.make(Kind::Notification, 0).expect("notification");
@@ -175,8 +175,8 @@ fn main(info: &'static StartInfo) -> ! {
             Err(e) => panic!("cannot open the store: {e:?}"),
         },
     };
-    // About 1 MiB of tree nodes kept in memory.
-    store.dev.cache_nodes = 256;
+    // About half a MiB of tree nodes kept in memory.
+    store.dev.cache_nodes = 128;
     say!(
         "{} the store ({} blocks of 4 KiB) at commit {}",
         if format { "formatted" } else { "opened" },
