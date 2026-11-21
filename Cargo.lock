@@ -34,11 +34,16 @@ dependencies = [
 name = "alaya-programs"
 version = "0.0.1"
 dependencies = [
+ "alaya-store",
  "alaya-sys",
 ]
 
 [[package]]
 name = "alaya-sched"
+version = "0.0.1"
+
+[[package]]
+name = "alaya-store"
 version = "0.0.1"
 
 [[package]]

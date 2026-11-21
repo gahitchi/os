@@ -1,0 +1,15 @@
+[package]
+name = "alaya-store"
+description = "The Alaya store: a copy-on-write, checksummed, encrypted store with history, attribution and storage classes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

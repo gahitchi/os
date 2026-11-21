@@ -13,7 +13,9 @@
 
 use alaya_programs::driver as d;
 use alaya_programs::keeper as k;
-use alaya_programs::{JobPage, OP_READ, OP_WRITE, SECTOR, load, registry, run, status, store};
+use alaya_programs::{
+    JobPage, OP_FLUSH, OP_READ, OP_WRITE, SECTOR, load, registry, run, status, store,
+};
 use alaya_sys::abi::{FAULT_LABEL, StartInfo, call, iomap, map, start};
 use alaya_sys::program::{self, Parent, Program, Slots, Spec};
 use alaya_sys::rt::{self, Mem};
@@ -447,23 +449,28 @@ impl Keeper {
                     sector: w[0],
                     seed: w[1],
                 };
-                if self.off {
-                    let _ = alaya_sys::reply(r, &Msg::new(0, &[status::DEVICE_OFF, 0]));
-                    false
-                } else if self.sectors != 0 && w[0] >= self.sectors {
-                    let _ = alaya_sys::reply(r, &Msg::new(0, &[status::BAD_REQUEST, 0]));
-                    false
-                } else if let Some(i) = self.slot.iter().position(|s| s.is_none()) {
-                    self.post(i, req);
-                    true
-                } else if self.queued < QUEUE {
-                    self.queue[self.queued] = req;
-                    self.queued += 1;
-                    true
-                } else {
-                    let _ = alaya_sys::reply(r, &Msg::new(0, &[status::BUSY, 0]));
-                    false
-                }
+                // Sector labels reach only the test area, never the store.
+                let bad = w[0] >= k::STORE_FIRST_BLOCK * 8;
+                self.accept(req, bad)
+            }
+            (k::STORE, k::BREAD | k::BWRITE | k::FLUSH) => {
+                let req = Request {
+                    reply: r,
+                    label: m.label(),
+                    sector: w[0].saturating_mul(8),
+                    seed: w[1],
+                };
+                let bad = m.label() != k::FLUSH
+                    && (w[0] < k::STORE_FIRST_BLOCK
+                        || (self.sectors != 0 && w[0] >= self.sectors / 8)
+                        || w[1] >= k::BUF_SLOTS);
+                self.accept(req, bad)
+            }
+            (k::STORE, k::BLOCKS) => {
+                let blocks = load(&self.jobs.sectors) / 8;
+                let n = blocks.saturating_sub(k::STORE_FIRST_BLOCK);
+                let _ = alaya_sys::reply(r, &Msg::new(0, &[k::STORE_FIRST_BLOCK, n]));
+                false
             }
             (k::CLIENT, k::SIZE) => {
                 let _ = alaya_sys::reply(r, &Msg::new(0, &[load(&self.jobs.sectors)]));
@@ -567,8 +574,31 @@ impl Keeper {
     // -----------------------------------------------------------------
     // Jobs
 
+    /// Take a request for a job: post it, queue it, or answer it at once.
+    /// Returns true if the reply object now holds the waiting caller.
+    fn accept(&mut self, req: Request, bad: bool) -> bool {
+        let r = req.reply;
+        if self.off {
+            let _ = alaya_sys::reply(r, &Msg::new(0, &[status::DEVICE_OFF, 0]));
+            false
+        } else if bad || (self.sectors != 0 && req.sector >= self.sectors) {
+            let _ = alaya_sys::reply(r, &Msg::new(0, &[status::BAD_REQUEST, 0]));
+            false
+        } else if let Some(i) = self.slot.iter().position(|s| s.is_none()) {
+            self.post(i, req);
+            true
+        } else if self.queued < QUEUE {
+            self.queue[self.queued] = req;
+            self.queued += 1;
+            true
+        } else {
+            let _ = alaya_sys::reply(r, &Msg::new(0, &[status::BUSY, 0]));
+            false
+        }
+    }
+
     fn post(&mut self, i: usize, req: Request) {
-        let buf = self.data + i as u64 * SECTOR as u64;
+        let buf = self.data + i as u64 * 4096;
         if req.label == k::WRITE {
             for w in 0..(SECTOR / 8) as u64 {
                 let v = alaya_programs::pattern(req.seed, req.sector, w);
@@ -576,15 +606,27 @@ impl Keeper {
                 unsafe { core::ptr::write_volatile((buf + w * 8) as *mut u64, v) };
             }
         }
+        if req.label == k::BWRITE {
+            // SAFETY: the store's buffer pages and the data pages are both
+            // mapped here; the slot was checked.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (k::CLIENT_BUF + req.seed * 4096) as *const u8,
+                    buf as *mut u8,
+                    4096,
+                )
+            };
+        }
         let j = &self.jobs.jobs[i];
-        store(
-            &j.op,
-            if req.label == k::WRITE {
-                OP_WRITE
-            } else {
-                OP_READ
-            },
-        );
+        let (op, count) = match req.label {
+            k::WRITE => (OP_WRITE, 1),
+            k::BWRITE => (OP_WRITE, 8),
+            k::BREAD => (OP_READ, 8),
+            k::FLUSH => (OP_FLUSH, 0),
+            _ => (OP_READ, 1),
+        };
+        store(&j.op, op);
+        store(&j.count, count);
         store(&j.sector, req.sector);
         self.seq += 1;
         store(&j.posted, self.seq);
@@ -601,8 +643,18 @@ impl Keeper {
                 continue;
             }
             let st = load(&j.status);
+            if req.label == k::BREAD && st == status::OK {
+                // SAFETY: as in `post`.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        (self.data + i as u64 * 4096) as *const u8,
+                        (k::CLIENT_BUF + req.seed * 4096) as *mut u8,
+                        4096,
+                    )
+                };
+            }
             let sum = if req.label == k::READ {
-                let buf = self.data + i as u64 * SECTOR as u64;
+                let buf = self.data + i as u64 * 4096;
                 alaya_programs::checksum((0..(SECTOR / 8) as u64).map(|w| {
                     // SAFETY: the data pages are mapped here.
                     unsafe { core::ptr::read_volatile((buf + w * 8) as *const u64) }

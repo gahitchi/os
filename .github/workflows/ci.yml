@@ -46,13 +46,18 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
-          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --all-targets -- -D warnings
+          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-store --all-targets -- -D warnings
           RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs \
             --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
 
       - name: Host tests (capability code, time budgets)
         run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched
+
+      # The store (milestone 5): crypto test vectors, a power cut at every
+      # disk write and flush, damaged blocks, and what recording reads costs.
+      - name: Host tests (the store)
+        run: cargo test --release --package alaya-store
 
       - name: Build image
         run: cargo xtask image
@@ -99,9 +104,16 @@ jobs:
         run: cargo xtask test --accel kvm --cpus 8 --fuzz 120
 
       # Milestone 4: the driver is killed at random for 10 minutes while the
-      # test app uses the disk; no wrong answer may reach it.
+      # test app uses the disk; no wrong answer may reach it. Milestone 5:
+      # the store is stopped dead at 200 exact points inside saves.
       - name: Driver chaos, KVM, 8 cores, 10 minutes
         run: cargo xtask test --accel kvm --cpus 8 --long
+
+      # Milestone 5 (the long run above also stops the store dead 200 times
+      # inside saves): real "pull the plug" runs, QEMU killed at random
+      # moments and booted again from the same disk.
+      - name: Pull the plug, KVM, 2 cores, 30 boots
+        run: cargo xtask test --accel kvm --cpus 2 --plug 30
 
       - name: Boot with the Termux script
         run: |
@@ -175,6 +187,9 @@ jobs:
       - name: Kernel fuzzer, 4 cores, 60 s
         run: cargo xtask test --arch aarch64 --accel tcg --cpus 4 --fuzz 60 --timeout 900
 
+      - name: Pull the plug, 2 cores, 10 boots
+        run: cargo xtask test --arch aarch64 --cpus 2 --plug 10 --timeout 900
+
       - name: Boot with the Termux script
         run: ALAYA_ARCH=aarch64 ALAYA_ACCEL=tcg ALAYA_CPUS=2 ALAYA_TIMEOUT=900 bash tools/termux/alaya.sh test build/alaya-aarch64.iso
 
@@ -190,8 +205,8 @@ jobs:
           if-no-files-found: error
 
   # The TLA+ models (formal/): capabilities and revoke, the scheduler with
-  # time budgets and lent time, and the driver keeper's crash-and-resend
-  # rule. Each has must-fail checks too.
+  # time budgets and lent time, the driver keeper's crash-and-resend rule,
+  # and the store's commits. Each has must-fail checks too.
   tla:
     name: TLA+ models
     runs-on: ubuntu-24.04
