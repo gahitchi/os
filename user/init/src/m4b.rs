@@ -788,6 +788,19 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             );
         }
     }
+    // The chaos picks its moments by the clock, and a restart takes a
+    // while: on a slow host (plain emulation on a phone) 8 s can hold only
+    // two restarts, more so when the dice choose freezes, which wait for
+    // the watchdog. Keep the chaos going until there were at least three
+    // restarts, for up to a minute more; a keeper that does not restart
+    // the driver at all still fails.
+    let mut extra_ms = 0;
+    while stats(ctl)[0] - s0[0] < 3 && extra_ms < 60_000 {
+        sleep_ms(500);
+        extra_ms += 500;
+        no_wrong_answers(t);
+    }
+    let chaos_ms = chaos_ms + extra_ms;
     control(ctl, k::CHAOS, &[0, 1, 2, 0]);
     // One more freeze, so the watchdog is certainly tested.
     let hangs = control(ctl, k::MORE, &[])[0];
