@@ -18,6 +18,9 @@ use crate::obj::FPU_BYTES;
 pub(crate) static XSAVE: AtomicBool = AtomicBool::new(false);
 /// The state components saved (XCR0).
 pub(crate) static MASK: AtomicU64 = AtomicU64::new(0);
+/// The CPU has XSAVEOPT: it skips writing parts that did not change since
+/// they were loaded, or that are in their start state.
+static XSAVEOPT: AtomicBool = AtomicBool::new(false);
 pub(crate) static SIZE: AtomicU64 = AtomicU64::new(512);
 
 const CR0_MP: u64 = 1 << 1;
@@ -60,13 +63,18 @@ pub fn init_this_core() {
         MASK.store(mask, Ordering::Relaxed);
         SIZE.store(size, Ordering::Relaxed);
         XSAVE.store(true, Ordering::Relaxed);
+        XSAVEOPT.store(cpuid(0xd, 1).eax & 1 != 0, Ordering::Relaxed);
     }
 }
 
 pub fn describe() -> (&'static str, u64, u64) {
     if XSAVE.load(Ordering::Relaxed) {
         (
-            "XSAVE",
+            if XSAVEOPT.load(Ordering::Relaxed) {
+                "XSAVEOPT"
+            } else {
+                "XSAVE"
+            },
             MASK.load(Ordering::Relaxed),
             SIZE.load(Ordering::Relaxed),
         )
@@ -106,7 +114,11 @@ pub fn init_area(area: u64) {
 pub fn save(area: u64) {
     // SAFETY: a 64-byte-aligned save area of FPU_BYTES.
     unsafe {
-        if XSAVE.load(Ordering::Relaxed) {
+        if XSAVEOPT.load(Ordering::Relaxed) {
+            let m = MASK.load(Ordering::Relaxed);
+            core::arch::asm!("xsaveopt64 [{}]", in(reg) area, in("eax") m as u32, in("edx") (m >> 32) as u32,
+                             options(nostack, preserves_flags));
+        } else if XSAVE.load(Ordering::Relaxed) {
             let m = MASK.load(Ordering::Relaxed);
             core::arch::asm!("xsave64 [{}]", in(reg) area, in("eax") m as u32, in("edx") (m >> 32) as u32,
                              options(nostack, preserves_flags));

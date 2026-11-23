@@ -76,6 +76,10 @@ pub mod debug {
     /// Big kernel lock use, summed over all cores since boot: times taken,
     /// times a core had to wait, clock ticks spent waiting, and held.
     pub const LOCK_STATS: u64 = 4;
+    /// What switches cost, summed over all cores since boot: timer writes,
+    /// branch-predictor wipes (IBPB), address-space loads, wake-ups sent
+    /// to other cores.
+    pub const SWITCH_STATS: u64 = 5;
     pub const MAX_PRINT: usize = 256;
 }
 

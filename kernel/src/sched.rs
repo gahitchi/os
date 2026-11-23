@@ -268,6 +268,7 @@ pub fn dequeue(k: &mut Sys, t: u64) {
 /// Ask `core` to look at its queues again.
 pub fn kick(core: usize) {
     if core != percpu::index() as usize {
+        percpu::this().switch_stats[3].fetch_add(1, Ordering::Relaxed);
         arch::wake_core(percpu::get(core as u32).hw_id.load(Ordering::Relaxed));
     }
 }

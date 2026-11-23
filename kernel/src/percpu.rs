@@ -57,6 +57,9 @@ pub struct PerCpu {
     /// FS_BASE, and GS_BASE parked in KERNEL_GS_BASE), so a switch between
     /// threads with the same ones writes nothing.
     pub user_tls: [AtomicU64; 2],
+    /// What switches cost (`debug::SWITCH_STATS`): timer writes, IBPBs,
+    /// address-space loads, wake-ups sent to other cores.
+    pub switch_stats: [AtomicU64; 4],
 }
 
 impl PerCpu {
@@ -80,6 +83,12 @@ impl PerCpu {
             lock_since: AtomicU64::new(0),
             timer_armed: AtomicU64::new(0),
             user_tls: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
+            switch_stats: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
         }
     }
 }

@@ -208,6 +208,7 @@ pub fn on_interrupt_entry() {
 /// so no other program can steer its guesses or learn from them.
 pub fn on_space_switch(guarded: bool) {
     if guarded && IBPB.load(Ordering::Relaxed) {
+        crate::percpu::this().switch_stats[1].fetch_add(1, Ordering::Relaxed);
         // SAFETY: IBPB only drops branch predictions.
         let _ = wrmsr_safe(MSR_PRED_CMD, PRED_CMD_IBPB);
     }

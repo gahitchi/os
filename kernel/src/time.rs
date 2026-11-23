@@ -64,6 +64,7 @@ pub fn set_deadline(ticks: u64) {
         return;
     }
     armed.store(ticks, Ordering::Relaxed);
+    percpu::this().switch_stats[0].fetch_add(1, Ordering::Relaxed);
     timer::set_deadline(ticks);
 }
 

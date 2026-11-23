@@ -392,6 +392,12 @@ pub fn all_counters() -> [u64; 4] {
 }
 
 /// Big kernel lock use since boot: taken, waited, ticks waiting, ticks held.
+/// What switches cost: timer writes, IBPBs, address-space loads, wake-ups
+/// sent to other cores.
+pub fn switch_stats() -> [u64; 4] {
+    syscall(abi::call::DEBUG, abi::debug::SWITCH_STATS, 0, [0; 6]).1
+}
+
 pub fn lock_stats() -> [u64; 4] {
     syscall(abi::call::DEBUG, abi::debug::LOCK_STATS, 0, [0; 6]).1
 }
