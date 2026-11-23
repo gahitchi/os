@@ -112,12 +112,9 @@ pub const NAME_MAX: usize = 40;
 /// The panel in the middle of the screen both screens draw in.
 pub fn panel(screen_w: i32, screen_h: i32) -> Rect {
     let (w, h) = (520, 520);
-    Rect::new(
-        (screen_w - w) / 2,
-        crate::wm::STRIP + (screen_h - crate::wm::STRIP - h) / 2,
-        w,
-        h,
-    )
+    // Never over the strip, even on a small screen.
+    let y = crate::wm::STRIP + ((screen_h - crate::wm::STRIP - h) / 2).max(8);
+    Rect::new((screen_w - w) / 2, y, w, h)
 }
 
 /// What first setup hands the desktop.

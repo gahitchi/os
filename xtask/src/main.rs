@@ -289,7 +289,7 @@ fn main() -> ExitCode {
         "image" => {
             build_image(opts.arch, opts.release, None).map(|p| println!("image: {}", p.display()))
         }
-        "run" => image_for(&opts).and_then(|image| run(&image, &opts)),
+        "run" => run_image(&opts).and_then(|image| run(&image, &opts)),
         "test" if opts.plug.is_some() => image_for(&opts).and_then(|image| plug(&image, &opts)),
         "test" => image_for(&opts).and_then(|image| test(&image, &opts)),
         "-h" | "--help" | "help" => {
@@ -513,6 +513,7 @@ fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathB
 
     let image = match cmdline {
         None => build.join(format!("alaya-{}.iso", arch.name())),
+        Some("desk") => build.join(format!("alaya-{}-desk.iso", arch.name())),
         Some(_) => build.join(format!("alaya-{}-test.iso", arch.name())),
     };
     sh(Command::new("xorriso")
@@ -541,6 +542,15 @@ fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathB
         .arg("--quiet")
         .arg(&image))?;
     Ok(image)
+}
+
+/// `run` boots an image that leaves the desktop to the person at the
+/// keyboard (the `desk` word), unless `--image` names another.
+fn run_image(opts: &Options) -> Result<PathBuf, String> {
+    if opts.image.is_some() || opts.fault.is_some() || opts.fuzz.is_some() || opts.long {
+        return image_for(opts);
+    }
+    build_image(opts.arch, opts.release, Some("desk"))
 }
 
 fn image_for(opts: &Options) -> Result<PathBuf, String> {
@@ -756,6 +766,10 @@ fn run(image: &Path, opts: &Options) -> Result<(), String> {
         } else {
             "emulation (TCG)"
         }
+    );
+    eprintln!(
+        "xtask: the checks run first (about a minute); then the desktop is yours: \
+         set up a person and use the apps from the dock"
     );
     // `mon:stdio` lets Ctrl+A x quit QEMU from the terminal.
     sh(&mut qemu(image, opts, "mon:stdio")?)

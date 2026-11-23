@@ -174,10 +174,11 @@ moves to the desktop itself.
 
 ## Seeing it
 
-`cargo xtask run` opens QEMU's own window. Keep your hands off the keyboard
-and mouse until the log says `init: looking after the drivers and the apps`:
-until then the checks type and drag by themselves (first setup as "Robin",
-PIN 2468). Then the desktop is yours: open apps from the dock, type, drag,
-snap (Super+arrows), tile with Super+T (`--display gtk`, `--display sdl` or `--vnc` to
+`cargo xtask run` opens QEMU's own window. It boots an image with the word
+`desk`: the checks run first (about a minute), but the desktop's own checks
+do not type for themselves. When the log says `init: desktop: it is yours
+now`, first setup is waiting for you: your name, a PIN twice, your picture
+and the look. The text editor opens after you log in; open the other apps
+from the dock, type, drag, snap (Super+arrows), tile with Super+T (`--display gtk`, `--display sdl` or `--vnc` to
 choose; `--vnc` serves the screen on port 5900, for a VNC viewer app on a
 phone).

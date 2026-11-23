@@ -1063,6 +1063,10 @@ impl Desk {
                 Some(x) => ([dk::OK, x.owner, 0, 0, 0, 0], 0),
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
             },
+            dk::WINDOW_OF => match self.wins.iter().rev().find(|x| x.owner == w[0]) {
+                Some(x) => ([dk::OK, u64::from(x.id), 0, 0, 0, 0], 0),
+                None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
+            },
             dk::RAISE => {
                 let mut out = Vec::new();
                 self.wm.raise(w[0] as u32, &mut out);

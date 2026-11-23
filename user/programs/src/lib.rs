@@ -678,6 +678,9 @@ pub mod desktop {
     pub const APP: u64 = 18;
     /// RAISE: window: bring it to the front (the first program only).
     pub const RAISE: u64 = 19;
+    /// WINDOW_OF: app (its role) → status, its newest window (the first
+    /// program only).
+    pub const WINDOW_OF: u64 = 20;
 
     pub mod places {
         pub const DOCK: u64 = 0;

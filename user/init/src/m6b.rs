@@ -225,10 +225,8 @@ impl<'a> Session<'a> {
 
     /// The window of the app with role `r`, if it has one open.
     fn window_of(&self, r: u64) -> Option<u64> {
-        (1..64).find(|&id| {
-            let a = ask(self.ep, dk::APP, &[id]);
-            a[0] == dk::OK && a[1] == r
-        })
+        let a = ask(self.ep, dk::WINDOW_OF, &[r]);
+        (a[0] == dk::OK).then_some(a[1])
     }
 
     /// Start (or start again) the app with role `r` for the person logged
@@ -334,7 +332,7 @@ impl<'a> Session<'a> {
 
     fn wait_window(&self, r: u64) -> u64 {
         let id = core::cell::Cell::new(None);
-        let found = sleep_until(15_000, || {
+        let found = sleep_until(60_000, || {
             id.set(self.window_of(r));
             id.get().is_some()
         });
@@ -354,6 +352,14 @@ impl<'a> Session<'a> {
                 continue;
             };
             if m.info.has(MsgInfo::SIGNAL) {
+                if m.badge & dk::LOGGED_IN_BIT != 0 && self.person == 0 {
+                    self.person = self.session()[2];
+                    say!("person {} logged in; starting the text editor", self.person);
+                    self.start_app(role::EDITOR);
+                }
+                if self.person == 0 {
+                    continue;
+                }
                 for r in 1..=role::COUNT {
                     if m.badge & (1 << r) != 0 {
                         self.start_app(r);
@@ -548,6 +554,12 @@ pub(crate) fn run<'a>(
         "a fresh machine has no earlier login parts"
     );
     pass("the desktop starts and asks for first setup; the login parts are remembered");
+    if info.flags & alaya_sys::abi::boot_flags::DESK != 0 {
+        // `cargo xtask run`: the person at the keyboard sets up and logs
+        // in; the first program starts the editor once they have.
+        say!("desktop: it is yours now: set up a person, then use the dock");
+        return x;
+    }
 
     // ---- First setup: a name, the PIN twice, picture 3, everything on.
     let open = || ask(ep, dk::SESSION, &[])[1] == stage::OPEN;

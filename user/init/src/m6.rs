@@ -457,9 +457,11 @@ pub fn run<'a>(
     let key_down = pack(ev::KEY, 30, 1);
     let key_up = pack(ev::KEY, 30, 0);
     let click = pack(ev::KEY, ev::BTN_LEFT, 1);
-    let got = sleep_until(10_000, || {
-        seen(kp, k0, key_down) && seen(kp, k0, key_up) && seen(pp, p0, click)
-    });
+    let desk = info.flags & alaya_sys::abi::boot_flags::DESK != 0;
+    let got = !desk
+        && sleep_until(10_000, || {
+            seen(kp, k0, key_down) && seen(kp, k0, key_up) && seen(pp, p0, click)
+        });
     if got {
         let mut x = None;
         for n in p0..load(&pp.head) {
@@ -482,7 +484,14 @@ pub fn run<'a>(
             pass("a key press and a mouse click from a person reach Alaya");
         }
     } else {
-        say!("input: nobody pressed a key (no host script); skipped");
+        say!(
+            "input: nobody pressed a key ({}); skipped",
+            if desk {
+                "a person drives the desktop"
+            } else {
+                "no host script"
+            }
+        );
         pass("keyboard and mouse wait for input (not scripted on this run)");
     }
 
