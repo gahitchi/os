@@ -18,6 +18,7 @@ use alaya_programs::files::{self as fs, st};
 use alaya_programs::{keeper as k, status};
 use alaya_store::disk::{Disk, IoError};
 use alaya_store::format::Block;
+use alaya_store::made::Source;
 use alaya_store::{Class, Error, FileId, Options, Store};
 use alaya_sys::abi::{StartInfo, call, start};
 use alaya_sys::rt::{self, Mem};
@@ -323,7 +324,7 @@ impl Server<'_> {
             }
             fs::STAT => {
                 let st = s.stat(p, FileId(w[0]))?;
-                alloc::vec![st.size, st.version, st.is_dir as u64]
+                alloc::vec![st.size, st.version, st.is_dir as u64, st.edits]
             }
             fs::REMOVE => {
                 let name = Self::name(ch, w[1])?;
@@ -416,6 +417,37 @@ impl Server<'_> {
             }
             fs::DIE_AFTER => {
                 s.dev.disk.countdown = Some(w[0]);
+                alloc::vec![]
+            }
+            fs::MADE_FROM => {
+                let n = w[1] as usize;
+                if n > alaya_store::made::MADE_MAX {
+                    return Err(Error::BadRequest);
+                }
+                let buf = xfer(ch);
+                let at = |i: usize| u64::from_le_bytes(buf[8 * i..8 * i + 8].try_into().unwrap());
+                let sources: Vec<Source> = (0..n)
+                    .map(|i| Source {
+                        file: FileId(at(3 * i)),
+                        version: at(3 * i + 1),
+                        edits: at(3 * i + 2),
+                    })
+                    .collect();
+                s.made_from(p, app, FileId(w[0]), &sources)?;
+                alloc::vec![]
+            }
+            fs::MARK => {
+                let m = s.mark(p, FileId(w[0]))?;
+                alloc::vec![
+                    m.kind as u64 | (m.why as u64) << 8,
+                    m.source.map_or(0, |f| f.0),
+                    m.now_version,
+                    m.maker,
+                    m.sources,
+                ]
+            }
+            fs::AS_OF => {
+                s.set_as_of(p, FileId(w[0]), w[1] != 0)?;
                 alloc::vec![]
             }
             fs::TRACK => {

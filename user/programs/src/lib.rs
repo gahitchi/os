@@ -406,7 +406,7 @@ pub mod files {
     pub const WRITE: u64 = 6;
     /// READ: file, offset, length → bytes read (data in the transfer pages).
     pub const READ: u64 = 7;
-    /// STAT: file → size, version, is_dir.
+    /// STAT: file → size, version, is_dir, edits (documents).
     pub const STAT: u64 = 8;
     /// REMOVE: dir, name length.
     pub const REMOVE: u64 = 9;
@@ -444,6 +444,15 @@ pub mod files {
     /// dead (signal the dying notification, then never run again): a
     /// power cut at an exact point, for the tests.
     pub const DIE_AFTER: u64 = 24;
+    /// MADE_FROM: result, count; the sources in the transfer pages as
+    /// (file, version, edits), 24 bytes each (living validity: the app
+    /// says what it made `result` from).
+    pub const MADE_FROM: u64 = 25;
+    /// MARK: file → kind | why << 8, source, its version now, the app that
+    /// made it, how many sources (see `alaya_store::made`).
+    pub const MARK: u64 = 26;
+    /// AS_OF: file, on → the result shows a fixed moment (or not).
+    pub const AS_OF: u64 = 27;
 
     /// Status words.
     pub mod st {

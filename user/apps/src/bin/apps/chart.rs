@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The chart maker (a demo app): a bar chart of the numbers in
 //! `numbers.txt` (one "label number" per line), drawn again when the file
-//! changes, and saved as a picture (`chart.ppm`) when you ask.
+//! changes, and saved as a picture (`chart.ppm`) and a short summary
+//! (`summary.txt`) when you ask.
 //!
-//! The store writes down which version of `numbers.txt` the chart maker
-//! read for each picture it saved (milestone 5); milestone 6c uses that to
-//! mark the picture "Needs a look" when the numbers change.
+//! It is an Alaya app that tells its sources (living validity, milestone
+//! 6c): when it saves, it tells the store exactly which version of
+//! `numbers.txt` both files were made from. The store checks that the
+//! chart maker read all of that version, and the file browser marks the
+//! picture and the summary "Needs a look" once the numbers change.
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use alaya_apps::store::Store;
+use alaya_apps::store::{Store, Version};
 use alaya_apps::{self as app, Event, Window};
 use alaya_programs::files::DOCS;
 use alaya_sys::abi::StartInfo;
@@ -25,6 +28,7 @@ use alaya_ui::widgets::{Ui, theme};
 
 const NUMBERS: &str = "numbers.txt";
 const PICTURE: &str = "chart.ppm";
+const SUMMARY: &str = "summary.txt";
 const SAMPLE: &str = "Mon 3\nTue 5\nWed 2\nThu 6\nFri 4\n";
 const PIC_W: i32 = 480;
 const PIC_H: i32 = 300;
@@ -93,6 +97,18 @@ fn draw_chart(cv: &mut Canvas, fonts: &mut Fonts, r: Rect, bars: &[(String, u32)
     }
 }
 
+/// The numbers in words.
+fn summary(bars: &[(String, u32)]) -> String {
+    let total: u64 = bars.iter().map(|b| u64::from(b.1)).sum();
+    match bars.iter().max_by_key(|b| b.1) {
+        Some((label, top)) => format!(
+            "{} numbers from {NUMBERS}, {total} in all. The highest is {label} with {top}.\n",
+            bars.len()
+        ),
+        None => format!("There are no numbers in {NUMBERS} yet.\n"),
+    }
+}
+
 /// The chart as a picture file (binary PPM: simple, and any viewer reads
 /// it).
 fn picture(fonts: &mut Fonts, bars: &[(String, u32)]) -> Vec<u8> {
@@ -120,7 +136,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     }
     let mut win = Window::open(&mut mem, 460, 340, "Chart maker").expect("open a window");
     let mut bars = Vec::new();
-    let mut version = u64::MAX;
+    let mut seen: Option<Version> = None;
     let mut last_look = 0;
     let mut note = String::new();
     loop {
@@ -138,13 +154,18 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         if last_look == 0 || now - last_look >= 2000 {
             last_look = now;
             if let Ok(f) = store.lookup(docs, NUMBERS)
-                && let Ok((_, v, _)) = store.stat(f)
-                && v != version
-                && let Ok(b) = store.read_all(f)
+                && let Ok(v) = store.version(f)
+                && Some(v) != seen
+                && let Ok((b, v)) = store.read_versioned(f)
             {
-                version = v;
+                seen = Some(v);
                 bars = parse(&String::from_utf8_lossy(&b));
-                say!("drew {} bars from {} version {}", bars.len(), NUMBERS, v);
+                say!(
+                    "drew {} bars from {} version {}",
+                    bars.len(),
+                    NUMBERS,
+                    v.version
+                );
             }
         }
         {
@@ -166,22 +187,31 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 &bars,
             );
         }
-        if save {
+        if save && let Some(src) = seen {
             let data = picture(&mut fonts, &bars);
-            let ok = store
-                .open(docs, PICTURE)
-                .and_then(|f| store.write_all(f, &data))
+            let text = summary(&bars);
+            // Each result, then what it was made from: exactly the version
+            // drawn.
+            let put = |name: &str, bytes: &[u8]| {
+                store
+                    .open(docs, name)
+                    .and_then(|f| store.write_all(f, bytes).map(|_| f))
+                    .and_then(|f| store.made_from(f, &[src]))
+            };
+            let ok = put(PICTURE, &data)
+                .and_then(|_| put(SUMMARY, text.as_bytes()))
                 .and_then(|_| store.save())
                 .is_ok();
             note = if ok {
                 say!(
-                    "saved {} ({} bytes) from {} version {}",
+                    "saved {} ({} bytes) and {} from {} version {}",
                     PICTURE,
                     data.len(),
+                    SUMMARY,
                     NUMBERS,
-                    version
+                    src.version
                 );
-                format!("Saved {PICTURE}, made from {NUMBERS} version {version}.")
+                format!("Saved {PICTURE} and {SUMMARY}, made from {NUMBERS}.")
             } else {
                 String::from("Could not save the picture.")
             };

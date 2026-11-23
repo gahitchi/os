@@ -132,15 +132,16 @@ same, or changed. It is labelled "checked by Alaya, not yet by the chip".
 **The apps** are one program image (`user/apps/src/bin/apps/`) started once
 per app, each with its own memory, its own badge on the desktop and on the
 store, and its own transfer pages:
-- **Text editor**: `Notes.txt` in the person's documents; Ctrl+S saves.
+- **Text editor**: the text files in the person's documents, `Notes.txt`
+  first; Ctrl+S saves, Ctrl+O opens the next one (6c).
   After every change it writes its return point (the text, saved or not,
   the cursor and the first line shown); the store makes it safe within five
   seconds, so the editor comes back exactly where you were after it is
   closed, crashes or is stopped.
-- **Files**: the documents, with sizes and versions (the living-validity
-  marks come in step 4, 6c).
+- **Files**: the documents, with sizes and, on each result, its
+  living-validity mark (step 4, below).
 - **Chart maker**: a bar chart of `numbers.txt`, redrawn when it changes;
-  "Save picture" (or Ctrl+S) saves `chart.ppm`.
+  "Save picture" (or Ctrl+S) saves `chart.ppm` and `summary.txt`.
 - **Settings**: the look; the desktop follows at once.
 - **The clock** in the strip counts time since start until a real-time clock
   driver exists.
@@ -155,9 +156,42 @@ starts the apps the dock asks for and starts again any driver or app that
 crashes. The desktop's calls that steer it (lock, inject input, close an
 app's windows, ask its state) answer only the first program.
 
+## Step 4 (6c): is it still up to date?
+
+The first show of living validity (`design/commitments.md`).
+
+**Told, then checked.** When the chart maker saves `chart.ppm` and
+`summary.txt`, it tells the store exactly which version of `numbers.txt`
+it made them from (`MADE_FROM`). The store keeps that "made from" note
+with each result, in the person's documents, so the note has history like
+the file. It does not take the app's word for it: while the person's files
+are open, the store follows how much of which version each app has read,
+and it notes whether this app read every byte of the version it names.
+Only the app that last changed a result may say what it was made from.
+
+**The mark** (`MARK`, `store/src/made.rs`) is worked out when asked:
+
+| Mark | When |
+| --- | --- |
+| Up to date | every source is unchanged, and the app read all of each |
+| Needs a look | a source changed since |
+| As of a date | the person said it shows a fixed moment (A in Files) |
+| Not sure | the app did not read all of a source, or it changed while being read; a source is gone; or the result was changed after it was made |
+
+Files you typed yourself have no mark. **Nothing is "Up to date" unless the
+store saw the whole of the exact version.** A version number alone cannot
+tell two saves apart when they land in the same commit, so each document
+also counts its changes, and "unchanged" means both are the same. A note
+points at files, not names, so renaming a source changes nothing, and a
+new file under an old name is not mistaken for the source.
+
+The file browser shows the marks, and for the chosen file the story: who
+made it, from how many files, and which one changed since (and by which
+app, from the store's records).
+
 ## How the desktop is tested
 
-Checks 59 to 71, on PCs and ARM: first setup typed through QEMU (name, PIN
+Checks 59 to 75, on PCs and ARM: first setup typed through QEMU (name, PIN
 twice, picture, look); the editor opens and is dragged to the left half;
 typing and tiling; the screen driver crashes under the desktop; the lock
 screen shows the picture in the strip, refuses a wrong PIN and opens with
@@ -166,9 +200,16 @@ in the middle of typing and comes back with its text and cursor; the file
 browser and the chart maker open and a chart is saved as a picture; a window
 dropped on a group label joins the group; an app cannot use the desktop's
 own calls or draw on the strip; Settings changes the look; the keyboard
-driver crashes and typing carries on. `cargo xtask test` saves screenshots
-in `build/screen-setup.ppm`, `screen-login.ppm`, `screen-apps.ppm` and
-`screen-desktop.ppm`. Without a host typing (the phone, or
+driver crashes and typing carries on. Then living validity: the chart and
+its summary are up to date; the editor opens `numbers.txt` (Ctrl+O), a
+number changes and is saved, and both are marked "Needs a look"; the chart
+maker saves again and they are up to date; and through the real store, a
+result made from part of a file is "Not sure", one app cannot speak for
+another's result, and "As of a date" holds. The store's own tests
+(`store/tests/made.rs`) add saves while reading, two saves in one commit,
+renames and deleted sources. `cargo xtask test` saves screenshots in
+`build/screen-setup.ppm`, `screen-login.ppm`, `screen-apps.ppm`,
+`screen-marks.ppm` and `screen-desktop.ppm`. Without a host typing (the phone, or
 `ALAYA_NO_HOST_INPUT=1`), the first program sends the same keys and mouse
 moves to the desktop itself.
 
@@ -182,3 +223,9 @@ and the look. The text editor opens after you log in; open the other apps
 from the dock, type, drag, snap (Super+arrows), tile with Super+T (`--display gtk`, `--display sdl` or `--vnc` to
 choose; `--vnc` serves the screen on port 5900, for a VNC viewer app on a
 phone).
+
+To see the marks: choose the look "Everything on", open the chart maker
+from the dock and press Enter to save the chart, then open Files: the
+chart and the summary say "Up to date". In the text editor, Ctrl+S, then
+Ctrl+O until `numbers.txt` is open; change a number and press Ctrl+S.
+Within two seconds Files says "Needs a look".
