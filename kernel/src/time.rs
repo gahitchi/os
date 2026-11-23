@@ -48,13 +48,35 @@ pub fn init_this_core() {
     timer::init_this_core();
 }
 
-/// Fire this core's timer interrupt when the clock reaches `ticks`.
+/// Fire this core's timer interrupt when the clock reaches `ticks`, or
+/// sooner: if the timer is already armed for the same or an earlier time,
+/// it stays as it is. Every handler checks the clock, so an early interrupt
+/// only arms the timer again for what is really due. This keeps the
+/// kernel from writing the timer on every system call and every switch,
+/// which on a virtual machine costs a trip out to the host each time.
 pub fn set_deadline(ticks: u64) {
+    if ticks == 0 {
+        return disarm();
+    }
+    let armed = &percpu::this().timer_armed;
+    let now_armed = armed.load(Ordering::Relaxed);
+    if now_armed != 0 && now_armed <= ticks {
+        return;
+    }
+    armed.store(ticks, Ordering::Relaxed);
+    percpu::this().switch_stats[0].fetch_add(1, Ordering::Relaxed);
     timer::set_deadline(ticks);
+}
+
+/// The timer interrupt came: the timer is not armed any more (an ARM core
+/// also masked it already). Every path that takes it calls this first.
+pub fn fired() {
+    percpu::this().timer_armed.store(0, Ordering::Relaxed);
 }
 
 /// Stop this core's timer.
 pub fn disarm() {
+    percpu::this().timer_armed.store(0, Ordering::Relaxed);
     timer::disarm();
 }
 
@@ -65,6 +87,7 @@ pub const SELFTEST_PERIOD_NS: u64 = 1_000_000;
 /// The timer interrupt. Runs with interrupts off, like all kernel entries,
 /// and takes the big kernel lock.
 pub fn interrupt() {
+    fired();
     let now = now();
     let mut kernel = sync::BKL.lock();
     if kernel.sys.started {

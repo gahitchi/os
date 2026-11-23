@@ -65,6 +65,7 @@ impl Stale {
 /// maps are on, keeping its TLB entries unless they may be stale.
 pub fn load(k: &mut crate::sched::Sys, core: usize, space: u64) {
     let id = space_meta(space).id;
+    crate::percpu::this().switch_stats[2].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let stale = k.stale.take(core, id);
     pte::load_space(space, id, stale);
 }

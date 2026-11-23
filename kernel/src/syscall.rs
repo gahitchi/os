@@ -268,6 +268,16 @@ fn debug_call(
             }
             r
         }
+        debug::SWITCH_STATS => {
+            let mut r = [0u64; 4];
+            for i in 0..percpu::count() {
+                let c = percpu::get(i);
+                for (j, s) in c.switch_stats.iter().enumerate() {
+                    r[j] += s.load(Ordering::Relaxed);
+                }
+            }
+            r
+        }
         _ => return Err(Error::NoSuchCall),
     };
     Ok(Outcome::Done(r))

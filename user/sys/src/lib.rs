@@ -392,6 +392,12 @@ pub fn all_counters() -> [u64; 4] {
 }
 
 /// Big kernel lock use since boot: taken, waited, ticks waiting, ticks held.
+/// What switches cost: timer writes, IBPBs, address-space loads, wake-ups
+/// sent to other cores.
+pub fn switch_stats() -> [u64; 4] {
+    syscall(abi::call::DEBUG, abi::debug::SWITCH_STATS, 0, [0; 6]).1
+}
+
 pub fn lock_stats() -> [u64; 4] {
     syscall(abi::call::DEBUG, abi::debug::LOCK_STATS, 0, [0; 6]).1
 }
@@ -407,6 +413,11 @@ pub fn page_address(page: u64) -> Result<u64, Error> {
 /// Let the devices of I/O space `io` reach `page` at device address `at`.
 pub fn page_iomap(page: u64, io: u64, at: u64, flags: u64) -> Result<(), Error> {
     call(page, abi::op::PAGE_IOMAP, [io, at, flags, 0, 0, 0]).map(|_| ())
+}
+
+/// Guard an address space (`SPACE_GUARD`): for programs holding secrets.
+pub fn space_guard(space: u64, on: bool) -> Result<(), Error> {
+    call(space, abi::op::SPACE_GUARD, [u64::from(on), 0, 0, 0, 0, 0]).map(|_| ())
 }
 
 pub fn iospace_assign(io: u64, pool: u64) -> Result<(), Error> {

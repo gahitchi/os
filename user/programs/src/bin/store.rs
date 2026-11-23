@@ -137,6 +137,8 @@ fn main(info: &'static StartInfo) -> ! {
     let g = start::FIRST_GIVEN;
     let mut mem = Mem::new(info);
     alaya_sys::heap::init(&mut mem, 4).expect("heap");
+    // The store holds the keys and everyone's files: guarded.
+    alaya_sys::space_guard(start::SPACE, true).expect("guard");
     let ep = g + fs::G_ENDPOINT;
     let keeper = g + fs::G_KEEPER;
     let me = mem.make(Kind::Notification, 0).expect("notification");

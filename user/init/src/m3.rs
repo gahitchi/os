@@ -696,21 +696,42 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             alaya_sys::ipc_call(ep, &Msg::new(NULL, &[]), Caps::default()).unwrap();
         }
         let rounds = 2000;
+        let s0 = alaya_sys::switch_stats();
         let start = alaya_sys::clock();
         for _ in 0..rounds {
             alaya_sys::ipc_call(ep, &Msg::new(NULL, &[]), Caps::default()).unwrap();
         }
-        (alaya_sys::clock() - start) / rounds
+        let t = (alaya_sys::clock() - start) / rounds;
+        let s1 = alaya_sys::switch_stats();
+        // Per 100 round trips: timer writes, IBPBs, address-space loads,
+        // wake-ups of other cores.
+        let per = |i: usize| (s1[i] - s0[i]) * 100 / rounds;
+        say!(
+            "ipc: per 100 round trips: {} timer writes, {} predictor wipes, {} memory-map loads, {} other cores woken",
+            per(0),
+            per(1),
+            per(2),
+            per(3)
+        );
+        t
     };
     let between = measure(ep3);
     let inside = measure(ep2);
+    // The same with the second program guarded (it holds secrets): the
+    // core also drops its branch predictions on each switch, where the
+    // CPU offers that.
+    alaya_sys::space_guard(space, true).unwrap();
+    let guarded = measure(ep3);
+    alaya_sys::space_guard(space, false).unwrap();
     let ns = |c: u64| c * 1_000_000_000 / HZ.load(SeqCst);
     say!(
-        "ipc: call and reply round trip: {} cycles ({} ns) between programs, {} cycles ({} ns) inside one",
+        "ipc: call and reply round trip: {} cycles ({} ns) between programs, {} cycles ({} ns) inside one, {} cycles ({} ns) to a guarded program",
         between,
         ns(between),
         inside,
-        ns(inside)
+        ns(inside),
+        guarded,
+        ns(guarded)
     );
     pass("call and reply measured");
 
