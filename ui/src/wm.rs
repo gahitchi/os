@@ -104,6 +104,10 @@ enum Grab {
         x0: i32,
         y0: i32,
         moved: bool,
+        /// Where it was before the drag, to go back to if it is dropped
+        /// on a group label.
+        start: Rect,
+        start_place: Place,
     },
     Resize {
         id: u32,
@@ -127,6 +131,8 @@ pub enum Out {
     Resized(u32, i32, i32),
     /// The close button was pressed: ask the app to close.
     Close(u32),
+    /// The window was dropped on a group label and is now in that group.
+    Grouped(u32, u32),
     /// Pointer event for an app, in its content's coordinates.
     Pointer {
         id: u32,
@@ -151,6 +157,9 @@ pub struct Wm {
     next_cascade: i32,
     /// The order windows take tiles in (not the front-to-back order).
     tiles: Vec<u32>,
+    /// Group labels on the screen: dropping a window on one puts the
+    /// window in that group (decision 85).
+    pub groups: Vec<(u32, Rect)>,
 }
 
 impl Wm {
@@ -164,6 +173,7 @@ impl Wm {
             pointer: (width / 2, height / 2),
             next_cascade: 0,
             tiles: Vec::new(),
+            groups: Vec::new(),
         }
     }
 
@@ -424,6 +434,8 @@ impl Wm {
                 x0,
                 y0,
                 moved,
+                start,
+                start_place,
             }) => {
                 let Some(i) = self.index(id) else {
                     return out;
@@ -449,6 +461,8 @@ impl Wm {
                     x0,
                     y0,
                     moved: true,
+                    start,
+                    start_place,
                 });
                 let f = self.wins[i].frame;
                 let r = self.fit(Rect::new(x - dx, y - dy, f.w, f.h));
@@ -541,11 +555,31 @@ impl Wm {
         let (x, y) = self.pointer;
         if !down {
             match self.grab.take() {
-                Some(Grab::Move { id, moved, .. }) => {
+                Some(Grab::Move {
+                    id,
+                    moved,
+                    start,
+                    start_place,
+                    ..
+                }) => {
                     if let Some(p) = self.preview.take() {
                         out.push(Self::damage(p));
                     }
                     if !moved {
+                        return out;
+                    }
+                    let group = self.groups.iter().find(|(_, r)| r.contains(x, y));
+                    if let (Some(&(g, _)), Some(i)) = (group, self.index(id)) {
+                        // Dropped on a group label: into the group, and
+                        // back where it was.
+                        self.wins[i].group = Some(g);
+                        self.wins[i].place = start_place;
+                        if self.tiling {
+                            self.retile(&mut out);
+                        } else {
+                            self.set_frame(i, start, &mut out);
+                        }
+                        out.push(Out::Grouped(id, g));
                         return out;
                     }
                     if self.tiling {
@@ -584,7 +618,8 @@ impl Wm {
         match self.hit(x, y) {
             Hit::Title(id) => {
                 self.raise(id, &mut out);
-                let f = self.get(id).unwrap().frame;
+                let w = self.get(id).unwrap();
+                let (f, p) = (w.frame, w.place);
                 if button == 1 {
                     self.grab = Some(Grab::Move {
                         id,
@@ -593,6 +628,8 @@ impl Wm {
                         x0: x,
                         y0: y,
                         moved: false,
+                        start: f,
+                        start_place: p,
                     });
                 }
             }
@@ -655,6 +692,22 @@ impl Wm {
         if let Some(i) = self.index(id) {
             self.wins[i].group = group;
         }
+    }
+
+    /// Bring every window of a group to the front, keeping their order;
+    /// the group's front window gets the keyboard.
+    pub fn raise_group(&mut self, group: u32) -> Vec<Out> {
+        let mut out = Vec::new();
+        let ids: Vec<u32> = self
+            .wins
+            .iter()
+            .filter(|w| w.group == Some(group))
+            .map(|w| w.id)
+            .collect();
+        for id in ids {
+            self.raise(id, &mut out);
+        }
+        out
     }
 }
 

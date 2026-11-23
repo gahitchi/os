@@ -355,7 +355,7 @@ fn build_kernel(arch: Arch, release: bool) -> Result<PathBuf, String> {
 /// Programs the boot image carries besides the first one, all from the
 /// `alaya-programs` crate.
 const PROGRAMS: [&str; 9] = [
-    "keeper", "blk1", "blk2", "disktest", "store", "gpu", "input", "desktop", "editor",
+    "keeper", "blk1", "blk2", "disktest", "store", "gpu", "input", "desktop", "apps",
 ];
 
 /// Font files shipped in the boot image: text, strong, mono, fallback.
@@ -814,7 +814,11 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
     let mut fault_report = String::new();
     let mut fuzz_done = false;
 
-    let deadline = Instant::now() + Duration::from_secs(opts.timeout);
+    let mut deadline = Instant::now() + Duration::from_secs(opts.timeout);
+    // ALAYA_NO_HOST_INPUT=1: type and click nothing, as on the phone; the
+    // first program then sends the keys and mouse moves itself.
+    let no_input = env::var("ALAYA_NO_HOST_INPUT").is_ok_and(|v| v == "1");
+    let mut booted = false;
     let outcome = loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
@@ -863,7 +867,7 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                         Err(e) => break Err(format!("screen check: {e}")),
                     }
                 }
-                if line.contains(INPUT_WAITING_MARKER) {
+                if line.contains(INPUT_WAITING_MARKER) && !no_input {
                     let step = match qmp.as_mut() {
                         Some(q) => send_key_and_click(q),
                         None => Err("no control socket".into()),
@@ -873,7 +877,7 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     }
                     println!("  * typed 'a' and clicked the middle of the screen");
                 }
-                if let Some(rest) = line.split(DRAG_MARKER).nth(1) {
+                if let Some(rest) = line.split(DRAG_MARKER).nth(1).filter(|_| !no_input) {
                     let n: Vec<i64> = rest
                         .split_whitespace()
                         .filter_map(|w| w.parse().ok())
@@ -885,17 +889,32 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     if let Err(e) = step {
                         break Err(format!("drag: {e}"));
                     }
-                    println!("  * dragged the window's title bar to the left edge");
+                    println!("  * dragged from {} {} to {} {}", n[0], n[1], n[2], n[3]);
                 }
-                if line.contains(TYPE_MARKER) {
+                if let Some(spec) = line.split(KEYS_MARKER).nth(1).filter(|_| !no_input) {
                     let step = match qmp.as_mut() {
-                        Some(q) => type_text(q, "hi"),
+                        Some(q) => type_keys(q, spec),
                         None => Err("no control socket".into()),
                     };
                     if let Err(e) = step {
                         break Err(format!("typing: {e}"));
                     }
-                    println!("  * typed 'hi'");
+                    println!("  * typed {spec}");
+                }
+                if let Some(name) = line.split(SCREENSHOT_MARKER).nth(1)
+                    && let Some(q) = qmp.as_mut()
+                {
+                    // Pictures of the screen for people to look at.
+                    let name: String = name
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                        .collect();
+                    let shot = root().join(format!("build/screen-{name}.ppm"));
+                    let _ = q.command(&format!(
+                        r#"{{"execute":"screendump","arguments":{{"filename":"{}"}}}}"#,
+                        shot.display()
+                    ));
+                    println!("  * saved a screenshot in {}", shot.display());
                 }
                 if line.contains(DESKTOP_DRAWN_MARKER) {
                     // A picture of the desktop for people to look at.
@@ -917,8 +936,11 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                 if line.contains(DESKTOP_SKIPPED_MARKER) {
                     break Err("the drag never reached the desktop".into());
                 }
-                if line.contains(INPUT_SKIPPED_MARKER) {
+                if line.contains(INPUT_SKIPPED_MARKER) && !no_input {
                     break Err("the key and click never reached Alaya".into());
+                }
+                if booted && line.contains(SERVING_MARKER) {
+                    break Ok(());
                 }
                 if line.contains(BOOT_OK_MARKER) {
                     if opts.fault.is_some() {
@@ -927,7 +949,7 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     if pictures < 2 {
                         break Err("the screen was never checked (no test picture)".into());
                     }
-                    if !typed {
+                    if !typed && !no_input {
                         break Err("the editor never showed the typed text".into());
                     }
                     if opts.fuzz.is_some() && !fuzz_done {
@@ -940,7 +962,11 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                         .map(|(i, _)| i.to_string())
                         .collect();
                     if missing.is_empty() {
-                        break Ok(());
+                        // Then the first program must go on looking after
+                        // the drivers and the apps.
+                        booted = true;
+                        deadline = deadline.min(Instant::now() + Duration::from_secs(30));
+                        continue;
                     }
                     break Err(format!(
                         "these cores never reported ready: {}",
@@ -963,6 +989,9 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     }
                     break Err(format!("the fault report does not mention {absent:?}"));
                 }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) if booted => {
+                break Err("the first program stopped after its checks".into());
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 break Err(format!("no boot marker within {}s", opts.timeout));
@@ -993,7 +1022,10 @@ const INPUT_SKIPPED_MARKER: &str = "init: input: nobody pressed a key";
 const DRAG_MARKER: &str = "init: desktop: drag from";
 const DESKTOP_SKIPPED_MARKER: &str = "init: desktop: nobody dragged";
 const DESKTOP_DRAWN_MARKER: &str = "init: desktop: drawn after a screen driver crash";
-const TYPE_MARKER: &str = "init: desktop: type hi";
+const KEYS_MARKER: &str = "init: keys: ";
+const SCREENSHOT_MARKER: &str = "init: screenshot ";
+/// After its checks the first program looks after drivers and apps.
+const SERVING_MARKER: &str = "init: looking after the drivers and the apps";
 const TYPED_MARKER: &str = "editor: text ends with: Welcome to Alaya./Type here.hi";
 
 /// The test picture of `m6.rs`: background, and (centre x, centre y,
@@ -1179,20 +1211,107 @@ fn drag(q: &mut Qmp, from: (i64, i64), to: (i64, i64)) -> Result<(), String> {
     Ok(())
 }
 
-/// Type lowercase letters on the virtual keyboard.
-fn type_text(q: &mut Qmp, text: &str) -> Result<(), String> {
-    for c in text.chars() {
-        for down in [true, false] {
-            input_events(
-                q,
-                &format!(
-                    r#"{{"type":"key","data":{{"down":{down},"key":{{"type":"qcode","data":"{c}"}}}}}}"#
-                ),
-            )?;
-            thread::sleep(Duration::from_millis(30));
+/// Type keys on the virtual keyboard, as the first program spells them
+/// (`alaya_programs::desktop::keys`): characters of a US keyboard, and
+/// `{tab}`, `{enter}`, `{left}`, `{right}`, `{up}`, `{down}`,
+/// `{backspace}`, `{escape}` and `{ctrl+x}`.
+fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
+    let key = |q: &mut Qmp, code: &str, down: bool| {
+        input_events(
+            q,
+            &format!(
+                r#"{{"type":"key","data":{{"down":{down},"key":{{"type":"qcode","data":"{code}"}}}}}}"#
+            ),
+        )
+        .map(|_| thread::sleep(Duration::from_millis(30)))
+    };
+    let press = |q: &mut Qmp, codes: &[&str]| -> Result<(), String> {
+        for c in codes {
+            key(q, c, true)?;
+        }
+        for c in codes.iter().rev() {
+            key(q, c, false)?;
+        }
+        Ok(())
+    };
+    let mut rest = spec;
+    while let Some(c) = rest.chars().next() {
+        if c == '{'
+            && let Some(end) = rest.find('}')
+        {
+            let name = &rest[1..end];
+            rest = &rest[end + 1..];
+            let code = match name {
+                "enter" => "ret".to_string(),
+                "backspace" => "backspace".to_string(),
+                "escape" => "esc".to_string(),
+                n if n.starts_with("ctrl+") => {
+                    let k = n[5..].chars().next().ok_or("ctrl+ what?")?;
+                    let (code, _) = qcode(k).ok_or(format!("no key for {k}"))?;
+                    press(q, &["ctrl", &code])?;
+                    continue;
+                }
+                n => n.to_string(),
+            };
+            press(q, &[&code])?;
+            continue;
+        }
+        rest = &rest[c.len_utf8()..];
+        let (code, shift) = qcode(c).ok_or(format!("no key for {c:?}"))?;
+        if shift {
+            press(q, &["shift", &code])?;
+        } else {
+            press(q, &[&code])?;
         }
     }
     Ok(())
+}
+
+/// QEMU's name for the key that types `c` on a US keyboard, and whether
+/// it needs Shift.
+fn qcode(c: char) -> Option<(String, bool)> {
+    const PLAIN: &str = "1234567890-=[];'`\\,./";
+    const NAMES: [&str; 21] = [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "0",
+        "minus",
+        "equal",
+        "bracket_left",
+        "bracket_right",
+        "semicolon",
+        "apostrophe",
+        "grave_accent",
+        "backslash",
+        "comma",
+        "dot",
+        "slash",
+    ];
+    if c == ' ' {
+        return Some(("spc".into(), false));
+    }
+    if c.is_ascii_lowercase() || c.is_ascii_digit() {
+        return Some((c.to_string(), false));
+    }
+    if c.is_ascii_uppercase() {
+        return Some((c.to_ascii_lowercase().to_string(), true));
+    }
+    if let Some(i) = PLAIN.find(c) {
+        return Some((NAMES[i].into(), false));
+    }
+    // Shifted symbols, in the order of the plain ones.
+    let order = "!@#$%^&*()_+{}:\"~|<>?";
+    let base = "1234567890-=[];'`\\,./";
+    let i = order.find(c)?;
+    let plain = base.chars().nth(order[..i].chars().count())?;
+    PLAIN.find(plain).map(|j| (NAMES[j].into(), true))
 }
 
 /// Pull the plug `--plug` times (milestone 5). Each boot of a `store-soak`

@@ -7,6 +7,7 @@ use std::vec::Vec;
 use crate::Rect;
 use crate::canvas::Canvas;
 use crate::font::Font;
+use crate::login::{Attempt, Login, Look, NewPerson, Person, Setup, decode_person, encode_person};
 use crate::text::{Face, Fonts};
 use crate::widgets::{Key, Pointer, Role, TextEdit, Ui, us_key};
 use crate::wm::{Hit, Out, Place, STRIP, TITLE, Wm};
@@ -432,7 +433,7 @@ fn widgets_write_the_accessibility_tree_and_press_by_name() {
 #[test]
 #[ignore]
 fn picture_of_the_desktop() {
-    use crate::scene::{self, Desktop, DockItem, WindowView};
+    use crate::scene::{self, Desktop, DockItem, GroupChip, WindowView};
     let (w, h) = (1280, 800);
     let mut f = fonts();
     // An app's window content, drawn with the toolkit.
@@ -486,6 +487,7 @@ fn picture_of_the_desktop() {
             None
         },
         stuck: false,
+        group: (id == 2).then_some(("Work", 0x23_68_6b)),
     };
     let dock = [
         DockItem {
@@ -513,7 +515,21 @@ fn picture_of_the_desktop() {
         clock: "10:42",
         status: "",
         dock: &dock,
+        groups: &[
+            GroupChip {
+                name: "Work",
+                color: 0x23_68_6b,
+                count: 1,
+            },
+            GroupChip {
+                name: "Home",
+                color: 0x9a_5b_00,
+                count: 0,
+            },
+        ],
         show_pointer: true,
+        locked: false,
+        trusted: None,
     };
     scene::draw(&mut cv, &mut f, &wm, &views, &desk, Rect::new(0, 0, w, h));
     let mut out = std::format!("P6\n{w} {h}\n255\n").into_bytes();
@@ -525,4 +541,196 @@ fn picture_of_the_desktop() {
         out,
     )
     .unwrap();
+    // The login screen, with the picture in the strip.
+    let mut px = vec![0u32; (w * h) as usize];
+    let mut cv = Canvas::new(&mut px, w, h, w).unwrap();
+    let mut login = Login::new(
+        vec![Person {
+            id: 1,
+            name: "Robin".into(),
+            picture: 2,
+        }],
+        "Checked by Alaya, not yet by the chip: the login screen is the same as at your last login.".into(),
+    );
+    login.key(Key::Char('1'));
+    let desk = Desktop {
+        locked: true,
+        trusted: login.picture(),
+        ..desk
+    };
+    scene::draw(&mut cv, &mut f, &wm, &views, &desk, Rect::new(0, 0, w, h));
+    login.draw(&mut cv, &mut f);
+    let mut out = std::format!("P6\n{w} {h}\n255\n").into_bytes();
+    for p in &px {
+        out.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
+    }
+    std::fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../target/login.ppm"),
+        out,
+    )
+    .unwrap();
+    let mut px = vec![0u32; (w * h) as usize];
+    let mut cv = Canvas::new(&mut px, w, h, w).unwrap();
+    let desk = Desktop {
+        trusted: None,
+        ..desk
+    };
+    scene::draw(&mut cv, &mut f, &wm, &views, &desk, Rect::new(0, 0, w, h));
+    let mut setup = Setup::new();
+    for c in "Robin".chars() {
+        setup.key(Key::Char(c), false);
+    }
+    setup.key(Key::Tab, false);
+    setup.key(Key::Char('1'), false);
+    setup.draw(&mut cv, &mut f);
+    let mut out = std::format!("P6\n{w} {h}\n255\n").into_bytes();
+    for p in &px {
+        out.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
+    }
+    std::fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../target/setup.ppm"),
+        out,
+    )
+    .unwrap();
+}
+
+#[test]
+fn setup_checks_what_was_typed() {
+    let mut s = Setup::new();
+    let typed = |s: &mut Setup, t: &str| {
+        for c in t.chars() {
+            s.key(Key::Char(c), false);
+        }
+    };
+    // No name.
+    assert_eq!(s.key(Key::Enter, false), None);
+    assert_eq!(s.focus, 0);
+    typed(&mut s, "Robin");
+    s.key(Key::Tab, false);
+    typed(&mut s, "12");
+    assert_eq!(s.key(Key::Enter, false), None);
+    assert_eq!(s.focus, 1, "a short PIN is refused");
+    typed(&mut s, "34");
+    s.key(Key::Tab, false);
+    typed(&mut s, "1235");
+    assert_eq!(s.key(Key::Enter, false), None);
+    assert_eq!(s.focus, 2, "two different PINs are refused");
+    assert!(s.again.text.is_empty());
+    typed(&mut s, "1234");
+    s.key(Key::Tab, false);
+    s.key(Key::Right, false);
+    s.key(Key::Right, false);
+    s.key(Key::Tab, false);
+    s.key(Key::Right, false);
+    // Shift+Tab goes back, and Tab forward again.
+    s.key(Key::Tab, true);
+    assert_eq!(s.focus, 3);
+    let done = s.key(Key::Enter, false).expect("setup finishes");
+    assert_eq!(
+        done,
+        NewPerson {
+            name: "Robin".into(),
+            pin: "1234".into(),
+            picture: 2,
+            look: Look::Everything,
+        }
+    );
+}
+
+#[test]
+fn login_takes_a_pin_and_hides_it() {
+    let people = vec![
+        Person {
+            id: 1,
+            name: "Robin".into(),
+            picture: 3,
+        },
+        Person {
+            id: 2,
+            name: "Kai".into(),
+            picture: 5,
+        },
+    ];
+    let mut l = Login::new(people, std::string::String::new());
+    assert_eq!(l.picture(), Some(3));
+    for c in "2468".chars() {
+        l.key(Key::Char(c));
+    }
+    l.key(Key::Backspace);
+    l.key(Key::Char('9'));
+    // Choosing another person clears the PIN and shows their picture.
+    l.key(Key::Right);
+    assert!(l.pin.text.is_empty());
+    assert_eq!(l.picture(), Some(5));
+    l.key(Key::Left);
+    for c in "2469".chars() {
+        l.key(Key::Char(c));
+    }
+    let a = l.key(Key::Enter).expect("an attempt");
+    assert_eq!(
+        a,
+        Attempt {
+            person: 0,
+            pin: "2469".into()
+        }
+    );
+    assert!(l.pin.text.is_empty(), "the PIN is not kept on screen");
+    // Keys wait while the PIN is checked.
+    assert_eq!(l.key(Key::Char('1')), None);
+    assert!(l.pin.text.is_empty());
+    l.refused();
+    assert!(l.error.is_some());
+    l.key(Key::Char('1'));
+    assert_eq!(l.pin.text, "1");
+}
+
+#[test]
+fn person_records_round_trip() {
+    let p = Person {
+        id: 3,
+        name: "Ăna Ω".into(),
+        picture: 7,
+    };
+    assert_eq!(decode_person(&encode_person(&p)), Some(p));
+    assert_eq!(decode_person(&[0u8; 64]), None);
+}
+
+#[test]
+fn dropping_a_window_on_a_group_label_groups_it() {
+    let mut wm = Wm::new(1280, 800);
+    wm.add(1, 400, 300);
+    wm.add(2, 400, 300);
+    wm.groups = vec![(7, Rect::new(100, 740, 90, 32))];
+    let before = wm.get(2).unwrap().frame;
+    let t = wm.get(2).unwrap().title_bar();
+    wm.pointer_move(t.x + 50, t.y + 10);
+    wm.button(1, true);
+    wm.pointer_move(300, 600);
+    wm.pointer_move(140, 750);
+    let out = wm.button(1, false);
+    assert!(out.contains(&Out::Grouped(2, 7)));
+    assert_eq!(wm.get(2).unwrap().group, Some(7));
+    assert_eq!(wm.get(2).unwrap().frame, before, "back where it was");
+    // Raising the group brings its windows to the front.
+    wm.raise(1, &mut Vec::new());
+    assert_eq!(wm.focused(), Some(1));
+    wm.raise_group(7);
+    assert_eq!(wm.focused(), Some(2));
+    // A drop elsewhere moves the window, no group.
+    let t = wm.get(1).unwrap().title_bar();
+    wm.pointer_move(t.x + 50, t.y + 10);
+    wm.button(1, true);
+    wm.pointer_move(t.x + 150, t.y + 60);
+    wm.button(1, false);
+    assert_eq!(wm.get(1).unwrap().group, None);
+}
+
+#[test]
+fn wrap_breaks_at_a_space_that_does_not_fit() {
+    let f = fonts();
+    let s = "aaaa aaaa aa";
+    let max = f.width(Face::Text, 14, "aaaa");
+    let lines = f.wrap(Face::Text, 14, s, max);
+    let got: Vec<&str> = lines.iter().map(|&(a, z)| &s[a..z]).collect();
+    assert_eq!(got, ["aaaa ", "aaaa ", "aa"]);
 }

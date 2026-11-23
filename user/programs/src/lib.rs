@@ -464,8 +464,29 @@ pub mod files {
         person << 48 | app << 8 | channel
     }
 
-    /// Transfer channels and their size.
-    pub const CHANNELS: u64 = 4;
+    /// The machine's own files (the people who can log in, what the login
+    /// screen looked like): a person no app ever gets a badge for.
+    pub const MACHINE_PERSON: u64 = 0xfff;
+    /// People numbers for those who log in: 1 to [`MAX_PEOPLE`].
+    pub const MAX_PEOPLE: u64 = 4;
+    /// App numbers the store records changes and reads under.
+    pub const DESKTOP_APP: u64 = 1;
+    pub const INIT_APP: u64 = 2;
+    pub const fn app_id(role: u64) -> u64 {
+        0x100 + role
+    }
+    pub const fn app_channel(role: u64) -> u64 {
+        1 + role
+    }
+    /// Classes, as the store numbers them.
+    pub const DOCS: u64 = 0;
+    pub const APPS: u64 = 1;
+    pub const CACHES: u64 = 2;
+
+    /// Transfer channels and their size. The first program's checks use
+    /// channels 0 to 3 (milestone 5); after them, channel 0 is the first
+    /// program's, 1 the desktop's and 2 on each app's ([`app_channel`]).
+    pub const CHANNELS: u64 = 8;
     pub const XFER_PAGES: u64 = 16;
     pub const XFER_BYTES: usize = (XFER_PAGES * 4096) as usize;
     /// Where the transfer pages are, in the store server.
@@ -635,6 +656,58 @@ pub mod desktop {
     pub const STATE: u64 = 9;
     /// WINDOW: window → status, x, y, width, height, place.
     pub const WINDOW: u64 = 10;
+    /// LOCK: show the login screen (the first program only).
+    pub const LOCK: u64 = 11;
+    /// INJECT: kind, code, value: an input event as if from a device
+    /// (the first program only, for runs without a host typing).
+    pub const INJECT: u64 = 12;
+    /// FORGET: app: close every window of an app that was stopped (the
+    /// first program only).
+    pub const FORGET: u64 = 13;
+    /// SESSION: → status, stage ([`stage`]), person, look, wrong PINs,
+    /// login parts ([`parts`]) (the first program only).
+    pub const SESSION: u64 = 14;
+    /// LOOK_CHANGED: an app (Settings) changed the person's look: read it.
+    pub const LOOK_CHANGED: u64 = 15;
+    /// GROUP: window → status, group (0: none) (the first program only).
+    pub const GROUP: u64 = 16;
+    /// PLACES: what → status, x, y, width, height of a part of the screen:
+    /// [`places::DOCK`] + i, [`places::CHIP`] + i (the first program only).
+    pub const PLACES: u64 = 17;
+    /// APP: window → status, the app (its role) (the first program only).
+    pub const APP: u64 = 18;
+    /// RAISE: window: bring it to the front (the first program only).
+    pub const RAISE: u64 = 19;
+
+    pub mod places {
+        pub const DOCK: u64 = 0;
+        pub const CHIP: u64 = 16;
+    }
+
+    /// What the desktop shows.
+    pub mod stage {
+        pub const SETUP: u64 = 0;
+        pub const LOGIN: u64 = 1;
+        pub const OPEN: u64 = 2;
+    }
+
+    /// What the check of the login parts found (decision 74).
+    pub mod parts {
+        /// First login: nothing to compare with yet.
+        pub const FIRST: u64 = 0;
+        pub const SAME: u64 = 1;
+        pub const CHANGED: u64 = 2;
+    }
+
+    /// The apps of milestone 6, by role. An app's badge on the desktop
+    /// endpoint is its role.
+    pub mod role {
+        pub const EDITOR: u64 = 1;
+        pub const FILES: u64 = 2;
+        pub const CHART: u64 = 3;
+        pub const SETTINGS: u64 = 4;
+        pub const COUNT: u64 = 4;
+    }
 
     pub const OK: u64 = 0;
     pub const NO_WINDOW: u64 = 1;
@@ -667,6 +740,9 @@ pub mod desktop {
 
     /// Bit on an app's notification: events are waiting.
     pub const EVENT_BIT: u64 = 1;
+    /// Bits on the first program's session notification: start the app
+    /// of role r (bit `1 << r`); the person logged in.
+    pub const LOGGED_IN_BIT: u64 = 1 << 32;
 
     /// Pages per window picture, and the picture's row length in pixels.
     pub const PAGES: u64 = 2;
@@ -689,20 +765,101 @@ pub mod desktop {
     /// Each font gets this much address space.
     pub const FONT_STEP: u64 = 0x10_0000;
 
+    /// The store's transfer pages of the program's channel (desktop and
+    /// apps).
+    pub const XFER: u64 = 0x5300_0002_0000;
+
     /// Given capabilities: its endpoint, the screen driver's notification,
-    /// the notification the drivers signal.
+    /// the notification the drivers signal, the first program's session
+    /// notification, the store as the machine, then the store as each
+    /// person 1 to `MAX_PEOPLE`.
     pub const G_EP: u64 = 0;
     pub const G_SCREEN: u64 = 1;
     pub const G_SEAT: u64 = 2;
+    pub const G_SESSION: u64 = 3;
+    pub const G_STORE_MACHINE: u64 = 4;
+    pub const G_STORE_PERSON: u64 = 5;
 
     /// Args: screen pages, input pages, then the four font sizes (text,
-    /// strong, mono, fallback).
+    /// strong, mono, fallback), the fingerprint of the login parts (4
+    /// words), the key of the machine's own files (4 words), and the
+    /// memory the PIN step uses (in 32-byte entries).
     pub const ARG_SCREEN_PAGES: usize = 0;
     pub const ARG_INPUTS: usize = 1;
     pub const ARG_FONTS: usize = 2;
+    pub const ARG_PARTS: usize = 6;
+    pub const ARG_MACHINE_KEY: usize = 10;
+    pub const ARG_PIN_WORK: usize = 14;
 
-    /// Apps: given its desktop endpoint and its notification; fonts at
-    /// [`FONTS`] like the desktop, sizes from [`ARG_FONTS`] on.
+    /// Apps: given its desktop endpoint, its notification and the store
+    /// (as the person logged in); fonts at [`FONTS`] like the desktop,
+    /// sizes from [`ARG_FONTS`] on; its role at [`ARG_ROLE`] and its
+    /// store channel at [`ARG_CHANNEL`].
     pub const APP_G_DESKTOP: u64 = 0;
     pub const APP_G_NTFN: u64 = 1;
+    pub const APP_G_STORE: u64 = 2;
+    pub const ARG_ROLE: usize = 0;
+    pub const ARG_CHANNEL: usize = 1;
+
+    /// Key codes (the numbers virtio input sends) for typed text on a US
+    /// keyboard: each character of `spec` as (code, modifiers: 1 Shift,
+    /// 2 Ctrl), and `{name}` for a key without a character (tab, enter,
+    /// left, right, up, down, backspace, escape) or `{ctrl+x}`. Used by
+    /// the tests to type, here and on the host.
+    pub fn keys(spec: &str, mut f: impl FnMut(u16, u8)) {
+        let mut rest = spec;
+        while let Some(c) = rest.chars().next() {
+            if c == '{'
+                && let Some(end) = rest.find('}')
+            {
+                let name = &rest[1..end];
+                let code = match name {
+                    "tab" => Some((15, 0)),
+                    "enter" => Some((28, 0)),
+                    "left" => Some((105, 0)),
+                    "right" => Some((106, 0)),
+                    "up" => Some((103, 0)),
+                    "down" => Some((108, 0)),
+                    "backspace" => Some((14, 0)),
+                    "escape" => Some((1, 0)),
+                    _ => name
+                        .strip_prefix("ctrl+")
+                        .and_then(|k| k.chars().next())
+                        .and_then(key_code)
+                        .map(|(c, s)| (c, 2 | u8::from(s))),
+                };
+                if let Some((c, m)) = code {
+                    f(c, m);
+                }
+                rest = &rest[end + 1..];
+                continue;
+            }
+            if let Some((k, s)) = key_code(c) {
+                f(k, u8::from(s));
+            }
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+
+    /// The key code and Shift for a character on a US keyboard.
+    pub fn key_code(c: char) -> Option<(u16, bool)> {
+        const LOWER: &[u8] = b"1234567890-=qwertyuiop[]asdfghjkl;'`\\zxcvbnm,./";
+        const UPPER: &[u8] = b"!@#$%^&*()_+QWERTYUIOP{}ASDFGHJKL:\"~|ZXCVBNM<>?";
+        const CODES: [u16; 47] = [
+            2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+            30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
+            53,
+        ];
+        if c == ' ' {
+            return Some((57, false));
+        }
+        if c == '\n' {
+            return Some((28, false));
+        }
+        let b = u8::try_from(c).ok()?;
+        if let Some(i) = LOWER.iter().position(|&x| x == b) {
+            return Some((CODES[i], false));
+        }
+        UPPER.iter().position(|&x| x == b).map(|i| (CODES[i], true))
+    }
 }

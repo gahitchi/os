@@ -36,6 +36,13 @@ const APPS: u64 = 1;
 const CACHES: u64 = 2;
 
 static DYING: AtomicU64 = AtomicU64::new(0);
+/// The store's endpoint (no badge) and its transfer pages, for the
+/// desktop and the apps of milestone 6.
+pub(crate) static STORE_EP: AtomicU64 = AtomicU64::new(0);
+pub(crate) static XFER_PAGES: [AtomicU64; (fs::CHANNELS * fs::XFER_PAGES) as usize] =
+    [const { AtomicU64::new(0) }; (fs::CHANNELS * fs::XFER_PAGES) as usize];
+/// Where the first program sees the transfer pages.
+pub(crate) const XFER_AT_PUB: u64 = XFER_AT;
 static STORE_UT: AtomicU64 = AtomicU64::new(0);
 static KILLS: AtomicU64 = AtomicU64::new(0);
 
@@ -149,7 +156,7 @@ struct Env<'a> {
     keeper: u64,
     dying: u64,
     ut: u64,
-    shared: [(u64, u64, u64); 128],
+    shared: [(u64, u64, u64); 192],
     nshared: usize,
     prog: Option<Program>,
     sc: u64,
@@ -183,7 +190,7 @@ impl Env<'_> {
                 name: "store",
                 image: module(self.info, "store"),
                 untyped: self.ut,
-                table_bits: 8,
+                table_bits: 9,
                 own_bits: 23,
                 priority: STORE_PRIORITY,
                 sc: self.sc,
@@ -228,6 +235,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     k.ut = carve(&mut k, 23, "8 MiB for the store checks");
     STORE_UT.store(store_ut, SeqCst);
     let ep = k.make(Kind::Endpoint, 0);
+    STORE_EP.store(ep, SeqCst);
     let dying = k.make(Kind::Notification, 0);
     DYING.store(dying, SeqCst);
     let keeper = k.slot();
@@ -260,10 +268,11 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     .unwrap();
     // The transfer pages (shared with the store) and the keeper's buffer
     // pages (shared by the keeper and the store).
-    let mut shared = [(0u64, 0u64, 0u64); 128];
+    let mut shared = [(0u64, 0u64, 0u64); 192];
     let mut n = 0;
     for i in 0..fs::CHANNELS * fs::XFER_PAGES {
         let h = k.page_at(info.space, XFER_AT + i * 4096, map::WRITE);
+        XFER_PAGES[i as usize].store(h, SeqCst);
         shared[n] = (h, fs::XFER + i * 4096, map::WRITE);
         n += 1;
     }

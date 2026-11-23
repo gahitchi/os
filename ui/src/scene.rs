@@ -17,6 +17,8 @@ pub struct WindowView<'a> {
     pub pixels: Option<(&'a [u32], i32, i32, i32)>,
     /// The app stopped answering (drawn dimmed, with a note).
     pub stuck: bool,
+    /// The loose group it is in: its label and colour.
+    pub group: Option<(&'a str, Color)>,
 }
 
 /// One item in the dock.
@@ -26,12 +28,32 @@ pub struct DockItem<'a> {
     pub running: bool,
 }
 
+/// A loose group's label, left of the dock.
+pub struct GroupChip<'a> {
+    pub name: &'a str,
+    pub color: Color,
+    pub count: usize,
+}
+
 pub struct Desktop<'a> {
     pub clock: &'a str,
     /// The text in the middle of the strip (what Alaya wants you to know).
     pub status: &'a str,
     pub dock: &'a [DockItem<'a>],
+    pub groups: &'a [GroupChip<'a>],
     pub show_pointer: bool,
+    /// The login screen is up: no windows, no dock.
+    pub locked: bool,
+    /// The real PIN box is open: this person's picture shows in the strip.
+    pub trusted: Option<usize>,
+}
+
+/// The group labels' rectangles, left of the dock.
+pub fn group_chip(w: i32, h: i32, items: usize, groups: usize, i: usize) -> Rect {
+    let d = dock_rect(w, h, items);
+    let cw = 92;
+    let x = d.x - 16 - (groups - i) as i32 * (cw + 8);
+    Rect::new(x, d.y + 8, cw, 32)
 }
 
 /// The dock's rectangle on a screen `w` by `h`, and each item's.
@@ -73,7 +95,7 @@ pub fn pointer_rect(x: i32, y: i32) -> Rect {
     Rect::new(x, y, 13, 20)
 }
 
-fn draw_pointer(cv: &mut Canvas, x: i32, y: i32) {
+pub fn draw_pointer(cv: &mut Canvas, x: i32, y: i32) {
     for (dy, row) in POINTER.iter().enumerate() {
         for (dx, ch) in row.bytes().enumerate() {
             let c = match ch {
@@ -107,11 +129,29 @@ fn draw_window(
         cv.clip()
             .intersect(Rect::new(f.x + 12, f.y, close.x - f.x - 20, TITLE)),
     );
+    let mut tx = f.x + 12;
+    if let Some((name, c)) = v.group {
+        // The group's label in front of the title.
+        let gw = fonts.width(Face::Strong, 11, name) + 14;
+        let g = Rect::new(tx, f.y + (TITLE - 18) / 2, gw, 18);
+        cv.round_rect(g, 9, c);
+        let (a2, l2) = fonts.metrics(Face::Strong, 11);
+        fonts.draw(
+            cv,
+            Face::Strong,
+            11,
+            g.x + 7,
+            g.y + (18 - l2) / 2 + a2,
+            name,
+            0xff_ff_ff,
+        );
+        tx += gw + 8;
+    }
     fonts.draw(
         cv,
         Face::Strong,
         13,
-        f.x + 12,
+        tx,
         f.y + (TITLE - lh) / 2 + asc,
         v.title,
         theme::INK,
@@ -173,18 +213,50 @@ pub fn draw<'a>(
         theme::WALL_BOTTOM,
     );
     let front = wm.focused();
-    for w in &wm.wins {
+    for w in wm.wins.iter().filter(|_| !desk.locked) {
         if !w.frame.grow(crate::wm::SHADOW).intersect(clip).is_empty() {
             draw_window(cv, fonts, w, &views(w.id), Some(w.id) == front);
         }
     }
-    if let Some(p) = wm.preview {
+    if let Some(p) = wm.preview.filter(|_| !desk.locked) {
         let p = p.grow(-6);
         cv.round_rect_alpha(p, 12, theme::ACCENT_SOFT, 90);
         cv.round_frame(p, 12, theme::ACCENT_SOFT);
     }
+    // The group labels.
+    for (i, g) in desk.groups.iter().enumerate().filter(|_| !desk.locked) {
+        let r = group_chip(sw, sh, desk.dock.len(), desk.groups.len(), i);
+        if r.intersect(clip).is_empty() {
+            continue;
+        }
+        cv.round_rect_alpha(r, 16, theme::BAR, 225);
+        cv.round_rect(Rect::new(r.x + 10, r.y + 11, 10, 10), 5, g.color);
+        let (asc, lh) = fonts.metrics(Face::Strong, 12);
+        fonts.draw(
+            cv,
+            Face::Strong,
+            12,
+            r.x + 26,
+            r.y + (r.h - lh) / 2 + asc,
+            g.name,
+            theme::INK,
+        );
+        if g.count > 0 {
+            let n = alloc::format!("{}", g.count);
+            let nw = fonts.width(Face::Text, 12, &n);
+            fonts.draw(
+                cv,
+                Face::Text,
+                12,
+                r.right() - nw - 10,
+                r.y + (r.h - lh) / 2 + asc,
+                &n,
+                theme::MUTED,
+            );
+        }
+    }
     // The dock.
-    if !desk.dock.is_empty() {
+    if !desk.dock.is_empty() && !desk.locked {
         let d = dock_rect(sw, sh, desk.dock.len());
         if !d.intersect(clip).is_empty() {
             cv.round_rect_alpha(d, 14, theme::BAR, 225);
@@ -219,6 +291,22 @@ pub fn draw<'a>(
     let (asc, lh) = fonts.metrics(Face::Strong, 14);
     let ty = (STRIP - lh) / 2 + asc;
     fonts.draw(cv, Face::Strong, 14, 14, ty, "ALAYA", theme::BAR_INK);
+    if let Some(pic) = desk.trusted {
+        // Only the real PIN box shows the person's picture here.
+        let x = 14 + fonts.width(Face::Strong, 14, "ALAYA") + 18;
+        let r = Rect::new(x, (STRIP - 24) / 2, 24, 24);
+        cv.round_rect(r.grow(2), 6, theme::WIN);
+        crate::login::draw_picture(cv, r, pic);
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            r.right() + 10,
+            ty,
+            "Your picture: this PIN box is Alaya's own",
+            theme::BAR_INK,
+        );
+    }
     let cw = fonts.width(Face::Text, 14, desk.clock);
     fonts.draw(
         cv,

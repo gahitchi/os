@@ -10,6 +10,7 @@ repository.workspace = true
 bench = false
 
 [dependencies]
+alaya-crypto = { path = "../crypto" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
