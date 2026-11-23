@@ -308,7 +308,10 @@ impl Wm {
         } else if x <= a.x + 1 {
             Some((Place::Left, Rect::new(a.x, a.y, a.w / 2, a.h)))
         } else if x >= a.right() - 2 {
-            Some((Place::Right, Rect::new(a.x + a.w / 2, a.y, a.w - a.w / 2, a.h)))
+            Some((
+                Place::Right,
+                Rect::new(a.x + a.w / 2, a.y, a.w - a.w / 2, a.h),
+            ))
         } else {
             None
         }
@@ -347,7 +350,11 @@ impl Wm {
             Place::Right => Rect::new(a.x + a.w / 2, a.y, a.w - a.w / 2, a.h),
             Place::Free | Place::Tiled => self.wins[i].free,
         };
-        self.wins[i].place = if place == Place::Tiled { Place::Free } else { place };
+        self.wins[i].place = if place == Place::Tiled {
+            Place::Free
+        } else {
+            place
+        };
         self.set_frame(i, r, &mut out);
         out
     }

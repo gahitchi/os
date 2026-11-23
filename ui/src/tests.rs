@@ -224,7 +224,10 @@ fn edges_snap_and_snapped_windows_come_loose() {
     assert_eq!(wm.get(1).unwrap().frame, wm.area);
     let out = wm.place(1, Place::Right);
     assert!(damage(&out));
-    assert_eq!(wm.get(1).unwrap().frame, Rect::new(640, STRIP, 640, 800 - STRIP));
+    assert_eq!(
+        wm.get(1).unwrap().frame,
+        Rect::new(640, STRIP, 640, 800 - STRIP)
+    );
     wm.place(1, Place::Free);
     assert_eq!(wm.get(1).unwrap().frame, before);
 }
@@ -236,7 +239,10 @@ fn resizing_keeps_a_minimum_size() {
     let f = wm.get(1).unwrap().frame;
     // Grab the bottom-right corner, just outside the window.
     wm.pointer_move(f.right() + 2, f.bottom() + 2);
-    assert!(matches!(wm.hit(f.right() + 2, f.bottom() + 2), Hit::Edge(1, _)));
+    assert!(matches!(
+        wm.hit(f.right() + 2, f.bottom() + 2),
+        Hit::Edge(1, _)
+    ));
     wm.button(1, true);
     wm.pointer_move(f.right() + 102, f.bottom() + 52);
     wm.button(1, false);
@@ -269,7 +275,11 @@ fn tiling_shares_the_screen_without_overlap() {
     wm.add(6, 300, 200);
     assert!(wm.wins.iter().all(|w| w.place == Place::Tiled));
     wm.remove(3);
-    let used: i64 = wm.wins.iter().map(|w| i64::from(w.frame.w) * i64::from(w.frame.h)).sum();
+    let used: i64 = wm
+        .wins
+        .iter()
+        .map(|w| i64::from(w.frame.w) * i64::from(w.frame.h))
+        .sum();
     let area = i64::from(wm.area.w) * i64::from(wm.area.h);
     assert!(used * 100 / area > 80, "tiles leave too much empty");
     // Dragging one tile onto another swaps them.
@@ -282,7 +292,11 @@ fn tiling_shares_the_screen_without_overlap() {
     assert_eq!(wm.get(2).unwrap().frame, a);
     // Back to floating: every window where it was.
     wm.set_tiling(false);
-    assert!(wm.wins.iter().all(|w| w.place == Place::Free && w.frame == w.free));
+    assert!(
+        wm.wins
+            .iter()
+            .all(|w| w.place == Place::Free && w.frame == w.free)
+    );
 }
 
 #[test]
@@ -302,9 +316,20 @@ fn clicks_in_the_content_go_to_the_app() {
     }));
     // Moves while held go to it too, even outside the window.
     let out = wm.pointer_move(c.x - 100, c.y + 40);
-    assert!(out.iter().any(|o| matches!(o, Out::Pointer { id: 7, x: -100, .. })));
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, Out::Pointer { id: 7, x: -100, .. }))
+    );
     let out = wm.button(1, false);
-    assert!(out.iter().any(|o| matches!(o, Out::Pointer { id: 7, down: false, button: 1, .. })));
+    assert!(out.iter().any(|o| matches!(
+        o,
+        Out::Pointer {
+            id: 7,
+            down: false,
+            button: 1,
+            ..
+        }
+    )));
     // The close button asks the app.
     let x = wm.get(7).unwrap().close_button();
     wm.pointer_move(x.x + 5, x.y + 5);
@@ -361,7 +386,13 @@ fn widgets_write_the_accessibility_tree_and_press_by_name() {
     ui.text_box(Rect::new(10, 40, 200, 120), "Numbers", &mut edit, true);
     let (saved, _) = ui.button(10, 200, "Save", true);
     let (other, _) = ui.button(100, 200, "Close", false);
-    ui.list(Rect::new(220, 10, 170, 200), "Files", &["a.txt", "b.txt"], Some(1), &[]);
+    ui.list(
+        Rect::new(220, 10, 170, 200),
+        "Files",
+        &["a.txt", "b.txt"],
+        Some(1),
+        &[],
+    );
     assert!(saved && !other);
     let roles: Vec<Role> = ui.tree.iter().map(|n| n.role).collect();
     assert_eq!(
@@ -417,10 +448,24 @@ fn picture_of_the_desktop() {
         ui.button(16, 210, "Save", true);
         ui.button(90, 210, "Make a chart", false);
         let marks = [
-            Some(("Up to date", crate::widgets::theme::OK, crate::widgets::theme::OK_BG)),
-            Some(("Needs a look", crate::widgets::theme::WARN, crate::widgets::theme::WARN_BG)),
+            Some((
+                "Up to date",
+                crate::widgets::theme::OK,
+                crate::widgets::theme::OK_BG,
+            )),
+            Some((
+                "Needs a look",
+                crate::widgets::theme::WARN,
+                crate::widgets::theme::WARN_BG,
+            )),
         ];
-        ui.list(Rect::new(310, 40, 140, 150), "Files", &["chart.png", "report"], Some(0), &marks);
+        ui.list(
+            Rect::new(310, 40, 140, 150),
+            "Files",
+            &["chart.png", "report"],
+            Some(0),
+            &marks,
+        );
     }
     let app: &'static [u32] = std::boxed::Box::leak(app.into_boxed_slice());
     let mut wm = Wm::new(w, h);
@@ -430,21 +475,54 @@ fn picture_of_the_desktop() {
     let mut px = vec![0u32; (w * h) as usize];
     let mut cv = Canvas::new(&mut px, w, h, w).unwrap();
     let views = |id: u32| WindowView {
-        title: if id == 1 { "Files" } else { "Text editor — numbers.txt" },
-        pixels: if id == 2 { Some((app, aw, ah, aw)) } else { None },
+        title: if id == 1 {
+            "Files"
+        } else {
+            "Text editor — numbers.txt"
+        },
+        pixels: if id == 2 {
+            Some((app, aw, ah, aw))
+        } else {
+            None
+        },
         stuck: false,
     };
     let dock = [
-        DockItem { name: "Files", color: 0x23_68_6b, running: true },
-        DockItem { name: "Editor", color: 0x2d_5c_9c, running: true },
-        DockItem { name: "Chart", color: 0x9a_5b_00, running: false },
-        DockItem { name: "Settings", color: 0x5b_6b_6c, running: false },
+        DockItem {
+            name: "Files",
+            color: 0x23_68_6b,
+            running: true,
+        },
+        DockItem {
+            name: "Editor",
+            color: 0x2d_5c_9c,
+            running: true,
+        },
+        DockItem {
+            name: "Chart",
+            color: 0x9a_5b_00,
+            running: false,
+        },
+        DockItem {
+            name: "Settings",
+            color: 0x5b_6b_6c,
+            running: false,
+        },
     ];
-    let desk = Desktop { clock: "10:42", status: "", dock: &dock, show_pointer: true };
+    let desk = Desktop {
+        clock: "10:42",
+        status: "",
+        dock: &dock,
+        show_pointer: true,
+    };
     scene::draw(&mut cv, &mut f, &wm, &views, &desk, Rect::new(0, 0, w, h));
     let mut out = std::format!("P6\n{w} {h}\n255\n").into_bytes();
     for p in &px {
         out.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
     }
-    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/desktop.ppm"), out).unwrap();
+    std::fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../target/desktop.ppm"),
+        out,
+    )
+    .unwrap();
 }

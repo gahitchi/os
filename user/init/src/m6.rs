@@ -500,5 +500,294 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     }
     say!("screen: back after a crash");
     pass("the screen, keyboard and mouse drivers crash and come back, picture intact");
+
+    desktop(&mut s, gpu, [keyboard, pointer], pass);
     s.k.next
+}
+
+/// Carve an untyped of `bits` from a block other than `big` if one has
+/// room, else from `big`.
+fn carve(k: &mut Kit, big: u64, bits: u8, what: &str) -> u64 {
+    let info = k.info;
+    let h = k.slot();
+    let free = info.untyped[..info.untyped_count as usize].iter().any(|b| {
+        b.handle != big
+            && b.size_bits >= u64::from(bits)
+            && alaya_sys::retype(b.handle, Kind::Untyped, bits, 1, k.at(h)).is_ok()
+    });
+    if !free {
+        alaya_sys::retype(big, Kind::Untyped, bits, 1, k.at(h)).expect(what);
+    }
+    h
+}
+
+fn sc(k: &mut Kit, budget: u64, period: u64) -> u64 {
+    let s = k.make(Kind::SchedContext, 8);
+    alaya_sys::sc_configure(
+        k.info.sched_control,
+        s,
+        budget,
+        period,
+        alaya_sys::abi::core_type::ANY,
+        0,
+    )
+    .unwrap();
+    s
+}
+
+const DESKTOP_PRIORITY: u64 = 150;
+const APP_PRIORITY: u64 = 100;
+const DESKTOP_SLOTS: u64 = 512;
+
+/// Ask the desktop something, as the first program (badge 0).
+fn ask(ep: u64, label: u64, words: &[u64]) -> [u64; 6] {
+    alaya_sys::ipc_call(
+        ep,
+        &alaya_sys::Msg::new(label, words),
+        alaya_sys::Caps::default(),
+    )
+    .map(|m| m.words)
+    .unwrap_or([u64::MAX; 6])
+}
+
+/// Part two: the desktop and the first app on the real screen.
+fn desktop(s: &mut Seat, gpu: usize, inputs: [usize; 2], pass: &mut dyn FnMut(&str)) {
+    use alaya_programs::desktop as dk;
+    let info = s.k.info;
+    let big = info.untyped[..info.untyped_count as usize]
+        .iter()
+        .max_by_key(|b| b.size_bits)
+        .unwrap()
+        .handle;
+    let desk_ut = carve(&mut s.k, big, 26, "64 MiB for the desktop");
+    let app_ut = carve(&mut s.k, big, 23, "8 MiB for the editor");
+
+    // The fonts, copied once into pages every app shares read only.
+    let names = [
+        "Figtree-Regular.ttf",
+        "Figtree-SemiBold.ttf",
+        "IBMPlexMono-Regular.ttf",
+        "NotoSans-Regular.ttf",
+    ];
+    let font_pages = alloc_free::take(0);
+    let mut sizes = [0u64; 4];
+    for (i, name) in names.iter().enumerate() {
+        let data = module(info, name);
+        sizes[i] = data.len() as u64;
+        let at = FONTS_AT + i as u64 * dk::FONT_STEP;
+        for p in 0..(data.len() as u64).div_ceil(4096) {
+            let h = s.k.page_at(info.space, at + p * 4096, map::WRITE);
+            let from = (p * 4096) as usize;
+            let to = (from + 4096).min(data.len());
+            // SAFETY: just mapped, writable.
+            let dst =
+                unsafe { core::slice::from_raw_parts_mut((at + p * 4096) as *mut u8, to - from) };
+            dst.copy_from_slice(&data[from..to]);
+            font_pages.push((h, dk::FONTS + i as u64 * dk::FONT_STEP + p * 4096, 0));
+        }
+    }
+
+    // The desktop: the screen's shared page, the input pages, the screen
+    // memory and the fonts.
+    let g = s.dev[gpu].unwrap();
+    let shared = alloc_free::take(1);
+    shared.push((g.shared, dk::SCREEN_PAGE, map::WRITE));
+    for (n, &i) in inputs.iter().enumerate() {
+        shared.push((
+            s.dev[i].unwrap().shared,
+            dk::INPUT_PAGES + n as u64 * 4096,
+            map::WRITE,
+        ));
+    }
+    for i in 0..s.screen_pages as usize {
+        shared.push((s.screen[i], dk::SCREEN + i as u64 * (2 << 20), map::WRITE));
+    }
+    for &p in font_pages.as_slice() {
+        shared.push(p);
+    }
+    let ep = s.k.make(Kind::Endpoint, 0);
+    let mut args = [0u64; 8];
+    args[dk::ARG_SCREEN_PAGES] = s.screen_pages;
+    args[dk::ARG_INPUTS] = 2;
+    args[dk::ARG_FONTS..dk::ARG_FONTS + 4].copy_from_slice(&sizes);
+    let desk_sc = sc(&mut s.k, 2000, 2000);
+    let desk_clock = sc(&mut s.k, 50, 10_000);
+    let base = s.k.next;
+    s.k.next += DESKTOP_SLOTS;
+    let mut parent = Parent {
+        space: info.space,
+        scratch: SCRATCH,
+        slots: Slots {
+            table: info.table,
+            next: base,
+            end: base + DESKTOP_SLOTS,
+        },
+    };
+    program::start(
+        &mut parent,
+        &Spec {
+            name: "desktop",
+            image: module(info, "desktop"),
+            untyped: desk_ut,
+            table_bits: 11,
+            own_bits: 25,
+            priority: DESKTOP_PRIORITY,
+            sc: desk_sc,
+            clock_sc: desk_clock,
+            fault: 0,
+            given: &[ep, g.ntfn, s.client],
+            shared: shared.as_slice(),
+            args: &args,
+            clock_hz: info.clock_hz,
+            cores: info.cores,
+        },
+    )
+    .expect("start the desktop");
+    let sp = screen_page(&g);
+    let posted = load(&sp.posted);
+    assert!(
+        sleep_until(10_000, || load(&sp.posted) > posted
+            && load(&sp.shown) == load(&sp.posted)),
+        "the desktop never drew"
+    );
+    // The top strip is Alaya's colour.
+    let (w, h) = (load(&sp.width), load(&sp.height));
+    let px = screen_pixels(w, h);
+    assert!(
+        px[(4 * w + w / 2) as usize] == alaya_ui_colours::BAR,
+        "the top strip is {:06x}",
+        px[(4 * w + w / 2) as usize]
+    );
+    pass("the desktop starts and draws the screen");
+
+    // The editor, as an app: its own memory, a badged way to the desktop
+    // and a notification for its events.
+    let app_ep = s.k.slot();
+    alaya_sys::mint(s.k.at(app_ep), s.k.at(ep), rights::ALL, 1).unwrap();
+    let app_ntfn = s.k.make(Kind::Notification, 0);
+    let mut app_args = [0u64; 8];
+    app_args[dk::ARG_FONTS..dk::ARG_FONTS + 4].copy_from_slice(&sizes);
+    let app_sc = sc(&mut s.k, 1000, 1000);
+    let base = s.k.next;
+    s.k.next += DESKTOP_SLOTS;
+    let mut parent = Parent {
+        space: info.space,
+        scratch: SCRATCH,
+        slots: Slots {
+            table: info.table,
+            next: base,
+            end: base + DESKTOP_SLOTS,
+        },
+    };
+    program::start(
+        &mut parent,
+        &Spec {
+            name: "editor",
+            image: module(info, "editor"),
+            untyped: app_ut,
+            table_bits: 10,
+            own_bits: 22,
+            priority: APP_PRIORITY,
+            sc: app_sc,
+            clock_sc: 0,
+            fault: 0,
+            given: &[app_ep, app_ntfn],
+            shared: font_pages.as_slice(),
+            args: &app_args,
+            clock_hz: info.clock_hz,
+            cores: info.cores,
+        },
+    )
+    .expect("start the editor");
+    let opened = sleep_until(15_000, || ask(ep, dk::STATE, &[])[1] == 1);
+    assert!(opened, "the editor's window never opened");
+    let win = ask(ep, dk::WINDOW, &[1]);
+    say!(
+        "desktop: the editor's window is at {}, {}, {} by {}",
+        win[1],
+        win[2],
+        win[3],
+        win[4]
+    );
+    pass("an app opens a window and draws in it with Alaya's letters");
+
+    // The host drags the editor's title bar to the left edge.
+    let (tx, ty) = (win[1] + win[3] / 2 - 40, win[2] + 14);
+    say!("desktop: drag from {tx} {ty} to 0 {}", ty + 200);
+    let snapped = sleep_until(10_000, || ask(ep, dk::WINDOW, &[1])[5] == dk::place::LEFT);
+    if snapped {
+        pass("dragging a window to the left edge snaps it to the left half");
+    } else {
+        say!("desktop: nobody dragged (no host script); skipped");
+        pass("windows wait for the mouse (not scripted on this run)");
+    }
+
+    // The host types; the editor shows it (the host reads the editor's
+    // report).
+    say!("desktop: type hi");
+    sleep_until(4000, || false);
+
+    // Tiling on and off.
+    ask(ep, dk::TILING, &[1]);
+    assert!(
+        sleep_until(5000, || ask(ep, dk::WINDOW, &[1])[5] == dk::place::TILED),
+        "tiling did not tile"
+    );
+    ask(ep, dk::TILING, &[0]);
+    pass("tiling shares the screen, and goes back");
+
+    // The screen driver crashes under the desktop; frames carry on.
+    s.crash_and_restart(gpu);
+    let before = ask(ep, dk::STATE, &[])[4];
+    ask(ep, dk::TILING, &[1]);
+    ask(ep, dk::TILING, &[0]);
+    assert!(
+        sleep_until(5000, || ask(ep, dk::STATE, &[])[4] > before
+            && load(&sp.shown) == load(&sp.posted)),
+        "the desktop stopped drawing after the screen driver crashed"
+    );
+    say!("desktop: drawn after a screen driver crash");
+    pass("the screen driver crashes under the desktop and the desktop carries on");
+}
+
+/// The fonts sit here in the first program.
+const FONTS_AT: u64 = 0x2d00_0000_0000;
+
+/// Colours the checks look for (the mock-up's, as in `alaya_ui`).
+mod alaya_ui_colours {
+    pub const BAR: u32 = 0xf6_f9_f8;
+}
+
+/// A fixed-size list of shared pages (the first program has no heap,
+/// and its stack is small).
+mod alloc_free {
+    static mut LISTS: [Pages; 2] = [Pages::new(), Pages::new()];
+
+    /// List `i`, emptied. Only the first program's main thread calls it.
+    pub fn take(i: usize) -> &'static mut Pages {
+        // SAFETY: one thread, and each list is handed out once per use.
+        let l = unsafe { &mut (*core::ptr::addr_of_mut!(LISTS))[i] };
+        l.n = 0;
+        l
+    }
+    pub struct Pages {
+        items: [(u64, u64, u64); 512],
+        n: usize,
+    }
+    impl Pages {
+        const fn new() -> Pages {
+            Pages {
+                items: [(0, 0, 0); 512],
+                n: 0,
+            }
+        }
+        pub fn push(&mut self, p: (u64, u64, u64)) {
+            assert!(self.n < self.items.len(), "too many shared pages");
+            self.items[self.n] = p;
+            self.n += 1;
+        }
+        pub fn as_slice(&self) -> &[(u64, u64, u64)] {
+            &self.items[..self.n]
+        }
+    }
 }

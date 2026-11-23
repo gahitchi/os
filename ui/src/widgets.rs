@@ -293,13 +293,18 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
             (theme::ACCENT, theme::ACCENT_INK, theme::ACCENT)
         } else {
             (
-                if hover { theme::ACCENT_SOFT } else { theme::CHROME },
+                if hover {
+                    theme::ACCENT_SOFT
+                } else {
+                    theme::CHROME
+                },
                 theme::INK,
                 theme::LINE,
             )
         };
         self.cv.round_rect(r, 7, bg);
-        self.cv.round_frame(r, 7, if focused { theme::ACCENT } else { line });
+        self.cv
+            .round_frame(r, 7, if focused { theme::ACCENT } else { line });
         let (asc, lh) = self.fonts.metrics(Face::Strong, TEXT_PX);
         let ty = y + (30 - lh) / 2 + asc;
         self.fonts
@@ -320,13 +325,7 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
     /// A text box `w` by `h` (more than one line high: multi-line). Keys
     /// go to it while it has the keyboard; returns true if the text
     /// changed. `mono` draws it in the code font.
-    pub fn text_box(
-        &mut self,
-        r: Rect,
-        name: &str,
-        edit: &mut TextEdit,
-        mono: bool,
-    ) -> bool {
+    pub fn text_box(&mut self, r: Rect, name: &str, edit: &mut TextEdit, mono: bool) -> bool {
         let face = if mono { Face::Mono } else { Face::Text };
         let (asc, lh) = self.fonts.metrics(face, TEXT_PX);
         let multiline = r.h > lh + 16;
@@ -395,7 +394,11 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
             self.fonts
                 .draw(self.cv, face, TEXT_PX, r.x + 10, y + asc, line, theme::INK);
             if focused && edit.cursor >= start && edit.cursor <= start + line.len() {
-                let cx = r.x + 10 + self.fonts.width(face, TEXT_PX, &line[..edit.cursor - start]);
+                let cx = r.x
+                    + 10
+                    + self
+                        .fonts
+                        .width(face, TEXT_PX, &line[..edit.cursor - start]);
                 self.cv.fill(Rect::new(cx, y, 2, lh), theme::ACCENT);
             }
             y += lh;
@@ -448,8 +451,15 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
                 let m = Rect::new(rr.right() - tw - 20, rr.y + 6, tw + 14, 18);
                 self.cv.round_rect(m, 9, *bg);
                 let (a2, l2) = self.fonts.metrics(Face::Strong, 12);
-                self.fonts
-                    .draw(self.cv, Face::Strong, 12, m.x + 7, m.y + (18 - l2) / 2 + a2, t, *ink);
+                self.fonts.draw(
+                    self.cv,
+                    Face::Strong,
+                    12,
+                    m.x + 7,
+                    m.y + (18 - l2) / 2 + a2,
+                    t,
+                    *ink,
+                );
                 if !value.is_empty() {
                     value.push_str(", ");
                 }
@@ -499,8 +509,10 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
 /// US English keyboard (decision 106): a key code (the numbers virtio
 /// input sends) to a key, with or without Shift.
 pub fn us_key(code: u16, shift: bool) -> Option<Key> {
-    const LOWER: &[u8; 58] = b"\0\x1b1234567890-=\x08\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
-    const UPPER: &[u8; 58] = b"\0\x1b!@#$%^&*()_+\x08\tQWERTYUIOP{}\n\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
+    const LOWER: &[u8; 58] =
+        b"\0\x1b1234567890-=\x08\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
+    const UPPER: &[u8; 58] =
+        b"\0\x1b!@#$%^&*()_+\x08\tQWERTYUIOP{}\n\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
     Some(match code {
         1 => Key::Escape,
         14 => Key::Backspace,

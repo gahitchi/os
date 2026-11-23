@@ -57,3 +57,4 @@ name = "input"
 path = "src/bin/input.rs"
 test = false
 bench = false
+

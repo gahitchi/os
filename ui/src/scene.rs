@@ -86,7 +86,13 @@ fn draw_pointer(cv: &mut Canvas, x: i32, y: i32) {
     }
 }
 
-fn draw_window(cv: &mut Canvas, fonts: &mut Fonts, w: &crate::wm::Window, v: &WindowView, front: bool) {
+fn draw_window(
+    cv: &mut Canvas,
+    fonts: &mut Fonts,
+    w: &crate::wm::Window,
+    v: &WindowView,
+    front: bool,
+) {
     let f = w.frame;
     cv.shadow(f, 10, if front { 14 } else { 8 });
     cv.round_rect(f, 10, theme::WIN);
@@ -97,8 +103,19 @@ fn draw_window(cv: &mut Canvas, fonts: &mut Fonts, w: &crate::wm::Window, v: &Wi
     cv.fill(Rect::new(f.x, f.y + TITLE - 1, f.w, 1), theme::LINE);
     let (asc, lh) = fonts.metrics(Face::Strong, 13);
     let close = w.close_button();
-    let old = cv.set_clip(cv.clip().intersect(Rect::new(f.x + 12, f.y, close.x - f.x - 20, TITLE)));
-    fonts.draw(cv, Face::Strong, 13, f.x + 12, f.y + (TITLE - lh) / 2 + asc, v.title, theme::INK);
+    let old = cv.set_clip(
+        cv.clip()
+            .intersect(Rect::new(f.x + 12, f.y, close.x - f.x - 20, TITLE)),
+    );
+    fonts.draw(
+        cv,
+        Face::Strong,
+        13,
+        f.x + 12,
+        f.y + (TITLE - lh) / 2 + asc,
+        v.title,
+        theme::INK,
+    );
     cv.set_clip(old);
     // The close button: a soft circle with a cross.
     cv.round_rect(close, CLOSE_R, mix(theme::CHROME, theme::LINE, 140));
@@ -119,7 +136,15 @@ fn draw_window(cv: &mut Canvas, fonts: &mut Fonts, w: &crate::wm::Window, v: &Wi
     if v.stuck {
         cv.fill_alpha(c, 0xff_ff_ff, 140);
         let (asc, _) = fonts.metrics(Face::Text, 14);
-        fonts.draw(cv, Face::Text, 14, c.x + 16, c.y + 16 + asc, "Not answering. Alaya is restarting it.", theme::MUTED);
+        fonts.draw(
+            cv,
+            Face::Text,
+            14,
+            c.x + 16,
+            c.y + 16 + asc,
+            "Not answering. Alaya is restarting it.",
+            theme::MUTED,
+        );
     }
     cv.set_clip(old);
     cv.round_frame(f, 10, theme::LINE);
@@ -132,17 +157,21 @@ fn draw_window(cv: &mut Canvas, fonts: &mut Fonts, w: &crate::wm::Window, v: &Wi
 const CLOSE_R: i32 = 11;
 
 /// Draw everything inside `clip`.
-pub fn draw(
+pub fn draw<'a>(
     cv: &mut Canvas,
     fonts: &mut Fonts,
     wm: &Wm,
-    views: &dyn Fn(u32) -> WindowView<'static>,
+    views: &dyn Fn(u32) -> WindowView<'a>,
     desk: &Desktop,
     clip: Rect,
 ) {
     let (sw, sh) = (cv.width, cv.height);
     let old = cv.set_clip(clip);
-    cv.gradient(Rect::new(0, STRIP, sw, sh - STRIP), theme::WALL_TOP, theme::WALL_BOTTOM);
+    cv.gradient(
+        Rect::new(0, STRIP, sw, sh - STRIP),
+        theme::WALL_TOP,
+        theme::WALL_BOTTOM,
+    );
     let front = wm.focused();
     for w in &wm.wins {
         if !w.frame.grow(crate::wm::SHADOW).intersect(clip).is_empty() {
@@ -165,9 +194,21 @@ pub fn draw(
                 let initial: &str = item.name.get(..1).unwrap_or("?");
                 let tw = fonts.width(Face::Strong, 18, initial);
                 let (asc, lh) = fonts.metrics(Face::Strong, 18);
-                fonts.draw(cv, Face::Strong, 18, r.x + (r.w - tw) / 2, r.y + (r.h - lh) / 2 + asc, initial, 0xff_ff_ff);
+                fonts.draw(
+                    cv,
+                    Face::Strong,
+                    18,
+                    r.x + (r.w - tw) / 2,
+                    r.y + (r.h - lh) / 2 + asc,
+                    initial,
+                    0xff_ff_ff,
+                );
                 if item.running {
-                    cv.round_rect(Rect::new(r.x + r.w / 2 - 3, r.bottom() + 1, 6, 3), 1, theme::ACCENT);
+                    cv.round_rect(
+                        Rect::new(r.x + r.w / 2 - 3, r.bottom() + 1, 6, 3),
+                        1,
+                        theme::ACCENT,
+                    );
                 }
             }
         }
@@ -179,11 +220,27 @@ pub fn draw(
     let ty = (STRIP - lh) / 2 + asc;
     fonts.draw(cv, Face::Strong, 14, 14, ty, "ALAYA", theme::BAR_INK);
     let cw = fonts.width(Face::Text, 14, desk.clock);
-    fonts.draw(cv, Face::Text, 14, sw - cw - 14, ty, desk.clock, theme::BAR_INK);
+    fonts.draw(
+        cv,
+        Face::Text,
+        14,
+        sw - cw - 14,
+        ty,
+        desk.clock,
+        theme::BAR_INK,
+    );
     if !desk.status.is_empty() {
         let w = fonts.width(Face::Text, 13, desk.status);
         let (a2, l2) = fonts.metrics(Face::Text, 13);
-        fonts.draw(cv, Face::Text, 13, (sw - w) / 2, (STRIP - l2) / 2 + a2, desk.status, theme::MUTED);
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            (sw - w) / 2,
+            (STRIP - l2) / 2 + a2,
+            desk.status,
+            theme::MUTED,
+        );
     }
     if desk.show_pointer {
         let (px, py) = wm.pointer;

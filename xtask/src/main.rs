@@ -354,8 +354,16 @@ fn build_kernel(arch: Arch, release: bool) -> Result<PathBuf, String> {
 
 /// Programs the boot image carries besides the first one, all from the
 /// `alaya-programs` crate.
-const PROGRAMS: [&str; 7] = [
-    "keeper", "blk1", "blk2", "disktest", "store", "gpu", "input",
+const PROGRAMS: [&str; 9] = [
+    "keeper", "blk1", "blk2", "disktest", "store", "gpu", "input", "desktop", "editor",
+];
+
+/// Font files shipped in the boot image: text, strong, mono, fallback.
+const FONTS: [&str; 4] = [
+    "Figtree-Regular.ttf",
+    "Figtree-SemiBold.ttf",
+    "IBMPlexMono-Regular.ttf",
+    "NotoSans-Regular.ttf",
 ];
 
 /// Build the first program and the programs it starts. They live in the
@@ -373,6 +381,8 @@ fn build_init(arch: Arch, release: bool) -> Result<PathBuf, String> {
             "alaya-init",
             "--package",
             "alaya-programs",
+            "--package",
+            "alaya-apps",
             "--bins",
             "--target",
             arch.user_target(),
@@ -470,6 +480,14 @@ fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathB
     for name in PROGRAMS {
         copy(
             &user_binary(arch, release, name),
+            &iso_root.join("boot").join(name),
+        )?;
+        conf.push_str(&format!("    module_path: boot():/boot/{name}\n"));
+    }
+    // Alaya's letters (decision 105), in the order the desktop expects.
+    for name in FONTS {
+        copy(
+            &root().join("fonts").join(name),
             &iso_root.join("boot").join(name),
         )?;
         conf.push_str(&format!("    module_path: boot():/boot/{name}\n"));
@@ -766,6 +784,7 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
     let _ = fs::remove_file(&qmp_path);
     let mut qmp: Option<Qmp> = None;
     let mut pictures = 0;
+    let mut typed = false;
     let mut child = qemu(image, opts, "stdio")?
         .arg("-qmp")
         .arg(format!("unix:{},server=on,wait=off", qmp_path.display()))
@@ -854,6 +873,50 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     }
                     println!("  * typed 'a' and clicked the middle of the screen");
                 }
+                if let Some(rest) = line.split(DRAG_MARKER).nth(1) {
+                    let n: Vec<i64> = rest
+                        .split_whitespace()
+                        .filter_map(|w| w.parse().ok())
+                        .collect();
+                    let step = match (qmp.as_mut(), n.as_slice()) {
+                        (Some(q), [x0, y0, x1, y1]) => drag(q, (*x0, *y0), (*x1, *y1)),
+                        _ => Err(format!("cannot drag: {rest}")),
+                    };
+                    if let Err(e) = step {
+                        break Err(format!("drag: {e}"));
+                    }
+                    println!("  * dragged the window's title bar to the left edge");
+                }
+                if line.contains(TYPE_MARKER) {
+                    let step = match qmp.as_mut() {
+                        Some(q) => type_text(q, "hi"),
+                        None => Err("no control socket".into()),
+                    };
+                    if let Err(e) = step {
+                        break Err(format!("typing: {e}"));
+                    }
+                    println!("  * typed 'hi'");
+                }
+                if line.contains(DESKTOP_DRAWN_MARKER) {
+                    // A picture of the desktop for people to look at.
+                    if let Some(q) = qmp.as_mut() {
+                        let shot = root().join("build/screen-desktop.ppm");
+                        let _ = q.command(&format!(
+                            r#"{{"execute":"screendump","arguments":{{"filename":"{}"}}}}"#,
+                            shot.display()
+                        ));
+                        println!(
+                            "  * saved a screenshot of the desktop in {}",
+                            shot.display()
+                        );
+                    }
+                }
+                if line.contains(TYPED_MARKER) {
+                    typed = true;
+                }
+                if line.contains(DESKTOP_SKIPPED_MARKER) {
+                    break Err("the drag never reached the desktop".into());
+                }
                 if line.contains(INPUT_SKIPPED_MARKER) {
                     break Err("the key and click never reached Alaya".into());
                 }
@@ -863,6 +926,9 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     }
                     if pictures < 2 {
                         break Err("the screen was never checked (no test picture)".into());
+                    }
+                    if !typed {
+                        break Err("the editor never showed the typed text".into());
                     }
                     if opts.fuzz.is_some() && !fuzz_done {
                         break Err("the fuzzer never finished".into());
@@ -924,6 +990,11 @@ const PICTURE_SHOWN_MARKER: &str = "init: screen: test picture shown";
 const PICTURE_BACK_MARKER: &str = "init: screen: back after a crash";
 const INPUT_WAITING_MARKER: &str = "init: input: waiting for a key and a click";
 const INPUT_SKIPPED_MARKER: &str = "init: input: nobody pressed a key";
+const DRAG_MARKER: &str = "init: desktop: drag from";
+const DESKTOP_SKIPPED_MARKER: &str = "init: desktop: nobody dragged";
+const DESKTOP_DRAWN_MARKER: &str = "init: desktop: drawn after a screen driver crash";
+const TYPE_MARKER: &str = "init: desktop: type hi";
+const TYPED_MARKER: &str = "editor: text ends with: Welcome to Alaya./Type here.hi";
 
 /// The test picture of `m6.rs`: background, and (centre x, centre y,
 /// colour) of each square. Keep in sync.
@@ -1073,6 +1144,54 @@ fn send_key_and_click(q: &mut Qmp) -> Result<(), String> {
     send(q, "tablet0", &format!("{},{}", abs("x"), abs("y")))?;
     send(q, "tablet0", &btn(true))?;
     send(q, "tablet0", &btn(false))?;
+    Ok(())
+}
+
+/// Pointer positions in QEMU's tablet units for a 1280 by 800 screen.
+fn abs_event(x: i64, y: i64) -> String {
+    let ax = (x.clamp(0, 1279) * 32768 / 1280).min(32767);
+    let ay = (y.clamp(0, 799) * 32768 / 800).min(32767);
+    format!(
+        r#"{{"type":"abs","data":{{"axis":"x","value":{ax}}}}},{{"type":"abs","data":{{"axis":"y","value":{ay}}}}}"#
+    )
+}
+
+fn input_events(q: &mut Qmp, events: &str) -> Result<String, String> {
+    q.command(&format!(
+        r#"{{"execute":"input-send-event","arguments":{{"events":[{events}]}}}}"#
+    ))
+}
+
+/// Press the left button at `from`, move to `to` in steps, let go.
+fn drag(q: &mut Qmp, from: (i64, i64), to: (i64, i64)) -> Result<(), String> {
+    let btn = |down: bool| format!(r#"{{"type":"btn","data":{{"down":{down},"button":"left"}}}}"#);
+    input_events(q, &abs_event(from.0, from.1))?;
+    thread::sleep(Duration::from_millis(200));
+    input_events(q, &btn(true))?;
+    for i in 1..=10 {
+        let x = from.0 + (to.0 - from.0) * i / 10;
+        let y = from.1 + (to.1 - from.1) * i / 10;
+        input_events(q, &abs_event(x, y))?;
+        thread::sleep(Duration::from_millis(50));
+    }
+    thread::sleep(Duration::from_millis(200));
+    input_events(q, &btn(false))?;
+    Ok(())
+}
+
+/// Type lowercase letters on the virtual keyboard.
+fn type_text(q: &mut Qmp, text: &str) -> Result<(), String> {
+    for c in text.chars() {
+        for down in [true, false] {
+            input_events(
+                q,
+                &format!(
+                    r#"{{"type":"key","data":{{"down":{down},"key":{{"type":"qcode","data":"{c}"}}}}}}"#
+                ),
+            )?;
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
     Ok(())
 }
 

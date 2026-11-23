@@ -172,7 +172,8 @@ impl<'a> Font<'a> {
             let starts = ends + 2 * segs + 2;
             let deltas = starts + 2 * segs;
             let ranges = deltas + 2 * segs;
-            let i = (0..segs).find(|&i| u16_at(d, ends + 2 * i).is_some_and(|e| u32::from(e) >= c))?;
+            let i =
+                (0..segs).find(|&i| u16_at(d, ends + 2 * i).is_some_and(|e| u32::from(e) >= c))?;
             let start = u32::from(u16_at(d, starts + 2 * i)?);
             if c < start {
                 return None;

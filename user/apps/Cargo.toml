@@ -1,0 +1,30 @@
+[package]
+name = "alaya-apps"
+description = "The desktop (compositor) and Alaya's first apps, built with the toolkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+test = false
+bench = false
+
+[dependencies]
+alaya-sys = { path = "../sys" }
+alaya-programs = { path = "../programs" }
+alaya-ui = { path = "../../ui" }
+
+[[bin]]
+name = "desktop"
+path = "src/bin/desktop.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "editor"
+path = "src/bin/editor.rs"
+test = false
+bench = false

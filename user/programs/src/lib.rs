@@ -603,3 +603,106 @@ pub mod seat {
     const _: () = assert!(core::mem::size_of::<ScreenPage>() <= 4096);
     const _: () = assert!(core::mem::size_of::<InputPage>() <= 4096);
 }
+
+/// The compositor ("desktop") and the apps that open windows on it
+/// (milestone 6).
+///
+/// An app calls the desktop's endpoint (badged with the app's number).
+/// Each window's picture is two 2 MiB pages the desktop owns and lends to
+/// the app: the app draws into them, then says which part changed. The
+/// picture always has room for the whole screen; the window's current
+/// size says how much of it is shown. Events for the app wait in the
+/// desktop; it signals the app's notification and the app collects them.
+pub mod desktop {
+    /// OPEN: content width, height, the app's notification (sent along)
+    /// → status, window number.
+    pub const OPEN: u64 = 1;
+    /// PAGE: window, page index → status, with the page.
+    pub const PAGE: u64 = 2;
+    /// TITLE: window, length, then up to 32 bytes in four words.
+    pub const TITLE: u64 = 3;
+    /// DAMAGE: window, x, y, width, height (in the content).
+    pub const DAMAGE: u64 = 4;
+    /// EVENT: window → status, kind, then the event's words.
+    pub const EVENT: u64 = 5;
+    /// CLOSE: window.
+    pub const CLOSE: u64 = 6;
+    /// SIZE: window → status, content width, height.
+    pub const SIZE: u64 = 7;
+    /// TILING: on (1) or off (0). Test and keyboard use.
+    pub const TILING: u64 = 8;
+    /// STATE: → windows, focused window, tiling, frames drawn.
+    pub const STATE: u64 = 9;
+    /// WINDOW: window → status, x, y, width, height, place.
+    pub const WINDOW: u64 = 10;
+
+    pub const OK: u64 = 0;
+    pub const NO_WINDOW: u64 = 1;
+    pub const NO_MEMORY: u64 = 2;
+    pub const EMPTY: u64 = 3;
+    pub const BAD_REQUEST: u64 = 4;
+
+    /// Event kinds.
+    pub mod event {
+        /// Key: code, pressed (1) / released (0) / repeat (2), shift held.
+        pub const KEY: u64 = 1;
+        /// Pointer: x, y, button (0: none), down, moved.
+        pub const POINTER: u64 = 2;
+        /// The content has a new size: width, height.
+        pub const RESIZED: u64 = 3;
+        /// The close button was pressed.
+        pub const CLOSE: u64 = 4;
+        /// The window got (1) or lost (0) the keyboard.
+        pub const FOCUS: u64 = 5;
+    }
+
+    /// Places, as WINDOW reports them.
+    pub mod place {
+        pub const FREE: u64 = 0;
+        pub const LEFT: u64 = 1;
+        pub const RIGHT: u64 = 2;
+        pub const FULL: u64 = 3;
+        pub const TILED: u64 = 4;
+    }
+
+    /// Bit on an app's notification: events are waiting.
+    pub const EVENT_BIT: u64 = 1;
+
+    /// Pages per window picture, and the picture's row length in pixels.
+    pub const PAGES: u64 = 2;
+    pub const STRIDE: u64 = 1280;
+    pub const MAX_W: u64 = 1280;
+    pub const MAX_H: u64 = 800;
+
+    /// Where the desktop finds what the first program shares with it. All
+    /// of it, and the window pictures, sit within one 512 GiB part of the
+    /// address space, so few page tables are needed (a program's pool of
+    /// page tables is small).
+    pub const SCREEN_PAGE: u64 = 0x5300_0000_0000;
+    pub const INPUT_PAGES: u64 = 0x5300_0001_0000;
+    pub const SCREEN: u64 = 0x5300_0040_0000;
+    pub const FONTS: u64 = 0x5300_0100_0000;
+    /// Window pictures: in the desktop, one after another; in an app, its
+    /// window's.
+    pub const PICTURES: u64 = 0x5300_4000_0000;
+    pub const PICTURE_STEP: u64 = 0x80_0000;
+    /// Each font gets this much address space.
+    pub const FONT_STEP: u64 = 0x10_0000;
+
+    /// Given capabilities: its endpoint, the screen driver's notification,
+    /// the notification the drivers signal.
+    pub const G_EP: u64 = 0;
+    pub const G_SCREEN: u64 = 1;
+    pub const G_SEAT: u64 = 2;
+
+    /// Args: screen pages, input pages, then the four font sizes (text,
+    /// strong, mono, fallback).
+    pub const ARG_SCREEN_PAGES: usize = 0;
+    pub const ARG_INPUTS: usize = 1;
+    pub const ARG_FONTS: usize = 2;
+
+    /// Apps: given its desktop endpoint and its notification; fonts at
+    /// [`FONTS`] like the desktop, sizes from [`ARG_FONTS`] on.
+    pub const APP_G_DESKTOP: u64 = 0;
+    pub const APP_G_NTFN: u64 = 1;
+}
