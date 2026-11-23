@@ -13,6 +13,15 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 6, step 1: screen, keyboard and mouse.** Alaya has its own
+drivers for QEMU's virtual screen card, keyboard and mouse, each locked to
+its own memory. The driver never owns the screen: the pixels belong to the
+program that draws, so a crashed driver comes back and the picture with it.
+`cargo xtask test` checks a screenshot, types a key and clicks the mouse
+through QEMU, and crashes every driver once (checks 54 to 58, on PCs and
+ARM64). `cargo xtask run` opens a window. The desktop itself (windows,
+letters, apps) comes next. How it works: [`docs/desktop.md`](docs/desktop.md).
+
 **Milestone 5: safe storage.** The Alaya store keeps files so that a power
 cut at any moment leaves every file either fully saved or exactly as it was
 before. It never writes over anything: a save writes the changes to free
