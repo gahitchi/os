@@ -12,7 +12,7 @@ pub type Block = [u8; BLOCK];
 
 /// "ALAYASTO".
 pub const MAGIC: u64 = 0x4f54_5341_5941_4c41;
-pub const FORMAT: u64 = 1;
+pub const FORMAT: u64 = 2;
 
 /// The two front pages live in blocks 0 and 1; commit `g` writes page
 /// `g % 2`, so a cut while writing one leaves the other whole.

@@ -28,7 +28,9 @@ extern crate alloc;
 pub use alaya_crypto as crypto;
 pub mod disk;
 pub mod format;
+pub mod history;
 pub mod made;
+pub mod side;
 pub mod space;
 pub mod tree;
 
@@ -36,7 +38,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crypto::Keys;
+use crypto::{Keys, Rng};
 use disk::{Disk, IoError};
 use format::{BLOCK, Block, FRONT, Front, FrontError, Key, Ptr, RawNode, Val, word, words};
 use space::Space;
@@ -69,6 +71,11 @@ pub enum Error {
     /// A commit failed half way; the store must be opened again.
     MustReopen,
     BadRequest,
+    /// The file was forgotten for good: its key is gone (decision 62).
+    Forgotten,
+    /// Something else changed the same file since (rule B6): nothing was
+    /// done, so the person can see both and choose.
+    Conflict,
 }
 
 impl From<IoError> for Error {
@@ -179,6 +186,14 @@ pub mod what {
     pub const WROTE: u64 = 2;
     pub const DELETED: u64 = 4;
     pub const RENAMED: u64 = 8;
+    /// Its "made from" note or "as of" mark changed.
+    pub const MADE: u64 = 16;
+    /// Forgotten for good.
+    pub const FORGOTTEN: u64 = 32;
+    /// Put back as it was at an earlier moment (undo, restore).
+    pub const RESTORED: u64 = 64;
+    /// Kept from a side branch.
+    pub const KEPT: u64 = 128;
 }
 
 /// One recorded read: an app opened this version of a document.
@@ -215,6 +230,13 @@ const T_PEND: u64 = 3;
 const T_DEAD: u64 = 4;
 const T_SNAP: u64 = 5;
 const T_KEYCHECK: u64 = 6;
+/// A moment kept whatever thinning says: a named version or the start of
+/// a side branch.
+const T_PIN: u64 = 7;
+/// A side branch's page.
+const T_SIDE: u64 = 8;
+/// The next side branch number.
+const T_SIDENEXT: u64 = 9;
 const GEN_BITS: u64 = 40;
 const GEN_MAX: u64 = (1 << GEN_BITS) - 1;
 
@@ -245,6 +267,21 @@ fn k_snap(p: Person, c: Class, cn: u64) -> Key {
 fn snap_gen(k: Key) -> u64 {
     k.0 & GEN_MAX
 }
+fn k_pin(p: Person, cn: u64) -> Key {
+    Key(T_PIN << 56 | p << 44 | cn.min(GEN_MAX), 0)
+}
+fn k_side(owner: Person, id: u64) -> Key {
+    Key(T_SIDE << 56 | owner, id)
+}
+fn k_sidenext() -> Key {
+    Key(T_SIDENEXT << 56, 0)
+}
+/// A file's key in a person's key list.
+fn k_fkey(obj: u64) -> Key {
+    Key(obj, 0)
+}
+/// Bits of a freed block's record (word 1).
+const PEND_SCRUB: u64 = 1;
 
 // Keys of a person's class trees.
 const K_INODE: u64 = 0;
@@ -271,6 +308,10 @@ const H_CHANGE: u64 = 1;
 const H_READ: u64 = 2;
 const H_INFO: u64 = 3;
 const H_APPS: u64 = 4;
+/// The name of a named version (decision 58).
+const H_NAME: u64 = 5;
+/// The one-undo list (`history.rs`), after every commit's records.
+const H_ACT: u64 = 1 << 62;
 fn k_hist(cn: u64, kind: u64, seq: u64) -> Key {
     Key(cn << 8 | kind, seq)
 }
@@ -432,6 +473,14 @@ struct Branch {
     seen: BTreeMap<(App, FileId), made::Seen>,
     /// Which app last changed each document since they were opened.
     writer: BTreeMap<FileId, App>,
+    /// The person's list of file keys (empty in a side branch, which
+    /// uses its owner's). Not part of history: a key removed from it is
+    /// gone from the disk two commits later (`forget`).
+    ktab: Tree,
+    /// File keys in use, by file number.
+    fkeys: BTreeMap<u64, Keys>,
+    /// Set for a side branch.
+    side: Option<side::SideInfo>,
 }
 
 impl Branch {
@@ -450,6 +499,9 @@ impl Branch {
             apps_snapshot: false,
             seen: BTreeMap::new(),
             writer: BTreeMap::new(),
+            ktab: Tree::new(spare),
+            fkeys: BTreeMap::new(),
+            side: None,
         }
     }
 }
@@ -489,6 +541,8 @@ pub struct Store<D: Disk> {
     /// Record which app read which version of a document (on unless a
     /// measurement turns it off to see what it costs).
     pub track_reads: bool,
+    /// Where new file keys come from (see [`Store::stir`]).
+    rng: Rng,
 }
 
 /// The default history budget (decision 33): 15 % of the disk.
@@ -536,6 +590,7 @@ impl<D: Disk> Store<D> {
             released_bitmaps: Vec::new(),
             track_reads: true,
             now: 0,
+            rng: Rng::new(machine_secret),
         };
         // Every chunk gets its bitmap block in the first commit.
         for c in 0..s.space.chunks() {
@@ -595,7 +650,9 @@ impl<D: Disk> Store<D> {
                 released_bitmaps: Vec::new(),
                 track_reads: true,
                 now: 0,
+                rng: Rng::new(machine_secret),
             };
+            s.rng.stir(&f.cn.to_le_bytes());
             s.load_space()?;
             // Start every new mount past every commit number the front
             // pages show, and write its front page on the other page than
@@ -780,21 +837,202 @@ impl<D: Disk> Store<D> {
             apps_snapshot: false,
             seen: BTreeMap::new(),
             writer: BTreeMap::new(),
+            ktab: Tree::open(root(4), spare),
+            fkeys: BTreeMap::new(),
+            side: None,
         };
         self.branches.insert(p, br);
+        self.load_sides(p)?;
         Ok(())
     }
 
-    /// Close a person's files. Their changes must be committed first.
+    /// Close a person's files (and their side branches). Their changes
+    /// must be committed first.
     pub fn lock(&mut self, p: Person) -> Result<(), Error> {
-        match self.branches.get(&p) {
-            None => Ok(()),
-            Some(b) if b.touched => Err(Error::BadRequest),
-            Some(_) => {
-                self.branches.remove(&p);
-                Ok(())
+        if side::is_side(p) {
+            return Err(Error::BadRequest);
+        }
+        let mine: Vec<Person> = self
+            .branches
+            .iter()
+            .filter(|(id, b)| **id == p || b.side.as_ref().is_some_and(|s| s.owner == p))
+            .map(|(id, _)| *id)
+            .collect();
+        if mine.iter().any(|id| self.branches[id].touched) {
+            return Err(Error::BadRequest);
+        }
+        for id in mine {
+            self.branches.remove(&id);
+        }
+        Ok(())
+    }
+
+    /// Mix randomness into where new file keys come from. Alaya stirs in
+    /// the processor's random numbers and timer noise at every start; the
+    /// tests stir in fixed seeds.
+    pub fn stir(&mut self, extra: &[u8]) {
+        self.rng.stir(extra);
+    }
+
+    /// The person whose key list holds `id`'s file keys (a side branch
+    /// uses its owner's).
+    fn owner_of(&self, id: Person) -> Result<Person, Error> {
+        let b = self.branches.get(&id).ok_or(Error::Locked)?;
+        Ok(b.side.as_ref().map_or(id, |s| s.owner))
+    }
+
+    /// The key of document `obj` of `id` (a person or a side branch).
+    pub(crate) fn file_keys(&mut self, id: Person, obj: u64) -> Result<Keys, Error> {
+        let owner = self.owner_of(id)?;
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&owner).ok_or(Error::Locked)?;
+        if let Some(k) = b.fkeys.get(&obj) {
+            return Ok(k.clone());
+        }
+        let v = b
+            .ktab
+            .get(dev, &b.keys, k_fkey(obj))?
+            .ok_or(Error::Forgotten)?;
+        let k = Keys::new(v[..32].try_into().unwrap());
+        if b.fkeys.len() >= 256 {
+            b.fkeys.pop_first();
+        }
+        b.fkeys.insert(obj, k.clone());
+        Ok(k)
+    }
+
+    /// Make a fresh key for new document `obj` of `id`.
+    fn new_file_key(&mut self, id: Person, obj: u64) -> Result<(), Error> {
+        let owner = self.owner_of(id)?;
+        let mut ctx = [0u8; 16];
+        ctx[..8].copy_from_slice(&owner.to_le_bytes());
+        ctx[8..].copy_from_slice(&obj.to_le_bytes());
+        let secret = self.rng.next(&ctx);
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&owner).ok_or(Error::Locked)?;
+        let mut v = [0u8; 40];
+        v[..32].copy_from_slice(&secret);
+        b.ktab.insert(dev, &b.keys, k_fkey(obj), v)?;
+        b.touched = true;
+        b.fkeys.insert(obj, Keys::new(&secret));
+        Ok(())
+    }
+
+    /// A new file number for `id` (a side branch takes them from its
+    /// owner, so keeping its files never clashes).
+    fn alloc_obj(&mut self, id: Person) -> Result<u64, Error> {
+        let owner = self.owner_of(id)?;
+        let b = self.branch(owner)?;
+        let obj = b.next_obj;
+        b.next_obj += 1;
+        b.touched = true;
+        Ok(obj)
+    }
+
+    /// A directory entry's value: the file's number and its name. In
+    /// documents the name is scrambled with the file's own key, so a
+    /// forgotten file leaves no readable name behind in history.
+    fn seal_entry(
+        &mut self,
+        id: Person,
+        class: Class,
+        k: Key,
+        obj: u64,
+        name: &[u8],
+    ) -> Result<Val, Error> {
+        let mut v = [0u8; 40];
+        format::set_word(&mut v, 0, obj);
+        v[8..8 + name.len()].copy_from_slice(name);
+        if class == Class::Documents {
+            let fk = self.file_keys(id, obj)?;
+            fk.scramble_field(&[&k.0.to_le_bytes(), &k.1.to_le_bytes()], &mut v[8..]);
+        }
+        Ok(v)
+    }
+
+    /// The name in a directory entry; None for a forgotten file.
+    fn entry_name(
+        &mut self,
+        id: Person,
+        class: Class,
+        k: Key,
+        v: &Val,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let mut n = [0u8; 32];
+        n.copy_from_slice(&v[8..]);
+        if class == Class::Documents {
+            match self.file_keys(id, word(v, 0)) {
+                Ok(fk) => fk.scramble_field(&[&k.0.to_le_bytes(), &k.1.to_le_bytes()], &mut n),
+                Err(Error::Forgotten) => return Ok(None),
+                Err(e) => return Err(e),
             }
         }
+        let len = n.iter().position(|&b| b == 0).unwrap_or(NAME_MAX);
+        Ok(Some(n[..len].to_vec()))
+    }
+
+    /// The raw entries of `dir` with `lo <= hash and slot <= hi`.
+    fn raw_entries(
+        &mut self,
+        id: Person,
+        view: View,
+        dir: FileId,
+        lo: u64,
+        hi: u64,
+    ) -> Result<Vec<(Key, Val)>, Error> {
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&id).ok_or(Error::Locked)?;
+        let (lo, hi) = (k_dirent(dir.obj(), lo), k_dirent(dir.obj(), hi));
+        match view {
+            View::Live => b.trees[dir.class() as usize].collect(dev, &b.keys, lo, hi),
+            View::At(root) => Tree::open(root, false).collect(dev, &b.keys, lo, hi),
+        }
+    }
+
+    /// The entry called `name` in `dir`.
+    fn find_named(
+        &mut self,
+        id: Person,
+        view: View,
+        dir: FileId,
+        name: &[u8],
+    ) -> Result<Option<(Key, Val)>, Error> {
+        let h = name_hash(name);
+        Ok(self
+            .named_entries(id, view, dir, h, h | 0xff)?
+            .into_iter()
+            .find(|(_, _, n)| n == name)
+            .map(|(k, v, _)| (k, v)))
+    }
+
+    /// A free place for `name` in `dir`.
+    fn free_slot(&mut self, id: Person, dir: FileId, name: &[u8]) -> Result<Key, Error> {
+        let h = name_hash(name);
+        let used = self.raw_entries(id, View::Live, dir, h, h | 0xff)?;
+        let slot = (0..256u64)
+            .find(|i| !used.iter().any(|(k, _)| k.1 == h | i))
+            .ok_or(Error::Full)?;
+        Ok(k_dirent(dir.obj(), h | slot))
+    }
+
+    /// The entries of `dir` in tree `t` with their names (forgotten files
+    /// left out).
+    fn named_entries(
+        &mut self,
+        id: Person,
+        view: View,
+        dir: FileId,
+        lo: u64,
+        hi: u64,
+    ) -> Result<Vec<(Key, Val, Vec<u8>)>, Error> {
+        let raw = self.raw_entries(id, view, dir, lo, hi)?;
+        let mut out = Vec::new();
+        for (k, v) in raw {
+            if let Some(n) = self.entry_name(id, dir.class(), k, &v)? {
+                out.push((k, v, n));
+            }
+        }
+        Ok(out)
     }
 
     /// The people on this disk.
@@ -842,10 +1080,12 @@ impl<D: Disk> Store<D> {
                     1
                 };
             }
-            let nodes: usize = b.trees.iter().map(|t| t.mem).sum::<usize>() + b.hist.mem;
+            let nodes: usize =
+                b.trees.iter().map(|t| t.mem).sum::<usize>() + b.hist.mem + b.ktab.mem;
             let extra = (b.changes.len() + b.reads.len()) as u64 / 30 + 4;
             n += (nodes as u64 + extra + 1) * map;
             released += b.trees.iter().map(|t| t.released.len()).sum::<usize>() as u64;
+            released += b.ktab.released.len() as u64;
             released += b.dirty.len() as u64 + 2;
         }
         // The system tree: records for released blocks, the bitmaps, paths.
@@ -928,15 +1168,7 @@ impl<D: Disk> Store<D> {
         dir: FileId,
         name: &[u8],
     ) -> Result<Option<(Key, Val)>, Error> {
-        let Store { dev, branches, .. } = self;
-        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
-        find_in(
-            &b.trees[dir.class() as usize],
-            dev,
-            &b.keys,
-            dir.obj(),
-            name,
-        )
+        self.find_named(p, View::Live, dir, name)
     }
 
     pub fn lookup(&mut self, p: Person, dir: FileId, name: &[u8]) -> Result<FileId, Error> {
@@ -952,9 +1184,22 @@ impl<D: Disk> Store<D> {
         if !stat_of(&self.inode(p, dir)?).is_dir {
             return Err(Error::NotADirectory);
         }
-        let Store { dev, branches, .. } = self;
-        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
-        list_in(&b.trees[dir.class() as usize], dev, &b.keys, dir)
+        self.list_view(p, View::Live, dir)
+    }
+
+    fn list_view(
+        &mut self,
+        p: Person,
+        view: View,
+        dir: FileId,
+    ) -> Result<Vec<(Vec<u8>, FileId)>, Error> {
+        let mut out: Vec<(Vec<u8>, FileId)> = self
+            .named_entries(p, view, dir, 0, u64::MAX)?
+            .into_iter()
+            .map(|(_, v, n)| (n, FileId::new(word(&v, 0), dir.class())))
+            .collect();
+        out.sort();
+        Ok(out)
     }
 
     /// Make a file (or directory) called `name` in `dir`.
@@ -981,23 +1226,17 @@ impl<D: Disk> Store<D> {
         } else {
             0
         };
+        // A free slot among the names that share this name's hash.
+        let slot = self.free_slot(p, dir, name)?;
+        let obj = self.alloc_obj(p)?;
+        if dir.class() == Class::Documents {
+            self.new_file_key(p, obj)?;
+        }
+        let v = self.seal_entry(p, dir.class(), slot, obj, name)?;
+        let f = FileId::new(obj, dir.class());
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&p).ok_or(Error::Locked)?;
         let t = &mut b.trees[dir.class() as usize];
-        // A free slot among the names that share this name's hash.
-        let h = name_hash(name);
-        let used = t.collect(
-            dev,
-            &b.keys,
-            k_dirent(dir.obj(), h),
-            k_dirent(dir.obj(), h | 0xff),
-        )?;
-        let slot = (0..256u64)
-            .find(|i| !used.iter().any(|(k, _)| k.1 == h | i))
-            .ok_or(Error::Full)?;
-        let obj = b.next_obj;
-        b.next_obj += 1;
-        let f = FileId::new(obj, dir.class());
         t.insert(
             dev,
             &b.keys,
@@ -1010,10 +1249,7 @@ impl<D: Disk> Store<D> {
                 (if is_dir { F_DIR } else { 0 }) | last_used,
             ]),
         )?;
-        let mut v = [0u8; 40];
-        format::set_word(&mut v, 0, obj);
-        v[8..8 + name.len()].copy_from_slice(name);
-        t.insert(dev, &b.keys, k_dirent(dir.obj(), h | slot), v)?;
+        t.insert(dev, &b.keys, slot, v)?;
         if f.class() == Class::Documents {
             b.writer.insert(f, app);
         }
@@ -1094,18 +1330,34 @@ impl<D: Disk> Store<D> {
         idx: u64,
         out: &mut Block,
     ) -> Result<(), Error> {
-        let Store { dev, branches, .. } = self;
-        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
-        if let Some(d) = b.dirty.get(&(f, idx)) {
+        if let Some(d) = self.branch(p)?.dirty.get(&(f, idx)) {
             *out = **d;
             return Ok(());
         }
-        match b.trees[f.class() as usize].get(dev, &b.keys, k_data(f.obj(), idx))? {
-            Some(v) => dev.read_block(&b.keys, &Ptr::decode(&v), out),
+        let found = {
+            let Store { dev, branches, .. } = self;
+            let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+            b.trees[f.class() as usize].get(dev, &b.keys, k_data(f.obj(), idx))?
+        };
+        match found {
+            Some(v) => {
+                let keys = self.data_keys(p, f)?;
+                self.dev.read_block(&keys, &Ptr::decode(&v), out)
+            }
             None => {
                 out.fill(0);
                 Ok(())
             }
+        }
+    }
+
+    /// The keys a file's contents are scrambled with: its own for
+    /// documents, the person's for apps and caches.
+    fn data_keys(&mut self, id: Person, f: FileId) -> Result<Keys, Error> {
+        if f.class() == Class::Documents {
+            self.file_keys(id, f.obj())
+        } else {
+            Ok(self.branch(id)?.keys.clone())
         }
     }
 
@@ -1280,24 +1532,16 @@ impl<D: Disk> Store<D> {
         let mut st = self.inode(p, f)?;
         format::set_word(&mut st, 3, to_dir.obj());
         self.put_inode(p, f, st)?;
+        {
+            let Store { dev, branches, .. } = self;
+            let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+            b.trees[dir.class() as usize].remove(dev, &b.keys, k)?;
+        }
+        let slot = self.free_slot(p, to_dir, to_name)?;
+        let nv = self.seal_entry(p, dir.class(), slot, f.obj(), to_name)?;
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&p).ok_or(Error::Locked)?;
-        let t = &mut b.trees[dir.class() as usize];
-        t.remove(dev, &b.keys, k)?;
-        let h = name_hash(to_name);
-        let used = t.collect(
-            dev,
-            &b.keys,
-            k_dirent(to_dir.obj(), h),
-            k_dirent(to_dir.obj(), h | 0xff),
-        )?;
-        let slot = (0..256u64)
-            .find(|i| !used.iter().any(|(k, _)| k.1 == h | i))
-            .ok_or(Error::Full)?;
-        let mut nv = [0u8; 40];
-        format::set_word(&mut nv, 0, f.obj());
-        nv[8..8 + to_name.len()].copy_from_slice(to_name);
-        t.insert(dev, &b.keys, k_dirent(to_dir.obj(), h | slot), nv)?;
+        b.trees[dir.class() as usize].insert(dev, &b.keys, slot, nv)?;
         self.note(p, app, f, what::RENAMED)
     }
 
@@ -1340,7 +1584,47 @@ impl<D: Disk> Store<D> {
 
     /// The moments of a person's documents that history still keeps.
     pub fn history(&mut self, p: Person) -> Result<Vec<Moment>, Error> {
+        if side::is_side(p) {
+            return Ok(Vec::new());
+        }
         self.snapshots(p, Class::Documents)
+    }
+
+    /// The moments thinning must keep: named versions and the starts of
+    /// side branches.
+    pub(crate) fn pinned(&mut self, p: Person) -> Result<BTreeSet<u64>, Error> {
+        Ok(self
+            .sys
+            .collect(&mut self.dev, &self.machine, k_pin(p, 0), k_pin(p, GEN_MAX))?
+            .iter()
+            .map(|(k, _)| snap_gen(*k))
+            .collect())
+    }
+
+    /// Add to (or take from) the reasons moment `cn` is kept: `fork` for
+    /// a side branch starting there, `named` for a named version.
+    pub(crate) fn pin(
+        &mut self,
+        p: Person,
+        cn: u64,
+        fork: i64,
+        named: Option<bool>,
+    ) -> Result<(), Error> {
+        let Store {
+            dev, machine, sys, ..
+        } = self;
+        let mut v = sys.get(dev, machine, k_pin(p, cn))?.unwrap_or([0; 40]);
+        let forks = (word(&v, 0) as i64 + fork).max(0) as u64;
+        format::set_word(&mut v, 0, forks);
+        if let Some(n) = named {
+            format::set_word(&mut v, 1, n as u64);
+        }
+        if forks == 0 && word(&v, 1) == 0 {
+            sys.remove(dev, machine, k_pin(p, cn))?;
+        } else {
+            sys.insert(dev, machine, k_pin(p, cn), v)?;
+        }
+        Ok(())
     }
 
     /// The copy of the apps from before an update, if there is one.
@@ -1432,20 +1716,16 @@ impl<D: Disk> Store<D> {
 
     pub fn past_lookup(&mut self, v: &Past, dir: FileId, name: &[u8]) -> Result<FileId, Error> {
         check_name(name)?;
-        let Store { dev, branches, .. } = self;
-        let b = branches.get_mut(&v.person).ok_or(Error::Locked)?;
-        let t = Tree::open(v.root, false);
-        match find_in(&t, dev, &b.keys, dir.obj(), name)? {
+        let dir = FileId::new(dir.obj(), v.class);
+        match self.find_named(v.person, View::At(v.root), dir, name)? {
             Some((_, e)) => Ok(FileId::new(word(&e, 0), v.class)),
             None => Err(Error::NotFound),
         }
     }
 
+    /// A past directory's names (forgotten files are left out).
     pub fn past_list(&mut self, v: &Past, dir: FileId) -> Result<Vec<(Vec<u8>, FileId)>, Error> {
-        let Store { dev, branches, .. } = self;
-        let b = branches.get_mut(&v.person).ok_or(Error::Locked)?;
-        let t = Tree::open(v.root, false);
-        list_in(&t, dev, &b.keys, FileId::new(dir.obj(), v.class))
+        self.list_view(v.person, View::At(v.root), FileId::new(dir.obj(), v.class))
     }
 
     pub fn past_read(
@@ -1455,6 +1735,8 @@ impl<D: Disk> Store<D> {
         off: u64,
         buf: &mut [u8],
     ) -> Result<usize, Error> {
+        let f = FileId::new(f.obj(), v.class);
+        let fk = self.data_keys(v.person, f)?;
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&v.person).ok_or(Error::Locked)?;
         let t = Tree::open(v.root, false);
@@ -1477,7 +1759,7 @@ impl<D: Disk> Store<D> {
             let within = (pos % BLOCK as u64) as usize;
             let take = (BLOCK - within).min(n - done);
             match t.get(dev, &b.keys, k_data(f.obj(), idx))? {
-                Some(pv) => dev.read_block(&b.keys, &Ptr::decode(&pv), &mut blk)?,
+                Some(pv) => dev.read_block(&fk, &Ptr::decode(&pv), &mut blk)?,
                 None => blk.fill(0),
             }
             buf[done..done + take].copy_from_slice(&blk[within..within + take]);
@@ -1548,9 +1830,14 @@ impl<D: Disk> Store<D> {
         let people = self.people()?;
         for p in people {
             let moments = self.history(p)?;
+            let pins = self.pinned(p)?;
             let mut keep_bucket: BTreeSet<(u64, u64)> = BTreeSet::new();
             // Newest first, so the newest moment of each bucket is kept.
             for m in moments.iter().rev().skip(1) {
+                // Named versions and the starts of side branches stay.
+                if pins.contains(&m.cn) {
+                    continue;
+                }
                 let age = now.saturating_sub(m.time);
                 let bucket = if age < 24 * 3600 {
                     continue;
@@ -1581,10 +1868,13 @@ impl<D: Disk> Store<D> {
         let mut best: Option<(u64, Person, u64)> = None;
         for p in self.people()? {
             let h = self.history(p)?;
+            let pins = self.pinned(p)?;
             if h.len() < 2 {
                 continue;
             }
-            let m = h[0];
+            let Some(&m) = h[..h.len() - 1].iter().find(|m| !pins.contains(&m.cn)) else {
+                continue;
+            };
             if now.saturating_sub(m.time) < KEEP_SECS {
                 continue;
             }
@@ -1775,6 +2065,27 @@ impl<D: Disk> Store<D> {
         Ok(out)
     }
 
+    /// Tests only: where a person's key list is now (after a commit).
+    #[doc(hidden)]
+    pub fn key_list_blocks(&mut self, p: Person) -> Result<Vec<Ptr>, Error> {
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        let root = b.ktab.root_ptr();
+        let mut out = Vec::new();
+        Tree::walk(dev, &b.keys, &root, &mut |p, _| out.push(*p))?;
+        Ok(out)
+    }
+
+    /// Tests only: read a block of a person's map with their key, as
+    /// someone holding that key and a copy of the disk could.
+    #[doc(hidden)]
+    pub fn read_with_person_key(&mut self, p: Person, ptr: &Ptr) -> Result<Block, Error> {
+        let keys = self.branch(p)?.keys.clone();
+        let mut b = [0u8; BLOCK];
+        self.dev.read_block(&keys, ptr, &mut b)?;
+        Ok(b)
+    }
+
     /// Changes gathered and not yet committed?
     pub fn has_changes(&self) -> bool {
         self.branches.values().any(|b| b.touched)
@@ -1818,6 +2129,15 @@ impl<D: Disk> Store<D> {
             } = self;
             let pend = sys.collect(dev, machine, k_pend(0, 0), k_pend(cn - 2, u64::MAX))?;
             for (k, v) in pend {
+                // Blocks that held file keys are wiped, so a forgotten
+                // file's key does not linger in free space.
+                if word(&v, 1) & PEND_SCRUB != 0 {
+                    let zero = [0u8; BLOCK];
+                    dev.disk.write(k.1, &zero)?;
+                    if word(&v, 0) != 0 {
+                        dev.disk.write(word(&v, 0), &zero)?;
+                    }
+                }
                 space.free(k.1);
                 if word(&v, 0) != 0 {
                     space.free(word(&v, 0));
@@ -1826,10 +2146,34 @@ impl<D: Disk> Store<D> {
             }
         }
 
-        // 2. Each person's changes.
-        let people: Vec<Person> = self.branches.keys().copied().collect();
-        for p in people {
-            self.commit_branch(p, cn, now, spare, docs_spare)?;
+        // 2. Each person's and side branch's changes. Documents are
+        // scrambled with their own keys, found first.
+        let ids: Vec<Person> = self.branches.keys().copied().collect();
+        for id in ids {
+            if !self.branches[&id].touched {
+                continue;
+            }
+            let objs: BTreeSet<u64> = self.branches[&id]
+                .dirty
+                .keys()
+                .filter(|(f, _)| f.class() == Class::Documents)
+                .map(|(f, _)| f.obj())
+                .collect();
+            let mut fk = BTreeMap::new();
+            for obj in objs {
+                match self.file_keys(id, obj) {
+                    Ok(k) => {
+                        fk.insert(obj, k);
+                    }
+                    Err(Error::Forgotten) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            if side::is_side(id) {
+                self.commit_side(id, cn, now, docs_spare, &fk)?;
+            } else {
+                self.commit_branch(id, cn, now, spare, docs_spare, &fk)?;
+            }
         }
 
         // 3. The system tree and the bitmaps. Placing blocks changes the
@@ -1916,6 +2260,7 @@ impl<D: Disk> Store<D> {
         now: u64,
         spare: bool,
         docs_spare: bool,
+        fk: &BTreeMap<u64, Keys>,
     ) -> Result<(), Error> {
         let Store {
             dev,
@@ -1930,22 +2275,7 @@ impl<D: Disk> Store<D> {
         if !b.touched {
             return Ok(());
         }
-        // File blocks.
-        let dirty = core::mem::take(&mut b.dirty);
-        for ((f, idx), mut blk) in dirty {
-            let s = docs_spare && f.class() == Class::Documents;
-            let (a, a2) = space.alloc(s)?;
-            let ptr = dev.write_block(&b.keys, a, a2, cn, &mut blk)?;
-            let t = &mut b.trees[f.class() as usize];
-            // The file may have been deleted after the write.
-            if t.get(dev, &b.keys, k_inode(f.obj()))?.is_none() {
-                t.released.push(ptr);
-                continue;
-            }
-            if let Some(old) = t.insert(dev, &b.keys, k_data(f.obj(), idx), ptr.encode())? {
-                t.released.push(Ptr::decode(&old));
-            }
-        }
+        write_file_blocks(dev, space, b, cn, docs_spare, fk)?;
         // The three class trees.
         let mut roots = [Ptr::default(); 3];
         for c in Class::ALL {
@@ -1981,13 +2311,14 @@ impl<D: Disk> Store<D> {
         b.hist
             .insert(dev, &b.keys, k_hist(cn, H_INFO, 0), words(&[now]))?;
         let hist_root = b.hist.write(dev, &b.keys, cn, &mut |s| space.alloc(s))?;
+        let ktab_root = b.ktab.write(dev, &b.keys, cn, &mut |s| space.alloc(s))?;
 
         // The person page.
         let mut page = [0u8; BLOCK];
         format::set_word(&mut page, 0, PERSON_MAGIC);
         format::set_word(&mut page, 1, p);
         format::set_word(&mut page, 2, b.next_obj);
-        for (i, r) in roots.iter().chain([&hist_root]).enumerate() {
+        for (i, r) in roots.iter().chain([&hist_root, &ktab_root]).enumerate() {
             page[64 + 40 * i..104 + 40 * i].copy_from_slice(&r.encode());
         }
         let (a, a2) = space.alloc(spare)?;
@@ -2024,6 +2355,14 @@ impl<D: Disk> Store<D> {
         }
         for r in pend {
             sys.insert(dev, machine, k_pend(cn, r.addr), words(&[r.addr2]))?;
+        }
+        for r in core::mem::take(&mut b.ktab.released) {
+            sys.insert(
+                dev,
+                machine,
+                k_pend(cn, r.addr),
+                words(&[r.addr2, PEND_SCRUB]),
+            )?;
         }
         let snap_apps = b.apps_snapshot;
         b.touched = false;
@@ -2095,6 +2434,7 @@ impl<D: Disk> Store<D> {
             sys_nodes.push((*p, n.clone()))
         })?;
         let mut people = Vec::new();
+        let mut sides = Vec::new();
         let mut dead_records = Vec::new();
         let mut pend_records = Vec::new();
         for (p, n) in &sys_nodes {
@@ -2111,6 +2451,7 @@ impl<D: Disk> Store<D> {
                         mark(&mut live, &bp);
                     }
                     T_PERSON => people.push((k.0 & PERSON_MAX, Ptr::decode(v))),
+                    T_SIDE => sides.push((k.0 & PERSON_MAX, k.1, Ptr::decode(v))),
                     T_DEAD => dead_records.push((*k, *v)),
                     T_PEND => pend_records.push((*k, *v)),
                     _ => {}
@@ -2139,12 +2480,20 @@ impl<D: Disk> Store<D> {
             let keys = b.keys.clone();
             let mut blk = [0u8; BLOCK];
             self.dev.read_block(&keys, &page, &mut blk)?;
-            let roots: Vec<Ptr> = (0..4)
+            let roots: Vec<Ptr> = (0..5)
                 .map(|i| Ptr::decode(blk[64 + 40 * i..104 + 40 * i].try_into().unwrap()))
                 .collect();
             for (i, root) in roots.iter().enumerate() {
-                // The history tree (the fourth) holds records, not files.
-                self.walk_files(&keys, root, &mut live, r, i < 3)?;
+                // The history tree (the fourth) and the key list (the
+                // fifth) hold records, not files.
+                self.walk_files(
+                    pid,
+                    &keys,
+                    root,
+                    &mut live,
+                    r,
+                    Class::from(i as u64).filter(|_| i < 3),
+                )?;
             }
             // Every moment history keeps must be whole.
             let hist = Tree::open(roots[3], false);
@@ -2153,9 +2502,52 @@ impl<D: Disk> Store<D> {
                     let v = hist
                         .get(&mut self.dev, &keys, k_hist(m.cn, kind, 0))?
                         .ok_or(Error::NoSuchMoment)?;
-                    self.walk_files(&keys, &Ptr::decode(&v), &mut past, r, true)?;
+                    self.walk_files(pid, &keys, &Ptr::decode(&v), &mut past, r, Some(c))?;
                     r.moments += 1;
                 }
+            }
+        }
+        // Side branches: their own blocks are live; the blocks they share
+        // with their owner are the owner's (kept by the pinned moment
+        // they start from).
+        for (owner, id, page) in sides {
+            mark(&mut live, &page);
+            r.sides += 1;
+            let Some(b) = self.branches.get(&owner) else {
+                continue;
+            };
+            let keys = b.keys.clone();
+            let mut blk = [0u8; BLOCK];
+            self.dev.read_block(&keys, &page, &mut blk)?;
+            let info = side::SideInfo::decode(&blk);
+            if info.id != id || info.owner != owner {
+                r.problems.push(Problem::Damaged(page.addr));
+                continue;
+            }
+            if self
+                .sys
+                .get(&mut self.dev, &self.machine, k_pin(owner, info.fork))?
+                .is_none()
+            {
+                r.problems.push(Problem::Unpinned(id));
+            }
+            let (docs, hist) = side::SideInfo::roots(&blk);
+            let mut own = BTreeSet::new();
+            let mut shared = BTreeSet::new();
+            let sid = side::SIDE_FLAG | id;
+            let fork = info.fork;
+            self.walk_side(sid, owner, &keys, &docs, fork, &mut own, &mut shared, r)?;
+            self.walk_files(owner, &keys, &hist, &mut own, r, None)?;
+            for a in &shared {
+                if !past.contains(a) && !live.contains(a) {
+                    r.problems.push(Problem::SharedNotKept(*a));
+                }
+            }
+            for a in own {
+                if live.contains(&a) || past.contains(&a) {
+                    r.problems.push(Problem::DeadButLive(a));
+                }
+                live.insert(a);
             }
         }
         // Every block kept for history must be needed by a kept moment.
@@ -2210,12 +2602,14 @@ impl<D: Disk> Store<D> {
 
     fn walk_files(
         &mut self,
+        id: Person,
         keys: &Keys,
         root: &Ptr,
         set: &mut BTreeSet<u64>,
         r: &mut Report,
-        files: bool,
+        class: Option<Class>,
     ) -> Result<(), Error> {
+        let files = class.is_some();
         let mut data = Vec::new();
         Tree::walk(&mut self.dev, keys, root, &mut |p, n| {
             set.insert(p.addr);
@@ -2225,13 +2619,28 @@ impl<D: Disk> Store<D> {
             if n.level == 0 && files {
                 for (k, v) in n.keys.iter().zip(&n.vals) {
                     if k.0 & 0xff == K_DATA {
-                        data.push(Ptr::decode(v));
+                        data.push((k.0 >> 8, Ptr::decode(v)));
                     }
                 }
             }
         })?;
+        match class {
+            Some(c) => self.check_data(id, c, data, set, r),
+            None => Ok(()),
+        }
+    }
+
+    /// Read and check the file blocks (file number, pointer) not seen yet.
+    fn check_data(
+        &mut self,
+        id: Person,
+        class: Class,
+        data: Vec<(u64, Ptr)>,
+        set: &mut BTreeSet<u64>,
+        r: &mut Report,
+    ) -> Result<(), Error> {
         let mut b = [0u8; BLOCK];
-        for p in data {
+        for (obj, p) in data {
             // Shared with the live tree or another moment: checked once.
             if set.contains(&p.addr) {
                 continue;
@@ -2240,7 +2649,15 @@ impl<D: Disk> Store<D> {
             if p.addr2 != 0 {
                 set.insert(p.addr2);
             }
-            match self.dev.read_block(keys, &p, &mut b) {
+            let keys = match self.data_keys(id, FileId::new(obj, class)) {
+                Ok(k) => k,
+                Err(Error::Forgotten) => {
+                    r.forgotten += 1;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            match self.dev.read_block(&keys, &p, &mut b) {
                 Ok(()) => r.data_blocks += 1,
                 Err(Error::Damaged(a)) => r.problems.push(Problem::Damaged(a)),
                 Err(e) => return Err(e),
@@ -2269,6 +2686,11 @@ pub enum Problem {
     UnneededHistory(u64),
     DeadButLive(u64),
     FreedButUsed(u64),
+    /// A side branch whose starting moment is not pinned.
+    Unpinned(u64),
+    /// A block a side branch shares with its owner that nothing of the
+    /// owner keeps.
+    SharedNotKept(u64),
     Damaged(u64),
     HistoryCount,
     UsedCount,
@@ -2281,7 +2703,46 @@ pub struct Report {
     pub moments: u64,
     pub people: u64,
     pub locked: u64,
+    pub sides: u64,
+    /// Blocks of forgotten documents still held by history (unreadable).
+    pub forgotten: u64,
     pub problems: Vec<Problem>,
+}
+
+/// Write a branch's changed file blocks and point its trees at them.
+/// Documents are scrambled with their own keys (`fk`); blocks of a file
+/// deleted or forgotten since are dropped.
+fn write_file_blocks<D: Disk>(
+    dev: &mut Dev<D>,
+    space: &mut Space,
+    b: &mut Branch,
+    cn: u64,
+    docs_spare: bool,
+    fk: &BTreeMap<u64, Keys>,
+) -> Result<(), Error> {
+    let dirty = core::mem::take(&mut b.dirty);
+    for ((f, idx), mut blk) in dirty {
+        let keys = if f.class() == Class::Documents {
+            match fk.get(&f.obj()) {
+                Some(k) => k,
+                None => continue,
+            }
+        } else {
+            &b.keys
+        };
+        let t = &mut b.trees[f.class() as usize];
+        // The file may have been deleted after the write.
+        if t.get(dev, &b.keys, k_inode(f.obj()))?.is_none() {
+            continue;
+        }
+        let s = docs_spare && f.class() == Class::Documents;
+        let (a, a2) = space.alloc(s)?;
+        let ptr = dev.write_block(keys, a, a2, cn, &mut blk)?;
+        if let Some(old) = t.insert(dev, &b.keys, k_data(f.obj(), idx), ptr.encode())? {
+            t.released.push(Ptr::decode(&old));
+        }
+    }
+    Ok(())
 }
 
 fn stat_of(v: &Val) -> Stat {
@@ -2295,51 +2756,11 @@ fn stat_of(v: &Val) -> Stat {
     }
 }
 
-fn find_in(
-    t: &Tree,
-    io: &mut dyn Io,
-    keys: &Keys,
-    dir: u64,
-    name: &[u8],
-) -> Result<Option<(Key, Val)>, Error> {
-    let h = name_hash(name);
-    let mut found = None;
-    t.range(
-        io,
-        keys,
-        k_dirent(dir, h),
-        k_dirent(dir, h | 0xff),
-        &mut |k, v| {
-            let n = v[8..].iter().position(|&b| b == 0).unwrap_or(NAME_MAX);
-            if &v[8..8 + n] == name {
-                found = Some((k, *v));
-                false
-            } else {
-                true
-            }
-        },
-    )?;
-    Ok(found)
-}
-
-fn list_in(
-    t: &Tree,
-    io: &mut dyn Io,
-    keys: &Keys,
-    dir: FileId,
-) -> Result<Vec<(Vec<u8>, FileId)>, Error> {
-    let mut out = Vec::new();
-    t.range(
-        io,
-        keys,
-        k_dirent(dir.obj(), 0),
-        k_dirent(dir.obj(), u64::MAX),
-        &mut |_, v| {
-            let n = v[8..].iter().position(|&b| b == 0).unwrap_or(NAME_MAX);
-            out.push((v[8..8 + n].to_vec(), FileId::new(word(v, 0), dir.class())));
-            true
-        },
-    )?;
-    out.sort();
-    Ok(out)
+/// Which state of a branch's tree to look at.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum View {
+    /// The current files.
+    Live,
+    /// A tree on the disk (a past moment).
+    At(Ptr),
 }

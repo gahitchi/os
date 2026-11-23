@@ -79,10 +79,13 @@ must_fail keeper ForgetJobs.cfg "Temporal properties were violated"
 # with a bad spot on the newest front page, the store opens at a commit it
 # made and loses nothing it promised. Reusing given-up blocks after one
 # commit instead of two, or writing the front page before the blocks are
-# flushed, breaks that.
+# flushed, breaks that. Milestone 7: blocks that held file keys are wiped
+# when they are freed, and once that is promised they hold nothing of the
+# key (KeysWiped); wiping one commit early breaks opening.
 tlc commit Small.cfg
 tlc commit TwoBlocks.cfg
 must_fail commit EarlyReuse.cfg "Invariant AlwaysOpens is violated"
 must_fail commit NoFlush.cfg "Invariant AlwaysOpens is violated"
+must_fail commit EarlyScrub.cfg "Invariant AlwaysOpens is violated"
 
 echo "formal: all checks passed"

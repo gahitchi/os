@@ -227,13 +227,13 @@ fn only_the_maker_may_say_and_changes_after_count() {
 fn as_of_a_date_and_history() {
     let (mut s, numbers, chart) = pipeline();
     let made = s.last_commit();
-    s.set_as_of(1, chart, true).unwrap();
+    s.set_as_of(1, 5, chart, true).unwrap();
     put(&mut s, EDITOR, numbers, b"Mon 1\n");
     assert_eq!(s.mark(1, chart).unwrap().kind, Kind::AsOf);
-    s.set_as_of(1, chart, false).unwrap();
+    s.set_as_of(1, 5, chart, false).unwrap();
     assert_eq!(s.mark(1, chart).unwrap().kind, Kind::NeedsALook);
     // Only a result can be "as of" a date.
-    assert_eq!(s.set_as_of(1, numbers, true), Err(Error::NotFound));
+    assert_eq!(s.set_as_of(1, 5, numbers, true), Err(Error::NotFound));
     s.commit(50).unwrap();
     // The picture of that moment is still in the history.
     let past = s.past(1, Class::Documents, made).unwrap();

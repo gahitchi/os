@@ -187,13 +187,20 @@ impl<D: Disk> Store<D> {
                 words(&[s.file.0, s.version, s.edits, if *w { WHOLE } else { 0 }]),
             )?;
         }
+        *b.changes.entry((app, result)).or_insert(0) |= crate::what::MADE;
         b.touched = true;
         b.docs_changed = true;
         Ok(())
     }
 
     /// The person says `result` shows a fixed moment (or not any more).
-    pub fn set_as_of(&mut self, p: Person, result: FileId, on: bool) -> Result<(), Error> {
+    pub fn set_as_of(
+        &mut self,
+        p: Person,
+        app: App,
+        result: FileId,
+        on: bool,
+    ) -> Result<(), Error> {
         self.ok()?;
         if result.class() != Class::Documents {
             return Err(Error::BadRequest);
@@ -209,6 +216,7 @@ impl<D: Disk> Store<D> {
         let flags = if on { flags | AS_OF } else { flags & !AS_OF };
         format::set_word(&mut h, 4, flags);
         t.insert(dev, &b.keys, k_made(result.obj(), 0), h)?;
+        *b.changes.entry((app, result)).or_insert(0) |= crate::what::MADE;
         b.touched = true;
         b.docs_changed = true;
         Ok(())
