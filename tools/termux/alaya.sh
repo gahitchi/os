@@ -139,6 +139,15 @@ disk_image() {
     echo "$disk"
 }
 
+# The screen card, keyboard and mouse (milestone 6), behind the IOMMU like
+# the disk. Keep in sync with SEAT_DEVICES in xtask.
+seat_devices() {
+    printf '%s\n' \
+        -device virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800 \
+        -device virtio-keyboard-pci,id=kbd0,disable-legacy=on,iommu_platform=on \
+        -device virtio-tablet-pci,id=tablet0,disable-legacy=on,iommu_platform=on
+}
+
 qemu_args() {
     if [ "$ARCH" = aarch64 ]; then
         if [ "$ACCEL" = kvm ]; then
@@ -152,6 +161,7 @@ qemu_args() {
             -display none -monitor none -bios "$(arm_firmware)" \
             -drive "file=$(disk_image),if=none,id=disk0,format=raw" \
             -device virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on \
+            $(seat_devices) \
             -drive "file=$1,if=none,id=cd0,format=raw,readonly=on" \
             -device virtio-scsi-pci,id=scsi0 -device scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0
         return
@@ -166,11 +176,12 @@ qemu_args() {
     # checks use (milestone 4).
     local disk
     disk=$(disk_image)
-    printf '%s\n' -machine q35 -m 256M -smp "$CPUS" -no-reboot \
+    printf '%s\n' -machine q35 -m 512M -smp "$CPUS" -no-reboot -vga none \
         -display none -monitor none \
         -device intel-iommu,aw-bits=48,intremap=off \
         -drive "file=$disk,if=none,id=disk0,format=raw" \
         -device virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on \
+        $(seat_devices) \
         -cdrom "$1"
 }
 

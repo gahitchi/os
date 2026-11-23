@@ -46,13 +46,13 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
-          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-store --all-targets -- -D warnings
-          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs \
+          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-store --package alaya-ui --all-targets -- -D warnings
+          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs --package alaya-apps \
             --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
 
-      - name: Host tests (capability code, time budgets)
-        run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched
+      - name: Host tests (capability code, time budgets, toolkit)
+        run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-ui
 
       # The store (milestone 5): crypto test vectors, a power cut at every
       # disk write and flush, damaged blocks, and what recording reads costs.
@@ -173,7 +173,7 @@ jobs:
       - name: Clippy (ARM64)
         run: |
           cargo clippy --package alaya-kernel --target aarch64-unknown-none-softfloat -- -D warnings
-          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs \
+          RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs --package alaya-apps \
             --target aarch64-unknown-none --target-dir target/user -- -D warnings
 
       - name: Build image

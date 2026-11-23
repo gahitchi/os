@@ -1,0 +1,12 @@
+[package]
+name = "alaya-ui"
+description = "Alaya's toolkit and desktop logic: its own font reader, drawing, window rules and widgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]

@@ -139,7 +139,10 @@ options:
   --cpus <n>        number of virtual cores (default 1)
   --uefi            boot with UEFI firmware (OVMF) instead of BIOS
   --accel <a>       kvm, tcg or auto (default auto: KVM when /dev/kvm is usable)
-  --memory <size>   guest memory, QEMU syntax (default 256M, 512M on ARM)
+  --memory <size>   guest memory, QEMU syntax (default 512M)
+  --display <kind>  QEMU display for run (gtk, sdl, vnc=:0, none); default:
+                    QEMU's own window for run, none for tests
+  --vnc             run: show the screen over VNC on port 5900 (phones)
   --fault <kind>    test only: crash on purpose and check the fault report;
                     kinds: page, stack, invalid-opcode, other-core-page,
                     smap (kernel reads a user page), smep (runs one)
@@ -172,6 +175,8 @@ struct Options {
     fuzz: Option<u64>,
     long: bool,
     plug: Option<u32>,
+    /// QEMU's window: `None` lets `run` open one and keeps tests without.
+    display: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -188,14 +193,14 @@ fn main() -> ExitCode {
         timeout: 180,
         image: None,
         accel: "auto".into(),
-        memory: "256M".into(),
+        memory: "512M".into(),
         fault: None,
         fuzz: None,
         long: false,
         plug: None,
+        display: None,
     };
     let mut timeout_set = false;
-    let mut memory_set = false;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| {
             args.next()
@@ -237,12 +242,11 @@ fn main() -> ExitCode {
                         .unwrap_or_else(|_| fail("bad --plug")),
                 )
             }
+            "--display" => opts.display = Some(value("--display")),
+            "--vnc" => opts.display = Some("vnc=:0".into()),
             "--image" => opts.image = Some(PathBuf::from(value("--image"))),
             "--accel" => opts.accel = value("--accel"),
-            "--memory" => {
-                memory_set = true;
-                opts.memory = value("--memory")
-            }
+            "--memory" => opts.memory = value("--memory"),
             "--fault" => {
                 let kind = value("--fault");
                 if !FAULTS.iter().any(|(k, _)| *k == kind) {
@@ -265,9 +269,6 @@ fn main() -> ExitCode {
         // ARM machines start from UEFI firmware; there is no BIOS. The
         // firmware keeps more of the memory for itself than a PC's.
         opts.uefi = true;
-        if !memory_set {
-            opts.memory = "512M".into();
-        }
     }
     if opts.long && !timeout_set {
         opts.timeout = 15 * 60;
@@ -353,7 +354,17 @@ fn build_kernel(arch: Arch, release: bool) -> Result<PathBuf, String> {
 
 /// Programs the boot image carries besides the first one, all from the
 /// `alaya-programs` crate.
-const PROGRAMS: [&str; 5] = ["keeper", "blk1", "blk2", "disktest", "store"];
+const PROGRAMS: [&str; 9] = [
+    "keeper", "blk1", "blk2", "disktest", "store", "gpu", "input", "desktop", "editor",
+];
+
+/// Font files shipped in the boot image: text, strong, mono, fallback.
+const FONTS: [&str; 4] = [
+    "Figtree-Regular.ttf",
+    "Figtree-SemiBold.ttf",
+    "IBMPlexMono-Regular.ttf",
+    "NotoSans-Regular.ttf",
+];
 
 /// Build the first program and the programs it starts. They live in the
 /// lower half, so they are built without the kernel's code model
@@ -370,6 +381,8 @@ fn build_init(arch: Arch, release: bool) -> Result<PathBuf, String> {
             "alaya-init",
             "--package",
             "alaya-programs",
+            "--package",
+            "alaya-apps",
             "--bins",
             "--target",
             arch.user_target(),
@@ -467,6 +480,14 @@ fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathB
     for name in PROGRAMS {
         copy(
             &user_binary(arch, release, name),
+            &iso_root.join("boot").join(name),
+        )?;
+        conf.push_str(&format!("    module_path: boot():/boot/{name}\n"));
+    }
+    // Alaya's letters (decision 105), in the order the desktop expects.
+    for name in FONTS {
+        copy(
+            &root().join("fonts").join(name),
             &iso_root.join("boot").join(name),
         )?;
         conf.push_str(&format!("    module_path: boot():/boot/{name}\n"));
@@ -590,30 +611,60 @@ fn ovmf() -> Result<PathBuf, String> {
     .ok_or_else(|| "no OVMF firmware found; install OVMF or set ALAYA_OVMF".into())
 }
 
+/// `run` opens QEMU's own window (or what `--display` names); tests and
+/// plug runs have none, and take screenshots through QMP instead.
+fn display_args(opts: &Options, serial: &str) -> Vec<String> {
+    match (&opts.display, serial == "mon:stdio") {
+        (Some(d), _) => vec!["-display".into(), d.clone()],
+        (None, true) => vec![],
+        (None, false) => vec!["-display".into(), "none".into()],
+    }
+}
+
+/// The screen card, keyboard and mouse (milestone 6), behind the IOMMU
+/// like the disk. The mouse is a "tablet": it reports where the pointer
+/// is, so it follows the host's pointer exactly.
+const SEAT_DEVICES: [&str; 3] = [
+    "virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800",
+    "virtio-keyboard-pci,id=kbd0,disable-legacy=on,iommu_platform=on",
+    "virtio-tablet-pci,id=tablet0,disable-legacy=on,iommu_platform=on",
+];
+
 fn qemu(image: &Path, opts: &Options, serial: &str) -> Result<Command, String> {
     if opts.arch == Arch::Aarch64 {
         return qemu_arm(image, opts, serial);
     }
     let mut cmd = Command::new("qemu-system-x86_64");
-    cmd.args(["-machine", "q35", "-m", &opts.memory, "-no-reboot"])
-        .args(["-smp", &opts.cpus.to_string()])
-        .args(["-display", "none", "-serial", serial, "-monitor", "none"])
-        // The device memory guard (decision 77). Interrupt remapping is not
-        // used yet.
-        .args(["-device", "intel-iommu,aw-bits=48,intremap=off"])
-        // The virtual disk, behind the IOMMU (its driver may reach only
-        // the memory its keeper maps for it).
-        .arg("-drive")
-        .arg(format!(
-            "file={},if=none,id=disk0,format=raw",
-            disk_image()?.display()
-        ))
-        .args([
-            "-device",
-            "virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on",
-        ])
-        .arg("-cdrom")
-        .arg(image);
+    // No standard VGA card: the virtio screen is the only screen.
+    cmd.args([
+        "-machine",
+        "q35",
+        "-m",
+        &opts.memory,
+        "-no-reboot",
+        "-vga",
+        "none",
+    ])
+    .args(["-smp", &opts.cpus.to_string()])
+    .args(display_args(opts, serial))
+    .args(["-serial", serial, "-monitor", "none"])
+    // The device memory guard (decision 77). Interrupt remapping is not
+    // used yet.
+    .args(["-device", "intel-iommu,aw-bits=48,intremap=off"])
+    // The virtual disk, behind the IOMMU (its driver may reach only
+    // the memory its keeper maps for it).
+    .arg("-drive")
+    .arg(format!(
+        "file={},if=none,id=disk0,format=raw",
+        disk_image()?.display()
+    ))
+    .args([
+        "-device",
+        "virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on",
+    ])
+    .args(SEAT_DEVICES.iter().flat_map(|d| ["-device", d]))
+    .arg("-cdrom")
+    .arg(image);
     if use_kvm(opts)? {
         // The host CPU as it is: TSC-deadline timer, x2APIC. QEMU hides the
         // invariant-TSC flag by default (it blocks live migration); show it.
@@ -659,7 +710,8 @@ fn qemu_arm(image: &Path, opts: &Options, serial: &str) -> Result<Command, Strin
     cmd.args(["-machine", "virt,gic-version=3,iommu=smmuv3"])
         .args(["-m", &opts.memory, "-no-reboot"])
         .args(["-smp", &opts.cpus.to_string()])
-        .args(["-display", "none", "-serial", serial, "-monitor", "none"])
+        .args(display_args(opts, serial))
+        .args(["-serial", serial, "-monitor", "none"])
         .arg("-drive")
         .arg(format!(
             "file={},if=none,id=disk0,format=raw",
@@ -669,6 +721,7 @@ fn qemu_arm(image: &Path, opts: &Options, serial: &str) -> Result<Command, Strin
             "-device",
             "virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on",
         ])
+        .args(SEAT_DEVICES.iter().flat_map(|d| ["-device", d]))
         .arg("-drive")
         .arg(format!(
             "file={},if=none,id=cd0,format=raw,readonly=on",
@@ -727,7 +780,14 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
         "xtask: {what}, {mode}, {accel}, {} core(s), timeout {}s",
         opts.cpus, opts.timeout
     );
+    let qmp_path = root().join(format!("build/qmp-{}.sock", std::process::id()));
+    let _ = fs::remove_file(&qmp_path);
+    let mut qmp: Option<Qmp> = None;
+    let mut pictures = 0;
+    let mut typed = false;
     let mut child = qemu(image, opts, "stdio")?
+        .arg("-qmp")
+        .arg(format!("unix:{},server=on,wait=off", qmp_path.display()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .spawn()
@@ -783,9 +843,92 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                 if line.contains(FUZZ_DONE_MARKER) {
                     fuzz_done = true;
                 }
+                // Milestone 6: look at the screen, then type and click.
+                if line.contains(PICTURE_SHOWN_MARKER) || line.contains(PICTURE_BACK_MARKER) {
+                    let q = match qmp.take() {
+                        Some(q) => Ok(q),
+                        None => Qmp::connect(&qmp_path),
+                    };
+                    let step = q.and_then(|mut q| {
+                        let shot = root().join(format!("build/screen-{}.ppm", pictures + 1));
+                        check_test_picture(&mut q, &shot)?;
+                        println!("  * screenshot {} matches the test picture", pictures + 1);
+                        Ok(q)
+                    });
+                    match step {
+                        Ok(q) => {
+                            qmp = Some(q);
+                            pictures += 1;
+                        }
+                        Err(e) => break Err(format!("screen check: {e}")),
+                    }
+                }
+                if line.contains(INPUT_WAITING_MARKER) {
+                    let step = match qmp.as_mut() {
+                        Some(q) => send_key_and_click(q),
+                        None => Err("no control socket".into()),
+                    };
+                    if let Err(e) = step {
+                        break Err(format!("input: {e}"));
+                    }
+                    println!("  * typed 'a' and clicked the middle of the screen");
+                }
+                if let Some(rest) = line.split(DRAG_MARKER).nth(1) {
+                    let n: Vec<i64> = rest
+                        .split_whitespace()
+                        .filter_map(|w| w.parse().ok())
+                        .collect();
+                    let step = match (qmp.as_mut(), n.as_slice()) {
+                        (Some(q), [x0, y0, x1, y1]) => drag(q, (*x0, *y0), (*x1, *y1)),
+                        _ => Err(format!("cannot drag: {rest}")),
+                    };
+                    if let Err(e) = step {
+                        break Err(format!("drag: {e}"));
+                    }
+                    println!("  * dragged the window's title bar to the left edge");
+                }
+                if line.contains(TYPE_MARKER) {
+                    let step = match qmp.as_mut() {
+                        Some(q) => type_text(q, "hi"),
+                        None => Err("no control socket".into()),
+                    };
+                    if let Err(e) = step {
+                        break Err(format!("typing: {e}"));
+                    }
+                    println!("  * typed 'hi'");
+                }
+                if line.contains(DESKTOP_DRAWN_MARKER) {
+                    // A picture of the desktop for people to look at.
+                    if let Some(q) = qmp.as_mut() {
+                        let shot = root().join("build/screen-desktop.ppm");
+                        let _ = q.command(&format!(
+                            r#"{{"execute":"screendump","arguments":{{"filename":"{}"}}}}"#,
+                            shot.display()
+                        ));
+                        println!(
+                            "  * saved a screenshot of the desktop in {}",
+                            shot.display()
+                        );
+                    }
+                }
+                if line.contains(TYPED_MARKER) {
+                    typed = true;
+                }
+                if line.contains(DESKTOP_SKIPPED_MARKER) {
+                    break Err("the drag never reached the desktop".into());
+                }
+                if line.contains(INPUT_SKIPPED_MARKER) {
+                    break Err("the key and click never reached Alaya".into());
+                }
                 if line.contains(BOOT_OK_MARKER) {
                     if opts.fault.is_some() {
                         break Err("the kernel booted instead of faulting".into());
+                    }
+                    if pictures < 2 {
+                        break Err("the screen was never checked (no test picture)".into());
+                    }
+                    if !typed {
+                        break Err("the editor never showed the typed text".into());
                     }
                     if opts.fuzz.is_some() && !fuzz_done {
                         break Err("the fuzzer never finished".into());
@@ -829,14 +972,227 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
             }
         }
     };
+    drop(qmp);
     let _ = child.kill();
     let _ = child.wait();
+    let _ = fs::remove_file(&qmp_path);
     let label = format!("{mode}, {accel}, {} core(s)", opts.cpus);
     match &outcome {
         Ok(()) => eprintln!("xtask: PASS ({label})"),
         Err(e) => eprintln!("xtask: FAIL ({label}): {e}"),
     }
     outcome
+}
+
+/// Lines the first program prints when the test picture is on the screen
+/// (`user/init/src/m6.rs`).
+const PICTURE_SHOWN_MARKER: &str = "init: screen: test picture shown";
+const PICTURE_BACK_MARKER: &str = "init: screen: back after a crash";
+const INPUT_WAITING_MARKER: &str = "init: input: waiting for a key and a click";
+const INPUT_SKIPPED_MARKER: &str = "init: input: nobody pressed a key";
+const DRAG_MARKER: &str = "init: desktop: drag from";
+const DESKTOP_SKIPPED_MARKER: &str = "init: desktop: nobody dragged";
+const DESKTOP_DRAWN_MARKER: &str = "init: desktop: drawn after a screen driver crash";
+const TYPE_MARKER: &str = "init: desktop: type hi";
+const TYPED_MARKER: &str = "editor: text ends with: Welcome to Alaya./Type here.hi";
+
+/// The test picture of `m6.rs`: background, and (centre x, centre y,
+/// colour) of each square. Keep in sync.
+const PICTURE_BACKGROUND: u32 = 0x20_26_34;
+const PICTURE_SQUARES: [(usize, usize, u32); 4] = [
+    (150, 150, 0xe0_53_3d),
+    (350, 150, 0x3f_b9_50),
+    (550, 150, 0x38_8b_fd),
+    (750, 150, 0xff_ff_ff),
+];
+
+/// A connection to QEMU's control socket (QMP).
+struct Qmp {
+    out: std::os::unix::net::UnixStream,
+    lines: BufReader<std::os::unix::net::UnixStream>,
+}
+
+impl Qmp {
+    fn connect(path: &Path) -> Result<Qmp, String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match std::os::unix::net::UnixStream::connect(path) {
+                Ok(s) => break s,
+                Err(e) if Instant::now() > deadline => {
+                    return Err(format!("cannot reach QEMU's control socket: {e}"));
+                }
+                Err(_) => thread::sleep(Duration::from_millis(100)),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .map_err(|e| e.to_string())?;
+        let lines = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
+        let mut q = Qmp { out: stream, lines };
+        q.read_line()?;
+        q.command(r#"{"execute":"qmp_capabilities"}"#)?;
+        Ok(q)
+    }
+
+    fn read_line(&mut self) -> Result<String, String> {
+        let mut line = String::new();
+        match self.lines.read_line(&mut line) {
+            Ok(0) => Err("QEMU closed its control socket".into()),
+            Ok(_) => Ok(line),
+            Err(e) => Err(format!("reading QEMU's control socket: {e}")),
+        }
+    }
+
+    /// Send one command and wait for its answer (skipping events).
+    fn command(&mut self, json: &str) -> Result<String, String> {
+        use std::io::Write;
+        writeln!(self.out, "{json}").map_err(|e| e.to_string())?;
+        loop {
+            let line = self.read_line()?;
+            if line.contains("\"return\"") {
+                return Ok(line);
+            }
+            if line.contains("\"error\"") {
+                return Err(format!("QEMU refused {json}: {}", line.trim()));
+            }
+        }
+    }
+}
+
+/// Take a screenshot and check it shows the test picture.
+fn check_test_picture(q: &mut Qmp, path: &Path) -> Result<(), String> {
+    let _ = fs::remove_file(path);
+    q.command(&format!(
+        r#"{{"execute":"screendump","arguments":{{"filename":"{}"}}}}"#,
+        path.display()
+    ))?;
+    let data = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let (w, h, px) = parse_ppm(&data).ok_or("the screenshot is not a PPM picture")?;
+    if (w, h) != (1280, 800) {
+        return Err(format!("the screen is {w} by {h}, not 1280 by 800"));
+    }
+    let at = |x: usize, y: usize| {
+        let i = (y * w + x) * 3;
+        u32::from(px[i]) << 16 | u32::from(px[i + 1]) << 8 | u32::from(px[i + 2])
+    };
+    let mut wrong = Vec::new();
+    for &(x, y, c) in PICTURE_SQUARES.iter() {
+        if at(x, y) != c {
+            wrong.push(format!("({x}, {y}) is {:06x}, not {c:06x}", at(x, y)));
+        }
+    }
+    for (x, y) in [(10, 10), (640, 600), (1270, 790)] {
+        if at(x, y) != PICTURE_BACKGROUND {
+            wrong.push(format!(
+                "({x}, {y}) is {:06x}, not the background",
+                at(x, y)
+            ));
+        }
+    }
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("the screenshot is wrong: {}", wrong.join("; ")))
+    }
+}
+
+/// Width, height and RGB bytes of a binary PPM (P6, 8 bits).
+fn parse_ppm(data: &[u8]) -> Option<(usize, usize, &[u8])> {
+    let mut fields = Vec::new();
+    let mut i = 0;
+    while fields.len() < 4 {
+        while data.get(i)?.is_ascii_whitespace() {
+            i += 1;
+        }
+        if data[i] == b'#' {
+            while data.get(i)? != &b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        let start = i;
+        while !data.get(i)?.is_ascii_whitespace() {
+            i += 1;
+        }
+        fields.push(std::str::from_utf8(&data[start..i]).ok()?);
+    }
+    if fields[0] != "P6" || fields[3] != "255" {
+        return None;
+    }
+    let (w, h): (usize, usize) = (fields[1].parse().ok()?, fields[2].parse().ok()?);
+    let px = data.get(i + 1..i + 1 + w * h * 3)?;
+    Some((w, h, px))
+}
+
+/// Type "a" on the virtual keyboard, then move the virtual mouse to the
+/// middle of the screen and click.
+fn send_key_and_click(q: &mut Qmp) -> Result<(), String> {
+    // No device named: QEMU sends events to the input devices that were
+    // switched on last, which are Alaya's virtio keyboard and mouse.
+    let send = |q: &mut Qmp, _device: &str, events: &str| {
+        q.command(&format!(
+            r#"{{"execute":"input-send-event","arguments":{{"events":[{events}]}}}}"#
+        ))
+    };
+    let key = |down: bool| {
+        format!(r#"{{"type":"key","data":{{"down":{down},"key":{{"type":"qcode","data":"a"}}}}}}"#)
+    };
+    send(q, "kbd0", &key(true))?;
+    send(q, "kbd0", &key(false))?;
+    let abs = |axis: &str| format!(r#"{{"type":"abs","data":{{"axis":"{axis}","value":16384}}}}"#);
+    let btn = |down: bool| format!(r#"{{"type":"btn","data":{{"down":{down},"button":"left"}}}}"#);
+    send(q, "tablet0", &format!("{},{}", abs("x"), abs("y")))?;
+    send(q, "tablet0", &btn(true))?;
+    send(q, "tablet0", &btn(false))?;
+    Ok(())
+}
+
+/// Pointer positions in QEMU's tablet units for a 1280 by 800 screen.
+fn abs_event(x: i64, y: i64) -> String {
+    let ax = (x.clamp(0, 1279) * 32768 / 1280).min(32767);
+    let ay = (y.clamp(0, 799) * 32768 / 800).min(32767);
+    format!(
+        r#"{{"type":"abs","data":{{"axis":"x","value":{ax}}}}},{{"type":"abs","data":{{"axis":"y","value":{ay}}}}}"#
+    )
+}
+
+fn input_events(q: &mut Qmp, events: &str) -> Result<String, String> {
+    q.command(&format!(
+        r#"{{"execute":"input-send-event","arguments":{{"events":[{events}]}}}}"#
+    ))
+}
+
+/// Press the left button at `from`, move to `to` in steps, let go.
+fn drag(q: &mut Qmp, from: (i64, i64), to: (i64, i64)) -> Result<(), String> {
+    let btn = |down: bool| format!(r#"{{"type":"btn","data":{{"down":{down},"button":"left"}}}}"#);
+    input_events(q, &abs_event(from.0, from.1))?;
+    thread::sleep(Duration::from_millis(200));
+    input_events(q, &btn(true))?;
+    for i in 1..=10 {
+        let x = from.0 + (to.0 - from.0) * i / 10;
+        let y = from.1 + (to.1 - from.1) * i / 10;
+        input_events(q, &abs_event(x, y))?;
+        thread::sleep(Duration::from_millis(50));
+    }
+    thread::sleep(Duration::from_millis(200));
+    input_events(q, &btn(false))?;
+    Ok(())
+}
+
+/// Type lowercase letters on the virtual keyboard.
+fn type_text(q: &mut Qmp, text: &str) -> Result<(), String> {
+    for c in text.chars() {
+        for down in [true, false] {
+            input_events(
+                q,
+                &format!(
+                    r#"{{"type":"key","data":{{"down":{down},"key":{{"type":"qcode","data":"{c}"}}}}}}"#
+                ),
+            )?;
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
+    Ok(())
 }
 
 /// Pull the plug `--plug` times (milestone 5). Each boot of a `store-soak`

@@ -13,6 +13,23 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 6, step 2: the first desktop.** Alaya draws its own desktop:
+windows you move, resize, snap to the screen's edges and tile, a dock, and
+a strip at the top that no app can draw on. Apps are built with Alaya's
+own toolkit, which reads font files and draws letters itself, and writes
+down every button and text box for screen readers. The first app is a
+small text editor. `cargo xtask test` drags a window and types into it
+through QEMU (checks 59 to 63). How it works:
+[`docs/desktop.md`](docs/desktop.md).
+
+**Milestone 6, step 1: screen, keyboard and mouse.** Alaya has its own
+drivers for QEMU's virtual screen card, keyboard and mouse, each locked to
+its own memory. The driver never owns the screen: the pixels belong to the
+program that draws, so a crashed driver comes back and the picture with it.
+`cargo xtask test` checks a screenshot, types a key and clicks the mouse
+through QEMU, and crashes every driver once (checks 54 to 58, on PCs and
+ARM64).
+
 **Milestone 5: safe storage.** The Alaya store keeps files so that a power
 cut at any moment leaves every file either fully saved or exactly as it was
 before. It never writes over anything: a save writes the changes to free

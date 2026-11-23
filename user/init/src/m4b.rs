@@ -259,21 +259,21 @@ extern "C" fn memory_server(_: u64) -> ! {
 // PCI
 
 /// A PCI function's configuration space, mapped at `SCAN`.
-fn cfg8(o: u64) -> u8 {
+pub(crate) fn cfg8(o: u64) -> u8 {
     // SAFETY: the configuration page is mapped at SCAN while scanning.
     unsafe { core::ptr::read_volatile((SCAN + o) as *const u8) }
 }
-fn cfg16(o: u64) -> u16 {
+pub(crate) fn cfg16(o: u64) -> u16 {
     // SAFETY: as above.
     unsafe { core::ptr::read_volatile((SCAN + o) as *const u16) }
 }
-fn cfg32(o: u64) -> u32 {
+pub(crate) fn cfg32(o: u64) -> u32 {
     // SAFETY: as above.
     unsafe { core::ptr::read_volatile((SCAN + o) as *const u32) }
 }
 
 /// Map the configuration page of `bdf` at `SCAN`; returns its handle.
-fn map_config(k: &mut Kit, base: u64, bdf: u16) -> u64 {
+pub(crate) fn map_config(k: &mut Kit, base: u64, bdf: u16) -> u64 {
     let h = k.slot();
     alaya_sys::device_page(
         k.info.device_control,
@@ -286,13 +286,13 @@ fn map_config(k: &mut Kit, base: u64, bdf: u16) -> u64 {
     h
 }
 
-fn unmap_config(k: &mut Kit, h: u64) {
+pub(crate) fn unmap_config(k: &mut Kit, h: u64) {
     alaya_sys::page_unmap(h).unwrap();
     alaya_sys::delete(k.at(h)).unwrap();
 }
 
 /// Physical address of BAR `bar` (memory BARs only).
-fn bar_address(bar: u64) -> u64 {
+pub(crate) fn bar_address(bar: u64) -> u64 {
     let lo = cfg32(0x10 + 4 * bar);
     if lo & 1 != 0 {
         return 0;
@@ -306,7 +306,7 @@ fn bar_address(bar: u64) -> u64 {
 
 /// The device pages a virtio driver needs: every page its register blocks
 /// and its MSI-X table touch, as (BAR, page) codes.
-fn virtio_pages(codes: &mut [u64; 12]) -> usize {
+pub(crate) fn virtio_pages(codes: &mut [u64; 12]) -> usize {
     let mut n = 0;
     let mut add = |bar: u64, off: u64, len: u64| {
         for p in off / 4096..=(off + len.max(1) - 1) / 4096 {

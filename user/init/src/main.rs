@@ -22,6 +22,7 @@ mod m4;
 mod m4b;
 mod m4c;
 mod m5;
+mod m6;
 
 alaya_sys::start_code!(main);
 
@@ -365,6 +366,7 @@ extern "C" fn main(info: &'static BootInfo) -> ! {
     slots.next = m4b::run(info, u, slots.next, &mut pass);
     slots.next = m4c::run(info, u, slots.next, &mut pass);
     slots.next = m5::run(info, u, slots.next, &mut pass);
+    slots.next = m6::run(info, u, slots.next, &mut pass);
     if info.flags & boot_flags::FUZZ != 0 {
         fuzz::run(info, u, slots.next, info.fuzz_seconds);
     }
