@@ -63,7 +63,9 @@ pub fn init_this_core() {
         MASK.store(mask, Ordering::Relaxed);
         SIZE.store(size, Ordering::Relaxed);
         XSAVE.store(true, Ordering::Relaxed);
-        XSAVEOPT.store(cpuid(0xd, 1).eax & 1 != 0, Ordering::Relaxed);
+        // XSAVEOPT stays off for now: with it, one core under KVM (AMD, nested)
+        // hung in the equal-priorities check (PR #22 CI). Kept for a later try.
+        XSAVEOPT.store(false, Ordering::Relaxed);
     }
 }
 
