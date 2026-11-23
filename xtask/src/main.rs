@@ -154,7 +154,7 @@ options:
                     store the last boot left, checks what survived, keeps
                     saving, and QEMU is killed at a random moment
                     (with image: build the pull-the-plug image instead)
-  --timeout <secs>  give up after this long (test only, default 180, or
+  --timeout <secs>  give up after this long (test only, default 300, or
                     the fuzz time plus 180, or 15 minutes with --long)
   --image <path>    boot this image instead of building one (run and test)
 
@@ -190,7 +190,11 @@ fn main() -> ExitCode {
         release: true,
         cpus: 1,
         uefi: false,
-        timeout: 180,
+        // A whole boot test now ends with a desktop session. On a shared
+        // machine that runs more virtual cores than it has, one run can
+        // take three minutes (the big kernel lock waits on cores the host
+        // has paused), so the limit leaves room for that.
+        timeout: 300,
         image: None,
         accel: "auto".into(),
         memory: "512M".into(),
