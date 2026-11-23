@@ -24,8 +24,10 @@ Before the new parts, the kernel gained what every later milestone needs:
   translations. A core that had a program's map loaded learns of changes to
   it the next time it switches to it.
 - **Guessing-leak guards.** On processors that need them: enhanced IBRS,
-  a branch-predictor barrier (IBPB) when a core switches programs, a refill
-  of the return-address predictor, buffer clearing (VERW) on the way back to
+  a branch-predictor barrier (IBPB) when a core switches into or out of a
+  *guarded* program (one holding secrets, such as the store; decision 107:
+  `SPACE_GUARD`), a refill of the return-address predictor on every switch
+  between programs, buffer clearing (VERW) on the way back to
   a program, and a fence after every handle bounds check.
 - **Format labels.** Every kernel object carries a small header with its
   format number, and `kernel/src/kstate.rs` lists every piece of kernel-wide

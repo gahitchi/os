@@ -64,7 +64,7 @@ pub extern "C" fn from_user(frame: &mut TrapFrame) {
     if frame.kind == 1 {
         intid = gic::ack();
         if intid == timer::TIMER_INTID {
-            timer::disarm();
+            crate::time::disarm();
         }
         if intid != gic::SPURIOUS {
             gic::eoi(intid);
@@ -105,7 +105,7 @@ pub extern "C" fn kernel_irq(_frame: &mut TrapFrame) {
         return;
     }
     if intid == timer::TIMER_INTID {
-        timer::disarm();
+        crate::time::disarm();
     }
     gic::eoi(intid);
     if intid == timer::TIMER_INTID {

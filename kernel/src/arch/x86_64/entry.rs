@@ -303,10 +303,17 @@ pub fn return_to_user(f: &TrapFrame) -> ! {
 
 /// The user-mode thread-local storage bases of the thread about to run.
 pub fn load_user_tls(r: &Regs) {
+    // User mode cannot change these itself (FSGSBASE is off), so the
+    // values this core last loaded are still there: skip equal ones.
+    let held = &crate::percpu::this().user_tls;
     // SAFETY: user-mode segment bases; the user GS base sits in
     // KERNEL_GS_BASE until `swapgs` on the way out.
     unsafe {
-        cpu::wrmsr(msr::FS_BASE, r.fs_base);
-        cpu::wrmsr(msr::KERNEL_GS_BASE, r.gs_base);
+        if held[0].swap(r.fs_base, core::sync::atomic::Ordering::Relaxed) != r.fs_base {
+            cpu::wrmsr(msr::FS_BASE, r.fs_base);
+        }
+        if held[1].swap(r.gs_base, core::sync::atomic::Ordering::Relaxed) != r.gs_base {
+            cpu::wrmsr(msr::KERNEL_GS_BASE, r.gs_base);
+        }
     }
 }

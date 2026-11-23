@@ -102,8 +102,8 @@ pub fn speculation_barrier() {
 
 /// The core is about to run another program's code.
 #[inline]
-pub fn on_space_switch() {
-    protect::on_space_switch();
+pub fn on_space_switch(guarded: bool) {
+    protect::on_space_switch(guarded);
 }
 
 /// What the bootstrap core does before the kernel's memory map exists:

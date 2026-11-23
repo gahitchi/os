@@ -409,6 +409,11 @@ pub fn page_iomap(page: u64, io: u64, at: u64, flags: u64) -> Result<(), Error> 
     call(page, abi::op::PAGE_IOMAP, [io, at, flags, 0, 0, 0]).map(|_| ())
 }
 
+/// Guard an address space (`SPACE_GUARD`): for programs holding secrets.
+pub fn space_guard(space: u64, on: bool) -> Result<(), Error> {
+    call(space, abi::op::SPACE_GUARD, [u64::from(on), 0, 0, 0, 0, 0]).map(|_| ())
+}
+
 pub fn iospace_assign(io: u64, pool: u64) -> Result<(), Error> {
     call(io, abi::op::IOSPACE_ASSIGN, [pool, 0, 0, 0, 0, 0]).map(|_| ())
 }

@@ -49,6 +49,14 @@ pub struct PerCpu {
     pub lock_wait_ticks: AtomicU64,
     pub lock_held_ticks: AtomicU64,
     pub lock_since: AtomicU64,
+    /// The deadline this core's timer is armed for, 0 when it is not: the
+    /// kernel skips arming it again for the same or a later time (on a
+    /// virtual machine each write to the timer is a trip out to the host).
+    pub timer_armed: AtomicU64,
+    /// The user thread-local storage bases the core holds now (x86:
+    /// FS_BASE, and GS_BASE parked in KERNEL_GS_BASE), so a switch between
+    /// threads with the same ones writes nothing.
+    pub user_tls: [AtomicU64; 2],
 }
 
 impl PerCpu {
@@ -70,6 +78,8 @@ impl PerCpu {
             lock_wait_ticks: AtomicU64::new(0),
             lock_held_ticks: AtomicU64::new(0),
             lock_since: AtomicU64::new(0),
+            timer_armed: AtomicU64::new(0),
+            user_tls: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
         }
     }
 }

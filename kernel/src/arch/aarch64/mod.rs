@@ -110,7 +110,7 @@ pub fn speculation_barrier() {
 /// predictions apart by ASID where they are affected (Spectre v2 needs
 /// firmware help, not used yet).
 #[inline]
-pub fn on_space_switch() {}
+pub fn on_space_switch(_guarded: bool) {}
 
 pub fn boot_before_memory(mp: &MpResponse, cores: u32) {
     let f = cpu::features();

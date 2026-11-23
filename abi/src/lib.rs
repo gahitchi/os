@@ -155,6 +155,12 @@ pub mod op {
     /// Give it page-table memory: arg 0 = handle of an untyped nothing was
     /// made from. The untyped moves into the address space.
     pub const SPACE_ASSIGN: u64 = 64;
+    /// Guard it: arg 0 = 1 on, 0 off. A guarded program holds secrets
+    /// (keys, saved files, passwords): the core drops what the branch
+    /// predictors learned before the program runs after another one, and
+    /// after it ran, so no other program can steer its guesses or read
+    /// them back. Other switches skip that (it costs microseconds).
+    pub const SPACE_GUARD: u64 = 65;
 
     // On a page.
     /// Map: args = address space handle, address, [`super::map`] flags.

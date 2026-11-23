@@ -110,7 +110,10 @@ fn from_user(frame: &mut TrapFrame) {
         crate::syscall::save(me, frame, false);
     }
     match vector {
-        TIMER_VECTOR => crate::sched::timer(&mut k.sys, core),
+        TIMER_VECTOR => {
+            crate::time::fired();
+            crate::sched::timer(&mut k.sys, core)
+        }
         crate::device::FIRST_VECTOR..=crate::device::LAST_VECTOR => {
             crate::device::interrupt(&mut k.sys, vector)
         }

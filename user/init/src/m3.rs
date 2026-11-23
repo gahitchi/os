@@ -704,13 +704,21 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     };
     let between = measure(ep3);
     let inside = measure(ep2);
+    // The same with the second program guarded (it holds secrets): the
+    // core also drops its branch predictions on each switch, where the
+    // CPU offers that.
+    alaya_sys::space_guard(space, true).unwrap();
+    let guarded = measure(ep3);
+    alaya_sys::space_guard(space, false).unwrap();
     let ns = |c: u64| c * 1_000_000_000 / HZ.load(SeqCst);
     say!(
-        "ipc: call and reply round trip: {} cycles ({} ns) between programs, {} cycles ({} ns) inside one",
+        "ipc: call and reply round trip: {} cycles ({} ns) between programs, {} cycles ({} ns) inside one, {} cycles ({} ns) to a guarded program",
         between,
         ns(between),
         inside,
-        ns(inside)
+        ns(inside),
+        guarded,
+        ns(guarded)
     );
     pass("call and reply measured");
 

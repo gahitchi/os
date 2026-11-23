@@ -47,6 +47,8 @@ pub struct CoreState {
     pub space: u64,
     /// The last program address space loaded (stays set while idle).
     pub last_space: u64,
+    /// That address space is guarded (`SPACE_GUARD`).
+    pub last_guarded: bool,
     /// The scheduling context being charged, since `sc_start`; it runs out
     /// at `sc_end`.
     pub sc: u64,
@@ -69,6 +71,7 @@ impl CoreState {
         current: 0,
         space: 0,
         last_space: 0,
+        last_guarded: false,
         sc: 0,
         sc_start: 0,
         sc_end: 0,
@@ -578,9 +581,12 @@ pub fn switch_to(k: &mut Sys, core: usize, next: u64) {
                 crate::vspace::load(k, core, space);
                 k.cores[core].space = space;
                 if space != k.cores[core].last_space {
-                    // Another program's code runs here next.
-                    arch::on_space_switch();
+                    // Another program's code runs here next. Into or out of
+                    // a guarded program, also drop the branch predictions.
+                    let guarded = crate::obj::space_meta(space).guarded != 0;
+                    arch::on_space_switch(guarded || k.cores[core].last_guarded);
                     k.cores[core].last_space = space;
+                    k.cores[core].last_guarded = guarded;
                 }
             }
         } else if k.cores[core].space != 0 {

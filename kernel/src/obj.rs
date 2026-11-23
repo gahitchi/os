@@ -280,6 +280,8 @@ pub struct SpaceMeta {
     pub tables: u64,
     /// I/O spaces: the PCI functions attached, bdf + 1 (0: none).
     pub bound: [u32; crate::iommu::MAX_BOUND],
+    /// Address spaces: guarded (`SPACE_GUARD`), 1 or 0.
+    pub guarded: u64,
 }
 
 pub const SPACE_META: u64 = 4096;

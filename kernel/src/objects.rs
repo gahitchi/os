@@ -300,6 +300,10 @@ pub fn space(m: &mut Phys, me: u64, c: Cap, label: u64, a: [u64; 6]) -> Result<O
             vspace::assign(m, c.object, pool)?;
             OK
         }
+        op::SPACE_GUARD => {
+            crate::obj::space_meta(c.object).guarded = u64::from(a[0] != 0);
+            OK
+        }
         _ => Err(Error::NoSuchCall),
     }
 }

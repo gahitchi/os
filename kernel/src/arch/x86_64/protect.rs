@@ -202,10 +202,12 @@ pub fn on_interrupt_entry() {
     }
 }
 
-/// The core is about to run another program's code: stop what the last
-/// program taught the branch predictors from steering it.
-pub fn on_space_switch() {
-    if IBPB.load(Ordering::Relaxed) {
+/// The core is about to run another program's code. The return-stack
+/// buffer is always refilled (cheap). The branch predictors are dropped
+/// (IBPB, which costs microseconds) only into or out of a guarded program,
+/// so no other program can steer its guesses or learn from them.
+pub fn on_space_switch(guarded: bool) {
+    if guarded && IBPB.load(Ordering::Relaxed) {
         // SAFETY: IBPB only drops branch predictions.
         let _ = wrmsr_safe(MSR_PRED_CMD, PRED_CMD_IBPB);
     }

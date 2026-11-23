@@ -110,5 +110,6 @@ A record of what we have decided, in order. Each line is final until we change i
 | 104 | Proving the PIN box is real (milestone 6, with 74) | At setup each person picks a small picture. It shows in a strip at the top of the screen that only Alaya draws, and only while the real PIN box is open; apps can never draw on that strip or see the picture. Works the same on devices with no keyboard (user confirmed my recommendation) | 2026-11-23 |
 | 105 | Alaya's letters (milestone 6) | Figtree for text and IBM Plex Mono for code, as in the mock-up, plus Noto Sans for alphabets Figtree lacks. Fonts keep their own free font licence (SIL Open Font Licence) in their own folder; Alaya's code stays GPL-3.0-only (user confirmed my recommendation) | 2026-11-23 |
 | 106 | First keyboard layout (milestone 6, with 67) | US English first; other layouts come with the input-method server in milestone 7b (user confirmed my recommendation) | 2026-11-23 |
+| 107 | When the branch-predictor wipe (IBPB) runs | Only when a core switches into or out of a guarded program, one holding secrets (keys, saved files, passwords; the store is the first). Other switches skip it, as Linux does by default; the cheap return-predictor refill stays on every switch (user chose the recommendation) | 2026-11-23 |
 
 The rules attached to the other decisions are in `battle-test.md` and are part of them.
