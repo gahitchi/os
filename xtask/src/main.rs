@@ -961,7 +961,12 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                         .and_then(|r| r.split(' ').next())
                         .and_then(|n| n.parse::<u64>().ok())
                 {
-                    if accel == "KVM" && us >= 100_000 {
+                    // Real speed means KVM with a host core for every
+                    // core Alaya has: with more, the host pauses Alaya's
+                    // cores (one may hold the kernel lock), which measures
+                    // the host, not Alaya.
+                    let gated = accel == "KVM" && opts.cpus <= host_cpus();
+                    if gated && us >= 100_000 {
                         break Err(format!(
                             "the timeline's gate: a moment took {us} us (must be under 100 ms)"
                         ));
@@ -969,8 +974,10 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     println!(
                         "  * timeline gate: {} ms a moment at most ({})",
                         us / 1000,
-                        if accel == "KVM" {
+                        if gated {
                             "under 100 ms: passed"
+                        } else if accel == "KVM" {
+                            "more cores than the host has; the gate needs one host core each"
                         } else {
                             "emulated; the 100 ms gate is checked with KVM"
                         }
@@ -1066,6 +1073,11 @@ const DRAG_MARKER: &str = "init: desktop: drag from";
 const DESKTOP_SKIPPED_MARKER: &str = "init: desktop: nobody dragged";
 const DESKTOP_DRAWN_MARKER: &str = "init: desktop: drawn after a screen driver crash";
 const KEYS_MARKER: &str = "init: keys: ";
+/// How many cores the host has (for the timeline's gate).
+fn host_cpus() -> u32 {
+    thread::available_parallelism().map_or(1, |n| n.get() as u32)
+}
+
 const TIMELINE_MARKER: &str = "init: timeline: each of";
 const SCREENSHOT_MARKER: &str = "init: screenshot ";
 /// After its checks the first program looks after drivers and apps.

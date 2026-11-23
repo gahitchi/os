@@ -104,7 +104,9 @@ decisions 108 to 110 in [`design/decisions.md`](design/decisions.md).
 - A change that was not an action can be undone from "What happened?", and
   that undo undone.
 - **A year of history** (a moment every 6 hours, 1,460 in all) thins to
-  about 100 kept moments, and every one opens.
+  about 100 kept moments, and every one opens. Alaya's own check (84)
+  makes one moment a day, because every moment is a real save to the
+  disk and emulated ARM with 8 cores saves slowly.
 - **Power cuts during keep, undo and forget**, at every write: the store
   always opens as it was after the last commit it promised, or the one it
   was making.
@@ -127,7 +129,9 @@ decisions 108 to 110 in [`design/decisions.md`](design/decisions.md).
 | 84 | A year of history: every kept moment opens while every core is busy |
 
 Check 84 prints the slowest moment. The gate, under 100 ms, is for real
-speed: `cargo xtask test` enforces it when it runs Alaya with KVM. Plain
+speed: `cargo xtask test` enforces it when it runs Alaya with KVM and the
+host has a core for each of Alaya's (with fewer, the host pauses Alaya's
+cores, one of which may hold the kernel lock, and that measures the host). Plain
 emulation (TCG) is many times slower; there the number is shown, and a
 moment must still open within two seconds.
 
@@ -138,6 +142,9 @@ moment must still open within two seconds.
 - The timeline lives in the "What happened?" window; the file browser and
   the desktop following the slider come with the Open and Save windows in
   step 2.
+- "What happened?" shows one line per save; grouping lines by time ("the
+  editor changed 3 files between 14:00 and 14:10"), with one undo for the
+  group, comes next.
 - File stories open from a button and W; a right-click menu comes with the
   toolkit's menus.
 - Forget for good, grants with time, search, backup and the private-file

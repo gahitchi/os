@@ -162,16 +162,9 @@ fn lines(store: &Store) -> Vec<Line> {
             .map(|(f, _)| name(store, *f, cn, &moments))
             .collect();
         let v = files.first().map_or("changed", |(_, w)| verb(*w));
-        // An app saving by itself, again and again: one line.
-        if let Some(last) = out.last_mut()
-            && last.action.is_none()
-            && last.changes.first().is_some_and(|c| c.1 == app)
-            && last.text.ends_with(&format!("{v} {}", names(&ns)))
-        {
-            last.changes.push((cn, app));
-            last.when = format!("{when} to {}", last.when);
-            continue;
-        }
+        // One line a commit: each can be undone by itself. (Lines that
+        // stand for several saves need an undo of all of them at once,
+        // checked against the newest; that comes with grouping by time.)
         out.push(Line {
             text: format!("{} {v} {}", capital(app_name(app)), names(&ns)),
             when,
@@ -260,7 +253,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 (View::Timeline, Key::End) => at = moments.len().saturating_sub(1),
                 (View::Timeline, Key::Right) => at = (at + 1).min(moments.len().saturating_sub(1)),
                 (View::Timeline, Key::Up) => file = file.saturating_sub(1),
-                (View::Timeline, Key::Down) => file = (file + 1).min(then.len().saturating_sub(1)),
+                // Kept within the list when it is shown: keys typed quickly
+                // can come before the moment's list is read.
+                (View::Timeline, Key::Down) => file = file.saturating_add(1),
                 (View::Timeline, Key::Char('b')) => press = Some("Bring this back"),
                 // At once: the next keys are the name.
                 (View::Timeline, Key::Char('n')) => naming = Some(TextEdit::new("")),
@@ -302,7 +297,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 rt::now_us() - t0
             );
             shown_at = cn;
-            file = file.min(then.len().saturating_sub(1));
+        }
+        if !then.is_empty() {
+            file = file.min(then.len() - 1);
         }
         {
             let mut cv = win.canvas();

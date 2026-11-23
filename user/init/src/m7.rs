@@ -14,6 +14,12 @@ use crate::m3::{sleep_until, ticks_to_us};
 use crate::m6b::{Files, Session, ask};
 use crate::say;
 
+/// How long to wait for keys the host typed before sending them again.
+/// Most keys here are not safe to send twice (a second undo, a second
+/// delete), so this is long: slow emulated machines with many cores can
+/// take seconds to act.
+const SLOW: u64 = 30_000;
+
 /// A person for the checks only: someone else, and a year of history.
 const OTHER: u64 = 3;
 
@@ -98,7 +104,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     let gone = || me.lookup(docs, "summary.txt").is_none();
     let back = || me.lookup(docs, "summary.txt") == Some(summary);
     assert!(
-        x.keys("d", gone, 8000),
+        x.keys("d", gone, SLOW),
         "the file browser did not delete it"
     );
     // The file browser puts it on the undo list just after.
@@ -107,7 +113,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "deleting is not on the undo list"
     );
     assert!(
-        x.keys("{super+z}", back, 8000),
+        x.keys("{super+z}", back, SLOW),
         "Alaya key + Z did not bring summary.txt back"
     );
     assert!(me.contents(summary) == before, "it came back different");
@@ -118,7 +124,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     // ---- 77. The strip's Undo button does the same.
     sleep_until(2500, || false);
     assert!(
-        x.keys("d", gone, 8000),
+        x.keys("d", gone, SLOW),
         "the file browser did not delete it again"
     );
     let undo = place(dk::places::UNDO);
@@ -135,11 +141,11 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     let look = || ask(ep, dk::SESSION, &[])[3];
     assert!(look() == 0, "the look is not the plain one");
     assert!(
-        x.keys("{tab}{enter}", || look() == 1, 8000),
+        x.keys("{tab}{enter}", || look() == 1, SLOW),
         "Settings did not change the look"
     );
     assert!(
-        x.keys("{super+z}", || look() == 0, 8000),
+        x.keys("{super+z}", || look() == 0, SLOW),
         "the look did not go back"
     );
     assert!(
@@ -147,28 +153,28 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "the setting's action is not marked undone"
     );
     assert!(
-        x.keys("{enter}", || look() == 1, 8000),
+        x.keys("{enter}", || look() == 1, SLOW),
         "Settings did not change the look again"
     );
     // Something else (the checks) changes the look file meanwhile.
     let lf = me.lookup(apps, "look").expect("the look file");
     assert!(me.put(lf, &[7]));
     assert!(
-        x.keys("{super+z}", asking, 8000),
+        x.keys("{super+z}", asking, SLOW),
         "undo did not ask when something else had changed it"
     );
     say!("screenshot question");
     assert!(
-        x.keys("{escape}", || !asking(), 8000),
+        x.keys("{escape}", || !asking(), SLOW),
         "Escape did not answer"
     );
     assert!(
         me.contents(lf).is(&[7]),
         "\"keep as it is\" changed something"
     );
-    assert!(x.keys("{super+z}", asking, 8000), "undo did not ask again");
+    assert!(x.keys("{super+z}", asking, SLOW), "undo did not ask again");
     assert!(
-        x.keys("{enter}", || me.contents(lf).is(&[0]), 8000),
+        x.keys("{enter}", || me.contents(lf).is(&[0]), SLOW),
         "\"undo anyway\" did not put the old look back"
     );
     assert!(
@@ -191,7 +197,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "closing the window is not on the undo list"
     );
     assert!(
-        x.keys("{super+z}", || x.asked_bits() & 1 << role::CHART != 0, 8000),
+        x.keys("{super+z}", || x.asked_bits() & 1 << role::CHART != 0, SLOW),
         "undo did not ask for the chart maker again"
     );
     x.start_asked();
@@ -218,10 +224,14 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         x.keys(
             "1{up}{up}{up}{up}{up}{up}{enter}",
             || me.contents(plan).is(b"first plan"),
-            10_000
+            SLOW
         ),
         "undo on the newest line did not put plan.txt back: {:?}",
         me.contents(plan).text()
+    );
+    assert!(
+        sleep_until(3000, || !asking()),
+        "undoing one line left a question open"
     );
     pass("\"What happened?\" lists changes in plain words; undo on a line puts it back");
 
@@ -280,7 +290,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     x.keys(spec, || false, 1500);
     say!("screenshot timeline");
     assert!(
-        x.keys("b", || me.lookup(docs, "plan.txt") == Some(plan), 10_000),
+        x.keys("b", || me.lookup(docs, "plan.txt") == Some(plan), SLOW),
         "\"bring this back\" did not bring plan.txt back"
     );
     assert!(
@@ -296,7 +306,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
             })
     };
     assert!(
-        x.keys("nBefore the plan{enter}", named, 10_000),
+        x.keys("nBefore the plan{enter}", named, SLOW),
         "\"name this version\" did not name it"
     );
     pass("the timeline shows the documents as they were; bring back and naming work");
@@ -362,11 +372,8 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
 
     // ---- 84. A year of history, opened while every core is busy.
     let t0 = alaya_sys::clock();
-    let r = other.call(fs::FAKE_HISTORY, &[365, 6]);
-    assert!(
-        r[0] == st::OK && r[1] == 365 * 4,
-        "no year of history: {r:?}"
-    );
+    let r = other.call(fs::FAKE_HISTORY, &[365, 24]);
+    assert!(r[0] == st::OK && r[1] == 365, "no year of history: {r:?}");
     say!(
         "timeline: a year of history ({} moments) made in {} ms",
         r[1],

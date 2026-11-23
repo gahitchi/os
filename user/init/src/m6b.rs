@@ -193,7 +193,8 @@ impl<'a> Session<'a> {
             to.0,
             to.1
         );
-        if HOST.load(SeqCst) && sleep_until(10_000, &done) {
+        // Long: a second click is not always harmless (an undo button).
+        if HOST.load(SeqCst) && sleep_until(30_000, &done) {
             return true;
         }
         let (w, h) = self.size();
