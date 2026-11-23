@@ -65,24 +65,24 @@ jobs:
       # Plain emulation (TCG), as on a phone: xAPIC and the APIC one-shot
       # timer, since QEMU cannot emulate the TSC-deadline timer.
       - name: Boot, TCG, BIOS, 1 core
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 1
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 1 --timeout 900
       - name: Boot, TCG, BIOS, 2 cores
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2 --timeout 900
       - name: Boot, TCG, BIOS, 8 cores
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 8
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 8 --timeout 900
       - name: Boot, TCG, UEFI, 2 cores
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2 --uefi
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2 --uefi --timeout 900
 
       # KVM with the host CPU, as on a PC: x2APIC and the TSC-deadline timer.
       - name: Boot, KVM, BIOS, 1, 2 and 8 cores (TSC-deadline timer)
         run: |
           set -o pipefail
           for n in 1 2 8; do
-            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n | tee boot.log
+            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 900 | tee boot.log
             grep -q "timer is the TSC-deadline timer" boot.log
           done
       - name: Boot, KVM, UEFI, 8 cores, 4 GiB (1 GiB pages)
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G --timeout 900
 
       # Crash on purpose and check the fault reports.
       - name: Fault reports
