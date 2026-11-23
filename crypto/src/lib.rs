@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Scrambling and fingerprints: AES-256 (FIPS 197) in counter mode, SHA-256
-//! (FIPS 180-4) and HMAC-SHA-256 (RFC 2104).
+//! (FIPS 180-4) and HMAC-SHA-256 (RFC 2104), plus the slow PIN step that
+//! turns a short PIN into a key ([`pin_key`]).
+//!
+//! It never allocates memory, so even the first program can use it.
 //!
 //! Every block is scrambled with AES-256-CTR and then fingerprinted with
 //! HMAC-SHA-256 over its place, its birth and the scrambled bytes
@@ -11,6 +14,8 @@
 //! This is plain Rust that runs on every processor. It uses lookup tables,
 //! so its timing can depend on the data; the processor's own AES
 //! instructions (decision 29) replace it as a later speed and safety step.
+
+#![no_std]
 
 /// The AES S-box.
 const SBOX: [u8; 256] = {
@@ -364,5 +369,71 @@ impl Keys {
     /// A full fingerprint of anything else (the front page).
     pub fn mac(&self, parts: &[&[u8]]) -> [u8; 32] {
         self.mac.mac(parts)
+    }
+}
+
+/// The slow PIN step: turn a short PIN into a 32-byte key.
+///
+/// A PIN has few possibilities, so what protects a copied disk is how much
+/// each guess costs. This step fills `work` (all of it: its size is the
+/// memory cost) with a chain of SHA-256 fingerprints, then walks it in an
+/// order that depends on everything before, as scrypt's ROMix does
+/// (RFC 7914, with SHA-256 for the mixing step). Guessing many PINs at
+/// once then needs `work`'s memory for each guess, which makes graphics
+/// cards and special chips far less of a help. `salt` makes the same PIN
+/// give a different key on every machine and for every person.
+///
+/// The chip (TPM, milestone 13) limits the number of guesses for real; this
+/// step is what stands until then.
+pub fn pin_key(pin: &[u8], salt: &[u8], work: &mut [[u8; 32]]) -> [u8; 32] {
+    assert!(!work.is_empty(), "the PIN step needs memory");
+    let h = Hmac::new(salt);
+    let mut x = h.mac(&[b"alaya pin", pin]);
+    let n = work.len();
+    let step = |x: &[u8; 32], i: usize| {
+        let mut s = Sha256::new();
+        s.update(x);
+        s.update(&(i as u64).to_le_bytes());
+        s.finish()
+    };
+    for (i, w) in work.iter_mut().enumerate() {
+        *w = x;
+        x = step(&x, i);
+    }
+    for i in 0..n {
+        let j = (u64::from_le_bytes(x[..8].try_into().unwrap()) % n as u64) as usize;
+        for (a, b) in x.iter_mut().zip(&work[j]) {
+            *a ^= b;
+        }
+        x = step(&x, n + i);
+    }
+    h.mac(&[b"alaya pin key", &x, pin])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pin_key_depends_on_everything() {
+        let mut w = [[0u8; 32]; 1024];
+        let a = pin_key(b"2468", b"salt one", &mut w);
+        assert_eq!(a, pin_key(b"2468", b"salt one", &mut w));
+        assert_ne!(a, pin_key(b"2469", b"salt one", &mut w));
+        assert_ne!(a, pin_key(b"2468", b"salt two", &mut w));
+        let mut small = [[0u8; 32]; 512];
+        assert_ne!(a, pin_key(b"2468", b"salt one", &mut small));
+    }
+
+    #[test]
+    fn pin_key_uses_all_its_memory() {
+        // The second walk reads all over the table: changing one entry
+        // between the walks would change the key. Here: every entry of a
+        // fresh table differs from the others (a chain, not a constant).
+        let mut w = [[0u8; 32]; 256];
+        pin_key(b"1", b"s", &mut w);
+        for i in 1..w.len() {
+            assert_ne!(w[i], w[i - 1]);
+        }
     }
 }

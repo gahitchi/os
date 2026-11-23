@@ -13,6 +13,15 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 6, step 3 (6b): people and apps.** First setup and a login
+screen with a PIN box no app can fake: your own picture shows in the top
+strip only while the real one asks for your PIN. The PIN becomes your key
+through a slow, memory-heavy step. A text editor that saves and comes back
+exactly where you were, a file browser, a chart maker, Settings with two
+looks, and loose window groups. After its checks the first program keeps
+restarting crashed drivers and apps (checks 59 to 71). How it works:
+[`docs/desktop.md`](docs/desktop.md).
+
 **Milestone 6, step 2: the first desktop.** Alaya draws its own desktop:
 windows you move, resize, snap to the screen's edges and tile, a dock, and
 a strip at the top that no app can draw on. Apps are built with Alaya's

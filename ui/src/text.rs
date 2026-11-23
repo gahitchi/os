@@ -197,9 +197,14 @@ impl<'a> Fonts<'a> {
                         _ => i,
                     };
                     lines.push((pstart + start, pstart + cut));
-                    width = self.width(face, px, &para[cut..i]);
                     start = cut;
                     last_space = None;
+                    if cut > i {
+                        // The space that did not fit ends the line.
+                        width = 0;
+                        continue;
+                    }
+                    width = self.width(face, px, &para[cut..i]);
                 }
                 width += w;
             }

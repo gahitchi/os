@@ -633,4 +633,8 @@ pub mod boot_flags {
     /// `store-soak`: skip the store checks; open the store on the disk,
     /// show what survived, and keep saving until the machine is killed.
     pub const STORE_SOAK: u64 = 1 << 2;
+    /// `desk`: a person drives the desktop (`cargo xtask run`): the
+    /// desktop checks do not type for themselves; the person sets up and
+    /// logs in.
+    pub const DESK: u64 = 1 << 3;
 }

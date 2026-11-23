@@ -16,6 +16,7 @@ bench = false
 alaya-sys = { path = "../sys" }
 alaya-programs = { path = "../programs" }
 alaya-ui = { path = "../../ui" }
+alaya-crypto = { path = "../../crypto" }
 
 [[bin]]
 name = "desktop"
@@ -24,7 +25,7 @@ test = false
 bench = false
 
 [[bin]]
-name = "editor"
-path = "src/bin/editor.rs"
+name = "apps"
+path = "src/bin/apps/main.rs"
 test = false
 bench = false

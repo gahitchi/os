@@ -14,6 +14,7 @@ extern crate std;
 
 pub mod canvas;
 pub mod font;
+pub mod login;
 pub mod scene;
 pub mod text;
 pub mod widgets;
