@@ -28,6 +28,7 @@ extern crate alloc;
 pub use alaya_crypto as crypto;
 pub mod disk;
 pub mod format;
+pub mod made;
 pub mod space;
 pub mod tree;
 
@@ -150,6 +151,9 @@ pub struct Stat {
     pub created: u64,
     pub parent: u64,
     pub is_dir: bool,
+    /// For documents, how many times the file was changed: with the
+    /// version, it tells apart changes made before the same commit.
+    pub edits: u64,
 }
 
 /// A document that might be worth cleaning up (see
@@ -246,6 +250,8 @@ fn snap_gen(k: Key) -> u64 {
 const K_INODE: u64 = 0;
 const K_DATA: u64 = 1;
 const K_DIRENT: u64 = 2;
+/// The "made from" note of a result (see `made.rs`).
+const K_MADE: u64 = 3;
 fn k_inode(obj: u64) -> Key {
     Key(obj << 8 | K_INODE, 0)
 }
@@ -254,6 +260,9 @@ fn k_data(obj: u64, idx: u64) -> Key {
 }
 fn k_dirent(dir: u64, slot: u64) -> Key {
     Key(dir << 8 | K_DIRENT, slot)
+}
+fn k_made(obj: u64, slot: u64) -> Key {
+    Key(obj << 8 | K_MADE, slot)
 }
 
 // Keys of a person's history tree.
@@ -418,6 +427,11 @@ struct Branch {
     docs_changed: bool,
     /// Keep the apps as they are now, as the copy from before an update.
     apps_snapshot: bool,
+    /// How much of which document version each app has read since the
+    /// person's files were opened (living validity; kept in memory only).
+    seen: BTreeMap<(App, FileId), made::Seen>,
+    /// Which app last changed each document since they were opened.
+    writer: BTreeMap<FileId, App>,
 }
 
 impl Branch {
@@ -434,6 +448,8 @@ impl Branch {
             touched: true,
             docs_changed: true,
             apps_snapshot: false,
+            seen: BTreeMap::new(),
+            writer: BTreeMap::new(),
         }
     }
 }
@@ -762,6 +778,8 @@ impl<D: Disk> Store<D> {
             touched: false,
             docs_changed: false,
             apps_snapshot: false,
+            seen: BTreeMap::new(),
+            writer: BTreeMap::new(),
         };
         self.branches.insert(p, br);
         Ok(())
@@ -871,6 +889,16 @@ impl<D: Disk> Store<D> {
         Ok(())
     }
 
+    /// A document changed: count the change and remember who made it.
+    fn edited(&mut self, p: Person, app: App, f: FileId, st: &mut Val) -> Result<(), Error> {
+        if f.class() == Class::Documents {
+            let w = word(st, 4) + (1 << USED_SHIFT);
+            format::set_word(st, 4, w);
+            self.branch(p)?.writer.insert(f, app);
+        }
+        Ok(())
+    }
+
     fn note(&mut self, p: Person, app: App, f: FileId, w: u64) -> Result<(), Error> {
         let b = self.branch(p)?;
         *b.changes.entry((app, f)).or_insert(0) |= w;
@@ -887,7 +915,11 @@ impl<D: Disk> Store<D> {
 
     pub fn stat(&mut self, p: Person, f: FileId) -> Result<Stat, Error> {
         let v = self.inode(p, f)?;
-        Ok(stat_of(&v))
+        let mut st = stat_of(&v);
+        if f.class() == Class::Documents {
+            st.edits = word(&v, 4) >> USED_SHIFT;
+        }
+        Ok(st)
     }
 
     fn find_entry(
@@ -982,6 +1014,9 @@ impl<D: Disk> Store<D> {
         format::set_word(&mut v, 0, obj);
         v[8..8 + name.len()].copy_from_slice(name);
         t.insert(dev, &b.keys, k_dirent(dir.obj(), h | slot), v)?;
+        if f.class() == Class::Documents {
+            b.writer.insert(f, app);
+        }
         self.note(p, app, f, what::CREATED)?;
         Ok(f)
     }
@@ -1046,6 +1081,7 @@ impl<D: Disk> Store<D> {
         if f.class() == Class::Caches {
             self.stamp(&mut st);
         }
+        self.edited(p, app, f, &mut st)?;
         self.put_inode(p, f, st)?;
         self.note(p, app, f, what::WROTE)?;
         Ok(())
@@ -1102,10 +1138,22 @@ impl<D: Disk> Store<D> {
                 b.touched = true;
             }
         }
-        if off >= size {
+        let n = if off >= size {
+            0
+        } else {
+            (buf.len() as u64).min(size - off) as usize
+        };
+        if f.class() == Class::Documents {
+            let v = (word(&st, 1), word(&st, 4) >> USED_SHIFT, size);
+            self.branch(p)?
+                .seen
+                .entry((app, f))
+                .and_modify(|s| s.read(v, off, n as u64))
+                .or_insert_with(|| made::Seen::first(v, off, n as u64));
+        }
+        if n == 0 {
             return Ok(0);
         }
-        let n = (buf.len() as u64).min(size - off) as usize;
         let mut done = 0;
         let mut blk = [0u8; BLOCK];
         while done < n {
@@ -1146,6 +1194,7 @@ impl<D: Disk> Store<D> {
         if f.class() == Class::Caches {
             self.stamp(&mut st);
         }
+        self.edited(p, app, f, &mut st)?;
         self.put_inode(p, f, st)?;
         self.note(p, app, f, what::WROTE)
     }
@@ -1188,6 +1237,10 @@ impl<D: Disk> Store<D> {
         let t = &mut b.trees[dir.class() as usize];
         t.remove(dev, &b.keys, k)?;
         t.remove(dev, &b.keys, k_inode(f.obj()))?;
+        for (mk, _) in t.collect(dev, &b.keys, k_made(f.obj(), 0), k_made(f.obj(), u64::MAX))? {
+            t.remove(dev, &b.keys, mk)?;
+        }
+        b.writer.remove(&f);
         self.note(p, app, f, what::DELETED)
     }
 
@@ -2238,6 +2291,7 @@ fn stat_of(v: &Val) -> Stat {
         created: word(v, 2),
         parent: word(v, 3),
         is_dir: word(v, 4) & F_DIR != 0,
+        edits: 0,
     }
 }
 

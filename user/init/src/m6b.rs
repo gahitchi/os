@@ -63,7 +63,7 @@ struct App {
 /// Everything the first program keeps running after its checks.
 pub(crate) struct Session<'a> {
     pub s: Seat<'a>,
-    ep: u64,
+    pub(crate) ep: u64,
     session_ntfn: u64,
     sizes: [u64; 4],
     apps: [App; role::COUNT as usize + 1],
@@ -74,32 +74,32 @@ pub(crate) struct Session<'a> {
 }
 
 /// The first program's own way into the store, as person `person`.
-struct Files {
-    ep: u64,
+pub(crate) struct Files {
+    pub(crate) ep: u64,
 }
 
 impl Files {
-    fn buf(&self) -> &'static mut [u8] {
+    pub(crate) fn buf(&self) -> &'static mut [u8] {
         let base = XFER_AT_PUB;
         // SAFETY: channel 0's transfer pages are mapped here; one request
         // at a time.
         unsafe { core::slice::from_raw_parts_mut(base as *mut u8, fs::XFER_BYTES) }
     }
 
-    fn call(&self, label: u64, words: &[u64]) -> [u64; 6] {
+    pub(crate) fn call(&self, label: u64, words: &[u64]) -> [u64; 6] {
         alaya_sys::ipc_call(self.ep, &Msg::new(label, words), Caps::default())
             .map(|m| m.words)
             .unwrap_or([u64::MAX; 6])
     }
 
-    fn lookup(&self, dir: u64, name: &str) -> Option<u64> {
+    pub(crate) fn lookup(&self, dir: u64, name: &str) -> Option<u64> {
         self.buf()[..name.len()].copy_from_slice(name.as_bytes());
         let r = self.call(fs::LOOKUP, &[dir, name.len() as u64]);
         (r[0] == st::OK).then_some(r[1])
     }
 
     /// The first `out.len()` bytes of a file, and its size.
-    fn read(&self, f: u64, out: &mut [u8]) -> Option<u64> {
+    pub(crate) fn read(&self, f: u64, out: &mut [u8]) -> Option<u64> {
         let size = self.call(fs::STAT, &[f]);
         if size[0] != st::OK {
             return None;
@@ -113,28 +113,36 @@ impl Files {
         Some(size[1])
     }
 
-    fn root(&self, class: u64) -> u64 {
+    pub(crate) fn root(&self, class: u64) -> u64 {
         self.call(fs::ROOT, &[class])[1]
     }
 }
 
-/// The editor's return point as the store has it: cursor and text.
-fn return_point(f: &Files, buf: &mut [u8]) -> Option<(u64, usize)> {
+/// The editor's return point as the store has it: cursor and the text's
+/// length.
+pub(crate) fn return_point(f: &Files, buf: &mut [u8]) -> Option<(u64, usize)> {
+    return_point_of(f, buf).map(|r| (r.0, r.1))
+}
+
+/// The editor's return point: cursor, the text's length, whether it is
+/// saved, and the file's name (in `buf`, from `name_at` on).
+pub(crate) fn return_point_of(f: &Files, buf: &mut [u8]) -> Option<(u64, usize, bool, usize)> {
     let apps = f.root(APPS);
     let r = f.lookup(apps, "editor-return")?;
     let size = f.read(r, buf)? as usize;
     let w = |i: usize| u64::from_le_bytes(buf[8 * i..8 * i + 8].try_into().unwrap());
-    if size < 40 || size > buf.len() {
+    if size < 48 || size > buf.len() {
         return None;
     }
     let len = w(4) as usize;
-    (40 + len == size).then(|| (w(1), len))
+    let name = w(5) as usize;
+    (48 + name + len == size).then(|| (w(1), len, w(3) == 0, name))
 }
 
 impl<'a> Session<'a> {
     /// Type `spec` (see `alaya_programs::desktop::keys`): the host types it
     /// if there is one, else the first program sends the key events.
-    fn keys(&self, spec: &str, done: impl Fn() -> bool, ms: u64) -> bool {
+    pub(crate) fn keys(&self, spec: &str, done: impl Fn() -> bool, ms: u64) -> bool {
         say!("keys: {spec}");
         if HOST.load(SeqCst) {
             if sleep_until(ms, &done) {
@@ -219,12 +227,12 @@ impl<'a> Session<'a> {
         (load(&sp.width), load(&sp.height))
     }
 
-    fn session(&self) -> [u64; 6] {
+    pub(crate) fn session(&self) -> [u64; 6] {
         ask(self.ep, dk::SESSION, &[])
     }
 
     /// The window of the app with role `r`, if it has one open.
-    fn window_of(&self, r: u64) -> Option<u64> {
+    pub(crate) fn window_of(&self, r: u64) -> Option<u64> {
         let a = ask(self.ep, dk::WINDOW_OF, &[r]);
         (a[0] == dk::OK).then_some(a[1])
     }
@@ -330,7 +338,7 @@ impl<'a> Session<'a> {
         self.apps[i].starts += 1;
     }
 
-    fn wait_window(&self, r: u64) -> u64 {
+    pub(crate) fn wait_window(&self, r: u64) -> u64 {
         let id = core::cell::Cell::new(None);
         let found = sleep_until(60_000, || {
             id.set(self.window_of(r));
@@ -703,7 +711,9 @@ pub(crate) fn run<'a>(
         "the cursor came back at {c2}, not {}",
         cursor + 1
     );
-    let text = core::str::from_utf8(&buf[40..40 + len + 1]).unwrap_or("?");
+    // After the header and the file's name ("Notes.txt").
+    let at = 48 + 9;
+    let text = core::str::from_utf8(&buf[at..at + len + 1]).unwrap_or("?");
     say!(
         "editor: back with \"{}\"",
         text.rsplit('\n').next().unwrap_or("")
@@ -823,6 +833,7 @@ pub(crate) fn run<'a>(
     );
     pass("the keyboard driver crashes under the desktop; typing carries on");
     let _ = (x.pointer, x.keyboard);
+    crate::m6c::run(&mut x, pass);
     x
 }
 
@@ -834,7 +845,7 @@ fn alaya_ui_strip() -> u64 {
 impl Session<'_> {
     /// The first program's own badge on the store, as the person logged
     /// in, on channel 0 (the checks of milestone 5 are over).
-    fn files(&mut self) -> Files {
+    pub(crate) fn files(&mut self) -> Files {
         let h = self.s.k.slot();
         alaya_sys::mint(
             self.s.k.at(h),

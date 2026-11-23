@@ -22,6 +22,47 @@ pub struct Store {
     ep: u64,
 }
 
+/// One version of a file, exactly: its version and how many times it was
+/// changed (several saves can share a version until the store commits).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub file: u64,
+    pub version: u64,
+    pub edits: u64,
+}
+
+/// What a result's mark says (living validity, see `alaya_store::made`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    NoMark,
+    UpToDate,
+    NeedsALook,
+    AsOf,
+    NotSure,
+}
+
+/// Why it says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    Nothing,
+    SourceChanged,
+    NotAllRead,
+    SourceGone,
+    ResultChanged,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub kind: Kind,
+    pub why: Why,
+    /// The source the mark is about (0: none), and its version now.
+    pub source: u64,
+    pub now_version: u64,
+    /// The app that made the result, and from how many files.
+    pub maker: u64,
+    pub sources: u64,
+}
+
 /// One entry of a directory.
 pub struct Entry {
     pub name: String,
@@ -88,6 +129,88 @@ impl Store {
     pub fn stat(&self, f: u64) -> Result<(u64, u64, bool), Status> {
         let r = self.call(fs::STAT, &[f])?;
         Ok((r[1], r[2], r[3] != 0))
+    }
+
+    /// Exactly which version of `f` this is now.
+    pub fn version(&self, f: u64) -> Result<Version, Status> {
+        let r = self.call(fs::STAT, &[f])?;
+        Ok(Version {
+            file: f,
+            version: r[2],
+            edits: r[4],
+        })
+    }
+
+    /// All of `f`, and exactly which version it was. If the file changes
+    /// while it is read, it is read again (a few times at most).
+    pub fn read_versioned(&self, f: u64) -> Result<(Vec<u8>, Version), Status> {
+        let mut tries = 0;
+        loop {
+            let before = self.version(f)?;
+            let data = self.read_all(f)?;
+            if self.version(f)? == before || tries == 3 {
+                return Ok((data, before));
+            }
+            tries += 1;
+        }
+    }
+
+    /// Say that this app made `result` from exactly these versions. The
+    /// store checks that this app read all of each one.
+    pub fn made_from(&self, result: u64, sources: &[Version]) -> Result<(), Status> {
+        let buf = xfer();
+        if sources.len() * 24 > buf.len() {
+            return Err(st::BAD_REQUEST);
+        }
+        for (i, v) in sources.iter().enumerate() {
+            for (j, w) in [v.file, v.version, v.edits].iter().enumerate() {
+                buf[24 * i + 8 * j..24 * i + 8 * j + 8].copy_from_slice(&w.to_le_bytes());
+            }
+        }
+        self.call(fs::MADE_FROM, &[result, sources.len() as u64])
+            .map(|_| ())
+    }
+
+    /// Is `f` still up to date?
+    pub fn mark(&self, f: u64) -> Result<Mark, Status> {
+        let r = self.call(fs::MARK, &[f])?;
+        let kind = match r[1] & 0xff {
+            1 => Kind::UpToDate,
+            2 => Kind::NeedsALook,
+            3 => Kind::AsOf,
+            4 => Kind::NotSure,
+            _ => Kind::NoMark,
+        };
+        let why = match r[1] >> 8 {
+            1 => Why::SourceChanged,
+            2 => Why::NotAllRead,
+            3 => Why::SourceGone,
+            4 => Why::ResultChanged,
+            _ => Why::Nothing,
+        };
+        Ok(Mark {
+            kind,
+            why,
+            source: r[2],
+            now_version: r[3],
+            maker: r[4],
+            sources: r[5],
+        })
+    }
+
+    /// The person says `f` shows a fixed moment ("as of a date"), or not.
+    pub fn as_of(&self, f: u64, on: bool) -> Result<(), Status> {
+        self.call(fs::AS_OF, &[f, on as u64]).map(|_| ())
+    }
+
+    /// Which app changed which file in commit `cn`: (app, file, what).
+    pub fn changes(&self, cn: u64) -> Result<Vec<(u64, u64, u64)>, Status> {
+        let n = self.call(fs::CHANGES, &[cn])?[1] as usize;
+        let b = xfer();
+        let w = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        Ok((0..n)
+            .map(|i| (w(3 * i), w(3 * i + 1), w(3 * i + 2)))
+            .collect())
     }
 
     pub fn read_all(&self, f: u64) -> Result<Vec<u8>, Status> {

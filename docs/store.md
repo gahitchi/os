@@ -106,6 +106,14 @@ was at most 3 %). Check 52 also measures a worst case inside Alaya, where
 every read is new; under emulation its result is within the noise of the
 measurement (between about -7 % and +15 % from run to run).
 
+**Made from (milestone 6c).** An app can say which exact versions of
+which documents it made a result from; the store keeps that note with the
+result (key kind 3 in the documents tree, so it has history) and checks
+it against what it saw the app read. `mark` then says whether the result
+is up to date. Each document also counts its changes (inode word 4, above
+the flags), because several saves can share one version until the next
+commit. See [`desktop.md`](desktop.md), step 4.
+
 Old versions are thinned as decision 33 says (all for a day, then hourly,
 daily, weekly), within a history budget of 15 % of the disk.
 

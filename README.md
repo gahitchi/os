@@ -13,6 +13,15 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 6, step 4 (6c): "is this still up to date?"** The first show
+of living validity, something no other system does. The chart maker tells
+Alaya what its picture and summary were made from; the store checks that
+it really read all of that file. Change the numbers in the text editor and
+the file browser marks the chart and the summary "Needs a look"; save the
+chart again and they are "Up to date". A result made from part of a file,
+or from a file that changed while it was read, is never "Up to date"
+(checks 72 to 75). How it works: [`docs/desktop.md`](docs/desktop.md).
+
 **Milestone 6, step 3 (6b): people and apps.** First setup and a login
 screen with a PIN box no app can fake: your own picture shows in the top
 strip only while the real one asks for your PIN. The PIN becomes your key
