@@ -842,9 +842,24 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     pass("random driver crashes and freezes: no error reaches the app");
 
     // A driver that keeps crashing: switched off, a clear error, try again.
-    for _ in 0..4 {
+    // The real rule (more than three crashes in a minute), and each crash
+    // waits for the restart before it: on a slow host (a phone) a restart
+    // can take longer than the one-second window the chaos used, so four
+    // crashes 40 ms apart never fell inside it.
+    control(ctl, k::POLICY, &[3, 60_000]);
+    for i in 0..4 {
+        let before = stats(ctl)[0];
         control(ctl, k::CRASH_NOW, &[]);
-        sleep_ms(40);
+        if i < 3 {
+            assert!(
+                wait_for(10_000, || {
+                    let s = stats(ctl);
+                    s[0] > before && s[5] == k::state::RUNNING
+                }),
+                "the driver did not restart after crash {}",
+                i + 1
+            );
+        }
     }
     assert!(
         wait_for(5000, || stats(ctl)[5] == k::state::OFF),
