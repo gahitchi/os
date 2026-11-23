@@ -206,6 +206,8 @@ pub fn start(platform: &crate::acpi::Platform) -> ! {
             info.flags |= boot_flags::LONG;
         } else if word == "store-soak" {
             info.flags |= boot_flags::STORE_SOAK;
+        } else if word == "desk" {
+            info.flags |= boot_flags::DESK;
         }
     }
     for c in 0..(percpu::count() as usize).min(MAX_CORES) {

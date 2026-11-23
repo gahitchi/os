@@ -23,6 +23,7 @@ mod m4b;
 mod m4c;
 mod m5;
 mod m6;
+mod m6b;
 
 alaya_sys::start_code!(main);
 
@@ -366,7 +367,8 @@ extern "C" fn main(info: &'static BootInfo) -> ! {
     slots.next = m4b::run(info, u, slots.next, &mut pass);
     slots.next = m4c::run(info, u, slots.next, &mut pass);
     slots.next = m5::run(info, u, slots.next, &mut pass);
-    slots.next = m6::run(info, u, slots.next, &mut pass);
+    let session = m6::run(info, u, slots.next, &mut pass);
+    slots.next = session.s.k.next;
     if info.flags & boot_flags::FUZZ != 0 {
         fuzz::run(info, u, slots.next, info.fuzz_seconds);
     }
@@ -374,7 +376,5 @@ extern "C" fn main(info: &'static BootInfo) -> ! {
     let (restarts, revoked) = alaya_sys::counters();
     say!("all {checks} checks passed ({restarts} restarted calls, {revoked} capabilities revoked)");
     alaya_sys::report(0);
-    loop {
-        alaya_sys::yield_now();
-    }
+    session.serve()
 }

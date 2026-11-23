@@ -97,20 +97,88 @@ which draws into it with the toolkit and says which part changed. Keys,
 the pointer, resizes, focus and the close button reach the app as events.
 Super with an arrow key snaps the window in front; Super+T tiles.
 
-**The first app** is a simple text editor (`editor.rs`). Saving to the
-store and reopening where you were come in step 3.
+**The first app** was a simple text editor; step 3 makes it save, and adds
+more apps (below).
 
-Checks 59 to 63: the desktop draws (the first program checks the strip's
-colour in the screen memory); the editor opens a window; `cargo xtask test`
-drags its title bar to the left edge through QEMU and it snaps to the left
-half; typed keys reach the editor; tiling shares the screen and goes back;
-the screen driver crashes under the desktop and drawing carries on. The
-test saves a screenshot of the desktop in `build/screen-desktop.ppm`.
+## Step 3 (6b): people and apps
+
+**First setup and login** are drawn by the desktop itself
+(`ui/src/login.rs`, `user/apps/src/bin/desktop.rs`). First setup asks for a
+name, a PIN (twice), a picture and what Alaya will be used for (two looks:
+"Just the basics", or "Everything on" with the chart maker and the group
+labels; decision 90). The login screen has a tile per person (decision 30)
+and a PIN box. Keys and the mouse go to the login screen and to nothing
+else.
+
+**The trusted PIN box (decision 104).** While the real PIN box is open, the
+person's picture shows in the top strip, which only the desktop draws: no
+window can cover it, and no app ever sees the picture (it lives in the
+machine's own files, which no app has a badge for; the login tiles show an
+initial instead). A fake login screen drawn by an app cannot show it.
+
+**From PIN to key.** The PIN goes through a slow step that needs memory
+(`pin_key` in the new `crypto/` crate: scrypt's ROMix with SHA-256, 2 MiB
+per guess here), salted per machine and per person. The key opens the
+person's files in the store; a wrong PIN opens nothing. The TPM, which
+limits guesses for real, comes with milestone 13; until then the key of the
+machine's own files is in the image, and the screen says so.
+
+**The login parts (decision 74).** The first program fingerprints the
+programs that draw the login screen and hold the keys (the desktop and the
+store) and hands the fingerprint to the desktop, which compares it with the
+last login's and says on the login screen what it found: first login, the
+same, or changed. It is labelled "checked by Alaya, not yet by the chip".
+
+**The apps** are one program image (`user/apps/src/bin/apps/`) started once
+per app, each with its own memory, its own badge on the desktop and on the
+store, and its own transfer pages:
+- **Text editor**: `Notes.txt` in the person's documents; Ctrl+S saves.
+  After every change it writes its return point (the text, saved or not,
+  the cursor and the first line shown); the store makes it safe within five
+  seconds, so the editor comes back exactly where you were after it is
+  closed, crashes or is stopped.
+- **Files**: the documents, with sizes and versions (the living-validity
+  marks come in step 4, 6c).
+- **Chart maker**: a bar chart of `numbers.txt`, redrawn when it changes;
+  "Save picture" (or Ctrl+S) saves `chart.ppm`.
+- **Settings**: the look; the desktop follows at once.
+- **The clock** in the strip counts time since start until a real-time clock
+  driver exists.
+
+The dock starts an app that is not running and brings a running one to the
+front. **Loose groups** (decision 85): drop a window on a group label left of
+the dock and it is in that group (a label in its title bar, nothing more);
+clicking the label brings the group's windows to the front.
+
+**Looking after.** After its checks the first program keeps running: it
+starts the apps the dock asks for and starts again any driver or app that
+crashes. The desktop's calls that steer it (lock, inject input, close an
+app's windows, ask its state) answer only the first program.
+
+## How the desktop is tested
+
+Checks 59 to 71, on PCs and ARM: first setup typed through QEMU (name, PIN
+twice, picture, look); the editor opens and is dragged to the left half;
+typing and tiling; the screen driver crashes under the desktop; the lock
+screen shows the picture in the strip, refuses a wrong PIN and opens with
+the right one, and the picture is gone after; the editor saves, is stopped
+in the middle of typing and comes back with its text and cursor; the file
+browser and the chart maker open and a chart is saved as a picture; a window
+dropped on a group label joins the group; an app cannot use the desktop's
+own calls or draw on the strip; Settings changes the look; the keyboard
+driver crashes and typing carries on. `cargo xtask test` saves screenshots
+in `build/screen-setup.ppm`, `screen-login.ppm`, `screen-apps.ppm` and
+`screen-desktop.ppm`. Without a host typing (the phone, or
+`ALAYA_NO_HOST_INPUT=1`), the first program sends the same keys and mouse
+moves to the desktop itself.
 
 ## Seeing it
 
-`cargo xtask run` opens QEMU's own window: after the boot checks you get
-the desktop with the editor; type in it, drag it, snap it (Super+arrows),
-tile with Super+T (`--display gtk`, `--display sdl` or `--vnc` to
+`cargo xtask run` opens QEMU's own window. It boots an image with the word
+`desk`: the checks run first (about a minute), but the desktop's own checks
+do not type for themselves. When the log says `init: desktop: it is yours
+now`, first setup is waiting for you: your name, a PIN twice, your picture
+and the look. The text editor opens after you log in; open the other apps
+from the dock, type, drag, snap (Super+arrows), tile with Super+T (`--display gtk`, `--display sdl` or `--vnc` to
 choose; `--vnc` serves the screen on port 5900, for a VNC viewer app on a
 phone).

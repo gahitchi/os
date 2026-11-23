@@ -4,6 +4,10 @@
 
 #![no_std]
 
+extern crate alloc;
+
+pub mod store;
+
 use alaya_sys::abi::{StartInfo, map, start};
 use alaya_sys::rt::Mem;
 use alaya_sys::{Caps, Msg, MsgInfo};
@@ -33,6 +37,8 @@ pub fn fonts(info: &StartInfo) -> Fonts<'static> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Key(Key),
+    /// A letter typed with Ctrl held (Ctrl+S: save).
+    Shortcut(char),
     /// Pointer at (x, y) in the content; button 0 for a move.
     Pointer {
         x: i32,
@@ -174,6 +180,7 @@ impl Window {
                         continue;
                     }
                     match us_key(r[2] as u16, r[4] != 0) {
+                        Some(Key::Char(c)) if r[5] != 0 => Event::Shortcut(c.to_ascii_lowercase()),
                         Some(k) => Event::Key(k),
                         None => continue,
                     }

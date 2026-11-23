@@ -9,6 +9,13 @@
 //! under it (or the one that holds it). The window rules (move, resize,
 //! snap, tile) are in `alaya_ui::wm`, tested on the build machine.
 //!
+//! Before anything else it shows first setup or the login screen
+//! (`alaya_ui::login`): it turns the PIN into a key with the slow PIN step
+//! and opens the person's files in the store with it. While its PIN box is
+//! open, the person's picture shows in the top strip, which no app can
+//! draw on (decision 104). Before asking, it compares the login parts with
+//! those of the last login and says what it found (decision 74).
+//!
 //! One thread does everything, woken by an app's call or by a signal: the
 //! screen driver showed a frame, input arrived, or the clock ticked.
 
@@ -21,7 +28,10 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_programs::desktop::{self as dk, event, place};
+use alaya_apps::store::Store;
+use alaya_crypto::{pin_key, sha256};
+use alaya_programs::desktop::{self as dk, event, parts, place, role, stage};
+use alaya_programs::files::{self as fs, APPS, DOCS};
 use alaya_programs::seat::{self, InputPage, ScreenPage, ev, unpack};
 use alaya_programs::{load, store};
 use alaya_sys::abi::{StartInfo, call, map, start};
@@ -29,8 +39,10 @@ use alaya_sys::rt::{self, Mem};
 use alaya_sys::{Caps, Kind, Msg, MsgInfo, rights, say};
 use alaya_ui::Rect;
 use alaya_ui::canvas::Canvas;
-use alaya_ui::scene::{self, Desktop, DockItem, WindowView};
+use alaya_ui::login::{self, Login, Look, NewPerson, Person, Setup};
+use alaya_ui::scene::{self, Desktop, DockItem, GroupChip, WindowView};
 use alaya_ui::text::Fonts;
+use alaya_ui::widgets::{Key, us_key};
 use alaya_ui::wm::{Out, Place, Wm};
 
 alaya_sys::heap!();
@@ -53,8 +65,34 @@ struct Win {
     content: (i32, i32),
 }
 
+/// What the screen shows.
+enum Stage {
+    Setup(Setup),
+    Login(Login),
+    /// The desktop of the person logged in (an index in `people`).
+    Open(usize),
+}
+
 struct Desk {
     mem: Mem,
+    stage: Stage,
+    people: Vec<Person>,
+    /// The person whose desktop is behind the login screen, if any.
+    session: Option<usize>,
+    look: Look,
+    /// Fingerprints of the keys that opened each person's files in this
+    /// boot (the store keeps them open; a lock screen checks against
+    /// these).
+    opened: Vec<(u64, [u8; 32])>,
+    wrong_pins: u64,
+    parts: u64,
+    parts_now: [u8; 32],
+    machine: Store,
+    machine_docs: u64,
+    machine_key: [u8; 32],
+    pin_work: usize,
+    session_ntfn: u64,
+    ctrl: bool,
     screen: &'static ScreenPage,
     screen_ntfn: u64,
     width: i32,
@@ -86,7 +124,7 @@ fn font(info: &StartInfo, i: usize) -> &'static [u8] {
 fn main(info: &'static StartInfo) -> ! {
     let g = start::FIRST_GIVEN;
     let mut mem = Mem::new(info);
-    alaya_sys::heap::init(&mut mem, 4).expect("heap");
+    alaya_sys::heap::init(&mut mem, 6).expect("heap");
     // SAFETY: shared by the first program before starting us.
     let screen = unsafe { &*(dk::SCREEN_PAGE as *const ScreenPage) };
     let mut inputs = [None; MAX_INPUTS];
@@ -105,8 +143,60 @@ fn main(info: &'static StartInfo) -> ! {
     let (width, height) = (load(&screen.width) as i32, load(&screen.height) as i32);
     let fonts = Fonts::new(font(info, 0), font(info, 1), font(info, 2), font(info, 3));
     let recv_slot = mem.slot().expect("slot");
+    let word_bytes = |at: usize| {
+        let mut b = [0u8; 32];
+        for i in 0..4 {
+            b[8 * i..8 * i + 8].copy_from_slice(&info.args[at + i].to_le_bytes());
+        }
+        b
+    };
+    let machine_key = word_bytes(dk::ARG_MACHINE_KEY);
+    let parts_now = word_bytes(dk::ARG_PARTS);
+    // The machine's own files: who can log in, and the login parts.
+    let machine = Store::new(g + dk::G_STORE_MACHINE);
+    if machine.unlock(&machine_key) == Err(fs::st::NOT_FOUND) {
+        machine
+            .add_person(&machine_key)
+            .expect("the machine's own files");
+        machine.save().expect("save");
+    }
+    let machine_docs = machine.root(DOCS).expect("the machine's documents");
+    let people: Vec<Person> = machine
+        .lookup(machine_docs, "people")
+        .and_then(|f| machine.read_all(f))
+        .map(|b| b.chunks(64).filter_map(login::decode_person).collect())
+        .unwrap_or_default();
+    let last = machine
+        .lookup(machine_docs, "login-parts")
+        .and_then(|f| machine.read_all(f))
+        .ok();
+    let parts = match last {
+        None => parts::FIRST,
+        Some(b) if b[..] == parts_now[..] => parts::SAME,
+        Some(_) => parts::CHANGED,
+    };
+    let stage = if people.is_empty() {
+        say!("first setup: nobody can log in yet");
+        Stage::Setup(Setup::new())
+    } else {
+        Stage::Login(Login::new(people.clone(), notice(parts)))
+    };
     let mut d = Desk {
         mem,
+        stage,
+        people,
+        session: None,
+        look: Look::Basics,
+        opened: Vec::new(),
+        wrong_pins: 0,
+        parts,
+        parts_now,
+        machine,
+        machine_docs,
+        machine_key,
+        pin_work: (info.args[dk::ARG_PIN_WORK] as usize).max(1),
+        session_ntfn: g + dk::G_SESSION,
+        ctrl: false,
         screen,
         screen_ntfn: g + dk::G_SCREEN,
         width,
@@ -128,7 +218,14 @@ fn main(info: &'static StartInfo) -> ! {
         recv_slot,
     };
     d.tick();
-    say!("drawing a {width} by {height} desktop");
+    say!(
+        "drawing a {width} by {height} desktop; login parts: {}",
+        match parts {
+            parts::FIRST => "first login, remembered from now on",
+            parts::SAME => "the same as at the last login",
+            _ => "CHANGED since the last login",
+        }
+    );
     d.frame();
     d.serve(g + dk::G_EP)
 }
@@ -229,6 +326,7 @@ impl Desk {
         let (w, h) = (self.width, self.height);
         let mut cv = Canvas::new(screen_px(w, h), w, h, w).expect("screen");
         let wins = &self.wins;
+        let wm = &self.wm;
         let views = |id: u32| match wins.iter().find(|x| x.id == id) {
             Some(x) => WindowView {
                 title: &x.title,
@@ -245,28 +343,70 @@ impl Desk {
                     dk::STRIDE as i32,
                 )),
                 stuck: false,
+                group: wm
+                    .get(id)
+                    .and_then(|w| w.group)
+                    .and_then(|g| GROUPS.get(g as usize - 1))
+                    .map(|&(n, c)| (n, c)),
             },
             None => WindowView {
                 title: "",
                 pixels: None,
                 stuck: false,
+                group: None,
             },
         };
-        let dock: Vec<DockItem> = DOCK
-            .iter()
-            .map(|(name, color)| DockItem {
+        let dock: Vec<DockItem> = dock_items(self.look)
+            .map(|(name, color, r)| DockItem {
                 name,
-                color: *color,
-                running: wins.iter().any(|x| x.title.starts_with(name)),
+                color,
+                running: wins.iter().any(|x| x.owner == r),
             })
             .collect();
+        let groups: Vec<GroupChip> = match self.look {
+            Look::Basics => Vec::new(),
+            Look::Everything => GROUPS
+                .iter()
+                .enumerate()
+                .map(|(i, &(name, color))| GroupChip {
+                    name,
+                    color,
+                    count: wm
+                        .wins
+                        .iter()
+                        .filter(|w| w.group == Some(i as u32 + 1))
+                        .count(),
+                })
+                .collect(),
+        };
+        let locked = !matches!(self.stage, Stage::Open(_));
+        let trusted = match &self.stage {
+            Stage::Login(l) => l.picture(),
+            _ => None,
+        };
+        let status = match self.stage {
+            Stage::Setup(_) => "First setup",
+            _ => "",
+        };
         let desk = Desktop {
             clock: &self.clock,
-            status: "",
+            status,
             dock: &dock,
-            show_pointer: true,
+            groups: &groups,
+            show_pointer: false,
+            locked,
+            trusted,
         };
         scene::draw(&mut cv, &mut self.fonts, &self.wm, &views, &desk, clip);
+        let old = cv.set_clip(clip);
+        match &self.stage {
+            Stage::Setup(f) => f.draw(&mut cv, &mut self.fonts),
+            Stage::Login(f) => f.draw(&mut cv, &mut self.fonts),
+            Stage::Open(_) => {}
+        }
+        let (px, py) = self.wm.pointer;
+        scene::draw_pointer(&mut cv, px, py);
+        cv.set_clip(old);
         let s = self.screen;
         store(&s.dirty[0], clip.x as u64);
         store(&s.dirty[1], clip.y as u64);
@@ -315,8 +455,16 @@ impl Desk {
                         / (u64::from(ev::ABS_MAX) + 1)) as i32;
                     let y = (u64::from(self.abs.1) * self.height as u64
                         / (u64::from(ev::ABS_MAX) + 1)) as i32;
-                    let out = self.wm.pointer_move(x, y);
-                    self.apply(out);
+                    if self.locked() {
+                        // Nothing behind the login screen sees the mouse.
+                        let (ox, oy) = self.wm.pointer;
+                        self.wm.pointer = (x, y);
+                        self.damage(scene::pointer_rect(ox, oy));
+                        self.damage(scene::pointer_rect(x, y));
+                    } else {
+                        let out = self.wm.pointer_move(x, y);
+                        self.apply(out);
+                    }
                 }
             }
             ev::KEY if code == ev::BTN_LEFT || code == ev::BTN_RIGHT => {
@@ -325,6 +473,16 @@ impl Desk {
                 self.on_event((ev::SYN, 0, 0));
                 let b = if code == ev::BTN_LEFT { 1 } else { 2 };
                 let down = value != 0;
+                let (x, y) = self.wm.pointer;
+                if self.locked() {
+                    if down && b == 1 {
+                        self.form_click(x, y);
+                    }
+                    return;
+                }
+                if down && b == 1 && self.shell_click(x, y) {
+                    return;
+                }
                 let out = self.wm.button(b, down);
                 self.apply(out);
             }
@@ -336,8 +494,18 @@ impl Desk {
     fn on_key(&mut self, code: u16, value: u32) {
         match code {
             42 | 54 => self.shift = value != 0,
+            29 | 97 => self.ctrl = value != 0,
             125 | 126 => self.super_key = value != 0,
             _ => {}
+        }
+        if self.locked() {
+            // Keys go to the login screen, and to nothing else.
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.form_key(k);
+            }
+            return;
         }
         if self.super_key && value == 1 {
             // Window keys: Super with an arrow snaps, Super+T tiles.
@@ -365,7 +533,7 @@ impl Desk {
                     u64::from(code),
                     u64::from(value),
                     u64::from(self.shift),
-                    0,
+                    u64::from(self.ctrl),
                 ],
             );
         }
@@ -410,6 +578,11 @@ impl Desk {
                     }
                 }
                 Out::Close(id) => self.push(id, [event::CLOSE, 0, 0, 0, 0]),
+                Out::Grouped(id, g) => {
+                    let name = GROUPS.get(g as usize - 1).map_or("?", |x| x.0);
+                    say!("window {id} is in the group {name}");
+                    self.damage_all();
+                }
                 Out::Pointer {
                     id,
                     x,
@@ -432,6 +605,272 @@ impl Desk {
                 }
             }
         }
+    }
+
+    fn locked(&self) -> bool {
+        !matches!(self.stage, Stage::Open(_))
+    }
+
+    fn damage_all(&mut self) {
+        self.damage(Rect::new(0, 0, self.width, self.height));
+    }
+
+    fn form_key(&mut self, k: Key) {
+        let shift = self.shift;
+        let (w, h) = (self.width, self.height);
+        match &mut self.stage {
+            Stage::Setup(f) => {
+                if let Some(p) = f.key(k, shift) {
+                    self.finish_setup(p);
+                }
+            }
+            Stage::Login(f) => {
+                if let Some(a) = f.key(k) {
+                    self.try_login(a.person, &a.pin);
+                }
+            }
+            Stage::Open(_) => return,
+        }
+        self.damage(login::panel(w, h).grow(24));
+    }
+
+    fn form_click(&mut self, x: i32, y: i32) {
+        let (w, h) = (self.width, self.height);
+        match &mut self.stage {
+            Stage::Setup(f) => {
+                if let Some(p) = f.click(x, y, w, h) {
+                    self.finish_setup(p);
+                }
+            }
+            Stage::Login(f) => f.click(x, y, w, h),
+            Stage::Open(_) => return,
+        }
+        // The picture in the strip follows the person chosen.
+        self.damage_all();
+    }
+
+    /// The slow PIN step, for person `id`.
+    fn key_for(&mut self, id: u64, pin: &str) -> [u8; 32] {
+        // Show "Checking your PIN" while it runs.
+        self.frame();
+        let mut salt = [0u8; 48];
+        salt[..32].copy_from_slice(&sha256(&self.machine_key));
+        salt[32..40].copy_from_slice(&id.to_le_bytes());
+        salt[40..].copy_from_slice(b"pin salt");
+        let mut work = alloc::vec![[0u8; 32]; self.pin_work];
+        let t0 = rt::now_ms();
+        let key = pin_key(pin.as_bytes(), &salt, &mut work);
+        say!(
+            "the PIN step took {} ms and {} KiB",
+            rt::now_ms() - t0,
+            self.pin_work * 32 / 1024
+        );
+        key
+    }
+
+    fn person_store(&self, id: u64) -> Store {
+        Store::new(start::FIRST_GIVEN + dk::G_STORE_PERSON + id - 1)
+    }
+
+    fn finish_setup(&mut self, p: NewPerson) {
+        let id = self.people.len() as u64 + 1;
+        if id > fs::MAX_PEOPLE {
+            return;
+        }
+        let key = self.key_for(id, &p.pin);
+        let store = self.person_store(id);
+        store.add_person(&key).expect("add the person");
+        // Their folders are made by the next save.
+        store.save().expect("save");
+        let person = Person {
+            id,
+            name: p.name,
+            picture: p.picture,
+        };
+        self.people.push(person);
+        let mut all = Vec::new();
+        for x in &self.people {
+            all.extend_from_slice(&login::encode_person(x));
+        }
+        let m = self.machine;
+        m.open(self.machine_docs, "people")
+            .and_then(|f| m.write_all(f, &all))
+            .expect("write who can log in");
+        if let Ok(apps) = store.root(APPS)
+            && let Ok(f) = store.open(apps, "look")
+        {
+            let _ = store.write_all(f, &[p.look.code()]);
+        }
+        say!(
+            "first setup done: person {id}, picture {}, look: {}",
+            p.picture,
+            p.look.name()
+        );
+        self.opened.push((id, sha256(&key)));
+        self.open_session(self.people.len() - 1);
+    }
+
+    fn try_login(&mut self, index: usize, pin: &str) {
+        let Some(id) = self.people.get(index).map(|p| p.id) else {
+            return;
+        };
+        let key = self.key_for(id, pin);
+        let fp = sha256(&key);
+        let ok = match self.opened.iter().find(|(p, _)| *p == id) {
+            // Open already in this boot: the store would not check again.
+            Some((_, known)) => alaya_crypto::same(known, &fp),
+            None => match self.person_store(id).unlock(&key) {
+                Ok(()) => {
+                    self.opened.push((id, fp));
+                    true
+                }
+                Err(e) => {
+                    if e != fs::st::WRONG_KEY {
+                        say!("the store could not open person {id}'s files: {e}");
+                    }
+                    false
+                }
+            },
+        };
+        if ok {
+            say!("person {id} logged in");
+            self.open_session(index);
+        } else {
+            self.wrong_pins += 1;
+            say!("a wrong PIN for person {id} ({} so far)", self.wrong_pins);
+            if let Stage::Login(f) = &mut self.stage {
+                f.refused();
+            }
+        }
+    }
+
+    fn open_session(&mut self, index: usize) {
+        // The login parts as they are now are what the next login compares
+        // with.
+        let m = self.machine;
+        let _ = m
+            .open(self.machine_docs, "login-parts")
+            .and_then(|f| m.write_all(f, &self.parts_now));
+        let _ = m.save();
+        let first = self.session.is_none();
+        self.session = Some(index);
+        self.stage = Stage::Open(index);
+        self.read_look();
+        if first {
+            let _ = alaya_sys::signal(self.session_ntfn, dk::LOGGED_IN_BIT);
+        }
+        self.damage_all();
+    }
+
+    fn lock(&mut self) {
+        // Let go of whatever the mouse held.
+        let (x, y) = self.wm.pointer;
+        let out = self.wm.button(1, false);
+        self.apply(out);
+        let out = self.wm.pointer_move(x, y);
+        self.apply(out);
+        let mut l = Login::new(self.people.clone(), notice(self.parts));
+        if let Some(i) = self.session {
+            l.chosen = i;
+        }
+        self.stage = Stage::Login(l);
+        self.damage_all();
+        say!("locked");
+    }
+
+    fn read_look(&mut self) {
+        let Some(i) = self.session else { return };
+        let s = self.person_store(self.people[i].id);
+        let code = s
+            .root(APPS)
+            .and_then(|a| s.lookup(a, "look"))
+            .and_then(|f| s.read_all(f))
+            .ok()
+            .and_then(|b| b.first().copied())
+            .unwrap_or(0);
+        let look = Look::from_code(code);
+        if look != self.look {
+            self.look = look;
+            say!("the look is {}", look.name());
+        }
+        self.wm.groups = match look {
+            Look::Basics => Vec::new(),
+            Look::Everything => (0..GROUPS.len())
+                .map(|g| {
+                    (
+                        g as u32 + 1,
+                        scene::group_chip(
+                            self.width,
+                            self.height,
+                            dock_items(look).count(),
+                            GROUPS.len(),
+                            g,
+                        ),
+                    )
+                })
+                .collect(),
+        };
+        self.damage_all();
+    }
+
+    /// A click on the dock or a group label; true if it was one.
+    fn shell_click(&mut self, x: i32, y: i32) -> bool {
+        let n = dock_items(self.look).count();
+        for (i, (name, _, r)) in dock_items(self.look).enumerate() {
+            if scene::dock_item(self.width, self.height, n, i).contains(x, y) {
+                match self.wins.iter().rev().find(|w| w.owner == r).map(|w| w.id) {
+                    Some(id) => {
+                        let mut out = Vec::new();
+                        self.wm.raise(id, &mut out);
+                        self.apply(out);
+                    }
+                    None => {
+                        // Ask the first program to start it.
+                        say!("starting {name}");
+                        let _ = alaya_sys::signal(self.session_ntfn, 1 << r);
+                    }
+                }
+                return true;
+            }
+        }
+        if let Some(&(g, _)) = self.wm.groups.iter().find(|(_, r)| r.contains(x, y)) {
+            let out = self.wm.raise_group(g);
+            self.apply(out);
+            return true;
+        }
+        false
+    }
+
+    fn forget(&mut self, owner: u64) {
+        let ids: Vec<u32> = self
+            .wins
+            .iter()
+            .filter(|w| w.owner == owner)
+            .map(|w| w.id)
+            .collect();
+        for id in ids {
+            self.close_window(id);
+        }
+    }
+
+    fn close_window(&mut self, id: u32) {
+        let Some(i) = self.wins.iter().position(|w| w.id == id) else {
+            return;
+        };
+        let x = self.wins.remove(i);
+        let out = self.wm.remove(x.id);
+        self.apply(out);
+        // Take the pages back from the app, then free them.
+        for p in x.pages {
+            let _ = alaya_sys::revoke(self.mem.at(p));
+            let _ = alaya_sys::page_unmap(p);
+            let _ = alaya_sys::delete(self.mem.at(p));
+        }
+        let _ = alaya_sys::delete(self.mem.at(x.ntfn));
+        let slot = ((x.va - PICTURES) / PICTURE_STEP) as usize;
+        self.free_slots[slot] = true;
+        self.damage_all();
+        say!("window {} closed", x.id);
     }
 
     fn on_call(&mut self, m: &Msg) -> ([u64; 6], u64) {
@@ -512,7 +951,8 @@ impl Desk {
                         let r = win.title_bar();
                         self.damage(r);
                     }
-                    self.damage(scene::dock_rect(self.width, self.height, DOCK.len()));
+                    let n = dock_items(self.look).count();
+                    self.damage(scene::dock_rect(self.width, self.height, n));
                     ([dk::OK, 0, 0, 0, 0, 0], 0)
                 }
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
@@ -550,24 +990,89 @@ impl Desk {
             },
             dk::CLOSE => match find(self, w[0]) {
                 Some(i) => {
-                    let x = self.wins.remove(i);
-                    let out = self.wm.remove(x.id);
-                    self.apply(out);
-                    // Take the pages back from the app, then free them.
-                    for p in x.pages {
-                        let _ = alaya_sys::revoke(self.mem.at(p));
-                        let _ = alaya_sys::page_unmap(p);
-                        let _ = alaya_sys::delete(self.mem.at(p));
-                    }
-                    let _ = alaya_sys::delete(self.mem.at(x.ntfn));
-                    let slot = ((x.va - PICTURES) / PICTURE_STEP) as usize;
-                    self.free_slots[slot] = true;
-                    self.damage(scene::dock_rect(self.width, self.height, DOCK.len()));
-                    say!("window {} closed", x.id);
+                    let id = self.wins[i].id;
+                    self.close_window(id);
                     ([dk::OK, 0, 0, 0, 0, 0], 0)
                 }
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
             },
+            dk::LOOK_CHANGED => {
+                self.read_look();
+                ([dk::OK, 0, 0, 0, 0, 0], 0)
+            }
+            // Everything below is for the first program only.
+            _ if owner != 0 => ([dk::BAD_REQUEST, 0, 0, 0, 0, 0], 0),
+            dk::LOCK => {
+                if self.session.is_some() {
+                    self.lock();
+                }
+                ([dk::OK, 0, 0, 0, 0, 0], 0)
+            }
+            dk::INJECT => {
+                self.on_event((w[0] as u16, w[1] as u16, w[2] as u32));
+                ([dk::OK, 0, 0, 0, 0, 0], 0)
+            }
+            dk::FORGET => {
+                self.forget(w[0]);
+                ([dk::OK, 0, 0, 0, 0, 0], 0)
+            }
+            dk::SESSION => {
+                let (st, person) = match self.stage {
+                    Stage::Setup(_) => (stage::SETUP, 0),
+                    Stage::Login(_) => (stage::LOGIN, 0),
+                    Stage::Open(i) => (stage::OPEN, self.people[i].id),
+                };
+                (
+                    [
+                        dk::OK,
+                        st,
+                        person,
+                        u64::from(self.look.code()),
+                        self.wrong_pins,
+                        self.parts,
+                    ],
+                    0,
+                )
+            }
+            dk::GROUP => match self.wm.get(w[0] as u32) {
+                Some(win) => ([dk::OK, u64::from(win.group.unwrap_or(0)), 0, 0, 0, 0], 0),
+                None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
+            },
+            dk::PLACES => {
+                let n = dock_items(self.look).count();
+                let r = match w[0] {
+                    i if i < dk::places::CHIP && (i as usize) < n => {
+                        Some(scene::dock_item(self.width, self.height, n, i as usize))
+                    }
+                    i if i >= dk::places::CHIP => self
+                        .wm
+                        .groups
+                        .get((i - dk::places::CHIP) as usize)
+                        .map(|g| g.1),
+                    _ => None,
+                };
+                match r {
+                    Some(r) => (
+                        [dk::OK, r.x as u64, r.y as u64, r.w as u64, r.h as u64, 0],
+                        0,
+                    ),
+                    None => ([dk::BAD_REQUEST, 0, 0, 0, 0, 0], 0),
+                }
+            }
+            dk::APP => match self.wins.iter().find(|x| u64::from(x.id) == w[0]) {
+                Some(x) => ([dk::OK, x.owner, 0, 0, 0, 0], 0),
+                None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
+            },
+            dk::WINDOW_OF => match self.wins.iter().rev().find(|x| x.owner == w[0]) {
+                Some(x) => ([dk::OK, u64::from(x.id), 0, 0, 0, 0], 0),
+                None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
+            },
+            dk::RAISE => {
+                let mut out = Vec::new();
+                self.wm.raise(w[0] as u32, &mut out);
+                self.apply(out);
+                ([dk::OK, 0, 0, 0, 0, 0], 0)
+            }
             dk::TILING => {
                 let out = self.wm.set_tiling(w[0] != 0);
                 self.apply(out);
@@ -606,10 +1111,40 @@ impl Desk {
     }
 }
 
-/// The dock: the apps of milestone 6, in the mock-up's colours.
-const DOCK: [(&str, u32); 4] = [
-    ("Files", 0x23_68_6b),
-    ("Text editor", 0x2d_5c_9c),
-    ("Chart maker", 0x9a_5b_00),
-    ("Settings", 0x5b_6b_6c),
+/// The dock: the apps of milestone 6, in the mock-up's colours, with
+/// their roles.
+const DOCK: [(&str, u32, u64); 4] = [
+    ("Files", 0x23_68_6b, role::FILES),
+    ("Text editor", 0x2d_5c_9c, role::EDITOR),
+    ("Chart maker", 0x9a_5b_00, role::CHART),
+    ("Settings", 0x5b_6b_6c, role::SETTINGS),
 ];
+
+/// What the dock holds in each look.
+fn dock_items(look: Look) -> impl Iterator<Item = (&'static str, u32, u64)> {
+    DOCK.iter()
+        .copied()
+        .filter(move |d| look == Look::Everything || d.2 != role::CHART)
+}
+
+/// The loose groups (decision 85): labels only, numbered from 1.
+const GROUPS: [(&str, u32); 2] = [("Work", 0x23_68_6b), ("Home", 0x9a_5b_00)];
+
+/// What the login screen says about the login parts (decision 74).
+fn notice(parts: u64) -> String {
+    String::from(match parts {
+        parts::FIRST => {
+            "Checked by Alaya, not yet by the chip: this is the first login, so Alaya \
+             remembers the login screen from now on."
+        }
+        parts::SAME => {
+            "Checked by Alaya, not yet by the chip: the login screen is the same as at \
+             your last login."
+        }
+        _ => {
+            "Careful: the login screen changed since your last login. Alaya checked \
+             this itself, not yet with the chip. An update does this; if you did not \
+             update, do not type your PIN."
+        }
+    })
+}
