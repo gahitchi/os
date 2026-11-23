@@ -18,6 +18,7 @@ use alaya_programs::files::{self as fs, st};
 use alaya_programs::{keeper as k, status};
 use alaya_store::disk::{Disk, IoError};
 use alaya_store::format::Block;
+use alaya_store::history::{Restored, Undo};
 use alaya_store::made::Source;
 use alaya_store::{Class, Error, FileId, Options, Store};
 use alaya_sys::abi::{StartInfo, call, start};
@@ -166,18 +167,40 @@ fn main(info: &'static StartInfo) -> ! {
         never,
     };
     let now = || rt::now_ms() / 1000;
-    let format = info.args[fs::ARG_FLAGS] & fs::FLAG_FORMAT != 0;
+    let mut format = info.args[fs::ARG_FLAGS] & fs::FLAG_FORMAT != 0;
     let mut store = match format {
         true => Store::format(disk(), &MACHINE, Options::default()).expect("format"),
         false => match Store::open(disk(), &MACHINE) {
             Ok(s) => s,
             // A fresh disk.
             Err(Error::NotAStore) => {
+                format = true;
+                Store::format(disk(), &MACHINE, Options::default()).expect("format")
+            }
+            // A store from an older milestone, in a layout this one does
+            // not read. While Alaya is only tested, it starts again
+            // empty; a real update moves the files over (milestone 8).
+            Err(Error::Format) => {
+                say!("the disk holds an older store layout: starting again with an empty store");
+                format = true;
                 Store::format(disk(), &MACHINE, Options::default()).expect("format")
             }
             Err(e) => panic!("cannot open the store: {e:?}"),
         },
     };
+    // New lock keys for files come from a generator stirred with what this
+    // machine can give: the processor's random numbers on a PC that has
+    // them, and the jitter of its clock.
+    let (seed, rdrand) = entropy();
+    store.stir(&seed);
+    say!(
+        "new file keys are stirred with {}",
+        if rdrand {
+            "the processor's random numbers and clock jitter"
+        } else {
+            "clock jitter"
+        }
+    );
     // About half a MiB of tree nodes kept in memory.
     store.dev.cache_nodes = 128;
     say!(
@@ -187,7 +210,10 @@ fn main(info: &'static StartInfo) -> ! {
         store.last_commit()
     );
     let mut last_save = rt::now_ms();
-    let mut serve = Server { store: &mut store };
+    let mut serve = Server {
+        store: &mut store,
+        hold_until: 0,
+    };
     let mut msg = alaya_sys::msg_call(
         call::RECV,
         ep,
@@ -207,10 +233,13 @@ fn main(info: &'static StartInfo) -> ! {
                 if m.badge & TICK_BIT != 0 && day != last_clean {
                     last_clean = day;
                     let _ = serve.store.clean_caches(now(), fs::CACHE_UNUSED_DAYS);
+                    // Thin history (decision 33), saved with the next save.
+                    let _ = serve.store.thin(now());
                 }
                 if m.badge & TICK_BIT != 0
                     && serve.store.has_changes()
                     && rt::now_ms() - last_save >= fs::AUTOSAVE_MS
+                    && rt::now_ms() >= serve.hold_until
                 {
                     let _ = serve.store.commit(now());
                     last_save = rt::now_ms();
@@ -219,7 +248,10 @@ fn main(info: &'static StartInfo) -> ! {
             }
             Ok(m) => {
                 let a = serve.handle(&m, now());
-                if m.label() == fs::SAVE {
+                if matches!(
+                    m.label(),
+                    fs::SAVE | fs::RECORD_ACTION | fs::UNDO | fs::UNDO_CHANGE | fs::RESTORE
+                ) {
                     last_save = rt::now_ms();
                 }
                 Some(a)
@@ -255,6 +287,51 @@ fn main(info: &'static StartInfo) -> ! {
 
 struct Server<'a> {
     store: &'a mut Store<KeeperDisk>,
+    /// An app began an action: no saving by itself until then (ms).
+    hold_until: u64,
+}
+
+/// Bytes to stir the key generator with, and whether the processor's
+/// random numbers were among them.
+fn entropy() -> ([u8; 64], bool) {
+    let mut h = alaya_crypto::Sha256::new();
+    #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
+    let mut rdrand = false;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let has = core::arch::x86_64::__cpuid(1).ecx & (1 << 30) != 0;
+        if has {
+            for _ in 0..16 {
+                let mut x = 0u64;
+                // SAFETY: the processor said it has RDRAND.
+                if unsafe { core::arch::x86_64::_rdrand64_step(&mut x) } == 1 {
+                    h.update(&x.to_le_bytes());
+                    rdrand = true;
+                }
+            }
+        }
+    }
+    // Clock jitter: how long small pieces of work take, many times.
+    let mut acc = 0u64;
+    for i in 0..4096u64 {
+        let t0 = alaya_sys::arch::clock();
+        for j in 0..(i % 7 + 1) {
+            acc = acc.wrapping_mul(6364136223846793005).wrapping_add(j);
+        }
+        let d = alaya_sys::arch::clock().wrapping_sub(t0);
+        h.update(&(d ^ acc).to_le_bytes());
+    }
+    h.update(&rt::now_us().to_le_bytes());
+    let a = h.finish();
+    let mut out = [0u8; 64];
+    out[..32].copy_from_slice(&a);
+    out[32..].copy_from_slice(&alaya_crypto::sha256(&a));
+    (out, rdrand)
+}
+
+/// Words from the transfer pages.
+fn word_at(buf: &[u8], i: usize) -> u64 {
+    u64::from_le_bytes(buf[8 * i..8 * i + 8].try_into().unwrap())
 }
 
 impl Server<'_> {
@@ -447,8 +524,189 @@ impl Server<'_> {
                 ]
             }
             fs::AS_OF => {
-                s.set_as_of(p, FileId(w[0]), w[1] != 0)?;
+                s.set_as_of(p, app, FileId(w[0]), w[1] != 0)?;
                 alloc::vec![]
+            }
+            fs::RENAME => {
+                let (a, b) = (len(w[2]), len(w[3]));
+                if a == 0 || b == 0 || a > alaya_store::NAME_MAX || b > alaya_store::NAME_MAX {
+                    return Err(Error::BadName);
+                }
+                let buf = xfer(ch);
+                let name = buf[..a].to_vec();
+                let to = buf[fs::NAME2..fs::NAME2 + b].to_vec();
+                s.rename(p, app, FileId(w[0]), &name, FileId(w[1]), &to)?;
+                alloc::vec![]
+            }
+            fs::ACTION_BEGIN => {
+                if s.has_changes() {
+                    s.commit(now)?;
+                }
+                self.hold_until = rt::now_ms() + fs::ACTION_MS;
+                alloc::vec![]
+            }
+            fs::RECORD_ACTION => {
+                let n = len(w[1]).min(fs::LABEL);
+                let label = xfer(ch)[..n].to_vec();
+                let no = s.record_action(p, app, w[0], &label)?;
+                s.commit(now)?;
+                self.hold_until = 0;
+                alloc::vec![no]
+            }
+            fs::ACTIONS => {
+                let max = (w[1] as usize).min(fs::XFER_BYTES / fs::ACTION_BYTES);
+                let l = s.actions(p, w[0], max)?;
+                let buf = xfer(ch);
+                for (i, a) in l.iter().enumerate() {
+                    let o = fs::ACTION_BYTES * i;
+                    put_words(
+                        buf,
+                        o,
+                        &[
+                            a.no,
+                            a.cn,
+                            a.app,
+                            a.kind | (a.undone as u64) << 8 | a.undoes << 16,
+                        ],
+                    );
+                    buf[o + 32..o + 48].copy_from_slice(&a.label);
+                }
+                alloc::vec![l.len() as u64]
+            }
+            fs::UNDO | fs::UNDO_CHANGE => {
+                let r = if label == fs::UNDO {
+                    s.undo(p, app, w[0], w[1] != 0, now)?
+                } else {
+                    s.undo_change(p, app, w[0], w[1], w[2] != 0, now)?
+                };
+                let buf = xfer(ch);
+                match r {
+                    Undo::Done { action, files } => {
+                        let n = files.len().min(fs::XFER_BYTES / 8);
+                        for (i, f) in files.iter().take(n).enumerate() {
+                            put_words(buf, 8 * i, &[f.0]);
+                        }
+                        let l0 = u64::from_le_bytes(action.label[..8].try_into().unwrap());
+                        let l1 = u64::from_le_bytes(action.label[8..].try_into().unwrap());
+                        alloc::vec![fs::undo::DONE, n as u64, action.kind, l0, l1]
+                    }
+                    Undo::Conflicts(files) => {
+                        let n = files.len().min(fs::XFER_BYTES / 8);
+                        for (i, f) in files.iter().take(n).enumerate() {
+                            put_words(buf, 8 * i, &[f.0]);
+                        }
+                        alloc::vec![fs::undo::CONFLICTS, n as u64]
+                    }
+                }
+            }
+            fs::HAPPENINGS => {
+                let h = s.happenings(p, w[0], (w[1] as usize).min(256))?;
+                let buf = xfer(ch);
+                let mut rows = 0;
+                let mut commits = 0;
+                'all: for x in &h {
+                    if rows + x.changes.len() > fs::XFER_BYTES / fs::HAPPENING_BYTES {
+                        break 'all;
+                    }
+                    for c in &x.changes {
+                        put_words(
+                            buf,
+                            fs::HAPPENING_BYTES * rows,
+                            &[x.cn, x.time, c.app, c.file.0, c.what],
+                        );
+                        rows += 1;
+                    }
+                    commits += 1;
+                }
+                alloc::vec![rows as u64, commits]
+            }
+            fs::NAME_OF => {
+                let cn = (w[1] != 0).then_some(w[1]);
+                match s.name_of(p, FileId(w[0]), cn)? {
+                    Some((name, dir)) => {
+                        xfer(ch)[..name.len()].copy_from_slice(&name);
+                        alloc::vec![name.len() as u64, dir.0]
+                    }
+                    None => return Err(Error::NotFound),
+                }
+            }
+            fs::NAME_VERSION => {
+                if w[1] == 0 {
+                    s.unname_version(p, w[0])?;
+                } else {
+                    let name = Self::name(ch, w[1])?;
+                    s.name_version(p, w[0], &name)?;
+                }
+                s.commit(now)?;
+                alloc::vec![]
+            }
+            fs::NAMED => {
+                let l = s.named_versions(p)?;
+                let buf = xfer(ch);
+                let n = l.len().min(fs::XFER_BYTES / fs::NAMED_BYTES);
+                for (i, (m, name)) in l.iter().take(n).enumerate() {
+                    let o = fs::NAMED_BYTES * i;
+                    let k = name.len().min(32);
+                    put_words(buf, o, &[m.cn, m.time, k as u64]);
+                    buf[o + 24..o + 56].fill(0);
+                    buf[o + 24..o + 24 + k].copy_from_slice(&name[..k]);
+                }
+                alloc::vec![n as u64]
+            }
+            fs::PAST_LIST => {
+                let dir = FileId(w[1]);
+                let past = s.past(p, dir.class(), w[0])?;
+                let l = s.past_list(&past, dir)?;
+                let n = l.len().min(fs::XFER_BYTES / fs::PAST_ENTRY_BYTES);
+                let mut rows = Vec::with_capacity(n);
+                for (name, f) in l.into_iter().take(n) {
+                    let st = s.past_stat(&past, f)?;
+                    rows.push((name, f, st.size, st.is_dir));
+                }
+                let buf = xfer(ch);
+                for (i, (name, f, size, is_dir)) in rows.iter().enumerate() {
+                    let o = fs::PAST_ENTRY_BYTES * i;
+                    put_words(buf, o, &[f.0, name.len() as u64, *size, *is_dir as u64]);
+                    buf[o + 32..o + 64].fill(0);
+                    buf[o + 32..o + 32 + name.len()].copy_from_slice(name);
+                }
+                alloc::vec![n as u64]
+            }
+            fs::RESTORE => {
+                let n = (w[1] as usize).min(fs::XFER_BYTES / 8);
+                let files: Vec<FileId> = (0..n).map(|i| FileId(word_at(xfer(ch), i))).collect();
+                let r = s.restore(p, app, &files, w[0])?;
+                let (code, files) = match r {
+                    Restored::Done(f) => {
+                        s.commit(now)?;
+                        (fs::undo::DONE, f)
+                    }
+                    Restored::Blocked(f) => (fs::undo::CONFLICTS, f),
+                };
+                let buf = xfer(ch);
+                for (i, f) in files.iter().enumerate() {
+                    put_words(buf, 8 * i, &[f.0]);
+                }
+                alloc::vec![code, files.len() as u64]
+            }
+            fs::STORY => {
+                let max = (w[1] as usize).min(256);
+                let st = s.story(p, FileId(w[0]), max)?;
+                let buf = xfer(ch);
+                for (i, c) in st.changes.iter().enumerate() {
+                    put_words(buf, fs::STORY_BYTES * i, &[c.0, c.1, c.2, c.3]);
+                }
+                let at = fs::STORY_BYTES * st.changes.len();
+                let used = st.used_by.len().min((fs::XFER_BYTES - at) / 8);
+                for (i, f) in st.used_by.iter().take(used).enumerate() {
+                    put_words(buf, at + 8 * i, &[f.0]);
+                }
+                let (by, cn, time) = st.made_by.unwrap_or((0, 0, 0));
+                alloc::vec![by, cn, time, st.changes.len() as u64, used as u64]
+            }
+            fs::FAKE_HISTORY => {
+                let made = s.fake_history(p, app, w[0], w[1].max(1), now)?;
+                alloc::vec![made]
             }
             fs::TRACK => {
                 s.track_reads = w[0] != 0;

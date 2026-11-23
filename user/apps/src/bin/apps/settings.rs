@@ -5,10 +5,10 @@
 
 use alloc::vec::Vec;
 
-use alaya_apps::store::Store;
+use alaya_apps::store::{Store, label};
 use alaya_apps::{self as app, Event, Window};
 use alaya_programs::desktop as dk;
-use alaya_programs::files::APPS;
+use alaya_programs::files::{APPS, act};
 use alaya_sys::abi::{StartInfo, start};
 use alaya_sys::rt::Mem;
 use alaya_sys::{Caps, Msg, say};
@@ -31,6 +31,10 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut win = Window::open(&mut mem, 440, 260, "Settings").expect("open a window");
     let mut focus = 0;
     loop {
+        // An undo may have put the old look back.
+        if let Some(&c) = store.read_all(file).ok().as_deref().and_then(|b| b.first()) {
+            look = Look::from_code(c);
+        }
         let mut keys = Vec::new();
         while let Some(e) = win.next_event() {
             match e {
@@ -78,7 +82,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 h - 30,
                 Face::Text,
                 12,
-                "Alaya 0.0.1, milestone 6.",
+                "Alaya 0.0.1, milestone 7.",
                 theme::MUTED,
             );
             win.pointer.released = false;
@@ -86,9 +90,12 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         if let Some(l) = chosen
             && l != look
         {
+            // On the undo list: the one undo puts the old look back.
+            let old = look.code();
             look = l;
+            let _ = store.action_begin();
             let _ = store.write_all(file, &[l.code()]);
-            let _ = store.save();
+            let _ = store.record_action(act::SETTINGS, &[label::LOOK, old, l.code()]);
             let _ = alaya_sys::ipc_call(
                 start::FIRST_GIVEN + dk::APP_G_DESKTOP,
                 &Msg::new(dk::LOOK_CHANGED, &[]),

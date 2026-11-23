@@ -677,3 +677,73 @@ fn what_happened_and_stories() {
     let story = s.story(1, c, 10).unwrap();
     assert_eq!(story.made_by.unwrap().0, 50);
 }
+
+#[test]
+fn undo_a_change_that_was_not_an_action() {
+    let mut s = fresh(4096);
+    let docs = s.root(Class::Documents);
+    let f = s.create(1, EDITOR, docs, b"notes.txt", false).unwrap();
+    put(&mut s, 1, EDITOR, f, b"first");
+    s.commit(20).unwrap();
+    // The editor saves by itself: no action on the list.
+    put(&mut s, 1, EDITOR, f, b"second");
+    let cn = s.commit(30).unwrap();
+    assert!(s.last_action(1).unwrap().is_none());
+    // Only an app that changed something in that commit can be undone.
+    assert_eq!(
+        s.undo_change(1, DESKTOP, cn, FILES, false, 40),
+        Err(Error::NotFound)
+    );
+    match s.undo_change(1, DESKTOP, cn, EDITOR, false, 40).unwrap() {
+        Undo::Done { files, .. } => assert_eq!(files, vec![f]),
+        r => panic!("{r:?}"),
+    }
+    assert_eq!(read(&mut s, 1, f), b"first");
+    // It is on the undo list now: undo the undo (a redo).
+    let list = s.actions(1, 0, 10).unwrap();
+    assert_eq!(list[0].kind, act::UNDO);
+    assert!(list[1].undone && list[1].cn == cn);
+    match s.undo(1, DESKTOP, list[0].no, false, 50).unwrap() {
+        Undo::Done { .. } => {}
+        r => panic!("{r:?}"),
+    }
+    assert_eq!(read(&mut s, 1, f), b"second");
+    // Undoing the same change twice is refused while it is undone; after
+    // the redo it can be undone again.
+    match s.undo_change(1, DESKTOP, cn, EDITOR, false, 60).unwrap() {
+        Undo::Done { .. } => {}
+        r => panic!("{r:?}"),
+    }
+    assert_eq!(
+        s.undo_change(1, DESKTOP, cn, EDITOR, false, 70),
+        Err(Error::BadRequest)
+    );
+    clean(&mut s);
+}
+
+#[test]
+fn a_year_of_history_is_thinned_and_every_moment_opens() {
+    let mut s = fresh(16384);
+    s.add_person(2, &[2; 32]).unwrap();
+    let made = s.fake_history(2, EDITOR, 365, 6, 20).unwrap();
+    assert_eq!(made, 365 * 4);
+    let h = s.history(2).unwrap();
+    // A day of every moment (4), a week hourly (at most 6 x 4), a month
+    // daily, then weekly: far fewer than were made.
+    assert!(h.len() > 52 && h.len() < 120, "{} moments kept", h.len());
+    let docs = s.root(Class::Documents);
+    let t = std::time::Instant::now();
+    for m in &h {
+        let v = s.past(2, Class::Documents, m.cn).unwrap();
+        let l = s.past_list(&v, docs).unwrap();
+        assert_eq!(l.len(), 1);
+    }
+    eprintln!(
+        "{} moments kept of {made}; opening each took {:?} on average",
+        h.len(),
+        t.elapsed() / h.len() as u32
+    );
+    // Person 1's history is untouched by it.
+    assert!(s.history(1).unwrap().len() <= 2);
+    clean(&mut s);
+}

@@ -49,6 +49,7 @@ dependencies = [
 name = "alaya-programs"
 version = "0.0.1"
 dependencies = [
+ "alaya-crypto",
  "alaya-store",
  "alaya-sys",
 ]

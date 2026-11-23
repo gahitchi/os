@@ -68,6 +68,8 @@ pub(crate) struct Session<'a> {
     sizes: [u64; 4],
     apps: [App; role::COUNT as usize + 1],
     person: u64,
+    /// Apps the desktop asked to start, seen while waiting.
+    asked: core::cell::Cell<u64>,
     gpu: usize,
     keyboard: usize,
     pointer: usize,
@@ -164,8 +166,14 @@ impl<'a> Session<'a> {
             if mods & 2 != 0 {
                 press(29, 1);
             }
+            if mods & 4 != 0 {
+                press(125, 1);
+            }
             press(code, 1);
             press(code, 0);
+            if mods & 4 != 0 {
+                press(125, 0);
+            }
             if mods & 2 != 0 {
                 press(29, 0);
             }
@@ -177,7 +185,7 @@ impl<'a> Session<'a> {
     }
 
     /// Drag with the left button from one place to another.
-    fn drag(&self, from: (u64, u64), to: (u64, u64), done: impl Fn() -> bool) -> bool {
+    pub(crate) fn drag(&self, from: (u64, u64), to: (u64, u64), done: impl Fn() -> bool) -> bool {
         say!(
             "desktop: drag from {} {} to {} {}",
             from.0,
@@ -225,6 +233,26 @@ impl<'a> Session<'a> {
     fn size(&self) -> (u64, u64) {
         let sp = screen_page(&self.s.dev[self.gpu].unwrap());
         (load(&sp.width), load(&sp.height))
+    }
+
+    /// Start the apps the desktop asked for meanwhile (the dock, an undo
+    /// that opens a window again); `serve` does this after the checks.
+    pub(crate) fn start_asked(&mut self) -> u64 {
+        let bits = self.asked_bits();
+        self.asked.set(0);
+        for r in 1..=role::COUNT {
+            if bits & (1 << r) != 0 {
+                self.start_app(r);
+            }
+        }
+        bits
+    }
+
+    /// What the desktop asked for so far (kept for `start_asked`).
+    pub(crate) fn asked_bits(&self) -> u64 {
+        let bits = self.asked.get() | alaya_sys::poll(self.session_ntfn).unwrap_or(0);
+        self.asked.set(bits);
+        bits
     }
 
     pub(crate) fn session(&self) -> [u64; 6] {
@@ -313,6 +341,7 @@ impl<'a> Session<'a> {
             role::EDITOR => "editor",
             role::FILES => "files",
             role::CHART => "chart",
+            role::BACK => "back",
             _ => "settings",
         };
         program::start(
@@ -547,6 +576,7 @@ pub(crate) fn run<'a>(
         sizes,
         apps: [App::default(); role::COUNT as usize + 1],
         person: 0,
+        asked: core::cell::Cell::new(0),
         gpu,
         keyboard,
         pointer,
@@ -834,6 +864,7 @@ pub(crate) fn run<'a>(
     pass("the keyboard driver crashes under the desktop; typing carries on");
     let _ = (x.pointer, x.keyboard);
     crate::m6c::run(&mut x, pass);
+    crate::m7::run(&mut x, pass);
     x
 }
 
@@ -846,12 +877,18 @@ impl Session<'_> {
     /// The first program's own badge on the store, as the person logged
     /// in, on channel 0 (the checks of milestone 5 are over).
     pub(crate) fn files(&mut self) -> Files {
+        let p = self.person;
+        self.files_of(p)
+    }
+
+    /// The same, as person `p` (the checks of milestone 7 make another).
+    pub(crate) fn files_of(&mut self, p: u64) -> Files {
         let h = self.s.k.slot();
         alaya_sys::mint(
             self.s.k.at(h),
             self.s.k.at(STORE_EP.load(SeqCst)),
             rights::ALL,
-            fs::badge(self.person, fs::INIT_APP, 0),
+            fs::badge(p, fs::INIT_APP, 0),
         )
         .unwrap();
         Files { ep: h }

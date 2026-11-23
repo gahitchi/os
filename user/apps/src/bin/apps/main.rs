@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The first apps (milestone 6b): the text editor, the file browser, the
-//! chart maker and Settings. One program image; the first program starts
+//! chart maker and Settings; and "What happened?" with the timeline
+//! (milestone 7). One program image; the first program starts
 //! one copy per app and says which it is (its role). Each copy is a
 //! separate program with its own memory, its own badge on the desktop and
 //! on the store, and its own transfer pages.
@@ -10,6 +11,7 @@
 
 extern crate alloc;
 
+mod back;
 mod chart;
 mod editor;
 mod files;
@@ -38,6 +40,7 @@ fn main(info: &'static StartInfo) -> ! {
         role::FILES => files::run(info, mem, store),
         role::CHART => chart::run(info, mem, store),
         role::SETTINGS => settings::run(info, mem, store),
+        role::BACK => back::run(info, mem, store),
         r => panic!("no app has role {r}"),
     }
 }

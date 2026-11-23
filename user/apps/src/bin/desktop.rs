@@ -28,10 +28,10 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_apps::store::Store;
+use alaya_apps::store::{self as st, Store, Undone, label};
 use alaya_crypto::{pin_key, sha256};
 use alaya_programs::desktop::{self as dk, event, parts, place, role, stage};
-use alaya_programs::files::{self as fs, APPS, DOCS};
+use alaya_programs::files::{self as fs, APPS, DOCS, act};
 use alaya_programs::seat::{self, InputPage, ScreenPage, ev, unpack};
 use alaya_programs::{load, store};
 use alaya_sys::abi::{StartInfo, call, map, start};
@@ -40,7 +40,7 @@ use alaya_sys::{Caps, Kind, Msg, MsgInfo, rights, say};
 use alaya_ui::Rect;
 use alaya_ui::canvas::Canvas;
 use alaya_ui::login::{self, Login, Look, NewPerson, Person, Setup};
-use alaya_ui::scene::{self, Desktop, DockItem, GroupChip, WindowView};
+use alaya_ui::scene::{self, Desktop, DockItem, GroupChip, Question, WindowView};
 use alaya_ui::text::Fonts;
 use alaya_ui::widgets::{Key, us_key};
 use alaya_ui::wm::{Out, Place, Wm};
@@ -64,6 +64,22 @@ struct Win {
     events: VecDeque<[u64; 5]>,
     content: (i32, i32),
 }
+
+/// An undo that waits for the person's answer: something else changed
+/// the same files since (rule B6).
+enum Asked {
+    Action(u64),
+    Change(u64, u64),
+}
+
+struct Ask {
+    what: Asked,
+    title: String,
+    body: String,
+}
+
+/// How long a note stays in the strip.
+const NOTE_MS: u64 = 8000;
 
 /// What the screen shows.
 enum Stage {
@@ -102,6 +118,10 @@ struct Desk {
     wins: Vec<Win>,
     next_id: u32,
     free_slots: [bool; MAX_WINDOWS],
+    /// Each slot's picture pages, kept when its window closes and used
+    /// again (wiped first) by the next window there: memory is not given
+    /// back to where it came from, so making new ones each time runs out.
+    slot_pages: [[u64; dk::PAGES as usize]; MAX_WINDOWS],
     dirty: Rect,
     /// A frame was posted and is not shown yet.
     in_flight: bool,
@@ -113,6 +133,13 @@ struct Desk {
     clock: String,
     fonts: Fonts<'static>,
     recv_slot: u64,
+    /// What the strip says (an undo was done), and until when.
+    note: String,
+    note_until: u64,
+    /// An undo waiting for an answer.
+    ask: Option<Ask>,
+    /// The loose group each app's window is in (by role), to put it back.
+    groups_of: Vec<(u64, u32)>,
 }
 
 fn font(info: &StartInfo, i: usize) -> &'static [u8] {
@@ -206,6 +233,7 @@ fn main(info: &'static StartInfo) -> ! {
         wins: Vec::new(),
         next_id: 1,
         free_slots: [true; MAX_WINDOWS],
+        slot_pages: [[0; dk::PAGES as usize]; MAX_WINDOWS],
         dirty: Rect::new(0, 0, width, height),
         in_flight: false,
         frames: 0,
@@ -216,6 +244,10 @@ fn main(info: &'static StartInfo) -> ! {
         clock: String::from("0:00"),
         fonts,
         recv_slot,
+        note: String::new(),
+        note_until: 0,
+        ask: None,
+        groups_of: Vec::new(),
     };
     d.tick();
     say!(
@@ -307,6 +339,10 @@ impl Desk {
             self.clock = text;
             self.damage(Rect::new(self.width - 120, 0, 120, alaya_ui::wm::STRIP));
         }
+        if !self.note.is_empty() && rt::now_ms() >= self.note_until {
+            self.note.clear();
+            self.damage(Rect::new(0, 0, self.width, alaya_ui::wm::STRIP));
+        }
     }
 
     fn damage(&mut self, r: Rect) {
@@ -386,8 +422,14 @@ impl Desk {
         };
         let status = match self.stage {
             Stage::Setup(_) => "First setup",
-            _ => "",
+            _ => &self.note,
         };
+        let question = self.ask.as_ref().map(|a| Question {
+            title: &a.title,
+            body: &a.body,
+            yes: "Undo anyway",
+            no: "Keep as it is",
+        });
         let desk = Desktop {
             clock: &self.clock,
             status,
@@ -396,6 +438,8 @@ impl Desk {
             show_pointer: false,
             locked,
             trusted,
+            buttons: true,
+            question: question.as_ref(),
         };
         scene::draw(&mut cv, &mut self.fonts, &self.wm, &views, &desk, clip);
         let old = cv.set_clip(clip);
@@ -507,6 +551,19 @@ impl Desk {
             }
             return;
         }
+        if self.ask.is_some() {
+            // A question is asked: Enter answers yes, Escape no; nothing
+            // else reaches the apps meanwhile.
+            if value == 1 && (code == 28 || code == 1) {
+                self.answer(code == 28);
+            }
+            return;
+        }
+        if self.super_key && value == 1 && code == 44 {
+            // Alaya key + Z: the one undo (decision 109).
+            self.undo_last();
+            return;
+        }
         if self.super_key && value == 1 {
             // Window keys: Super with an arrow snaps, Super+T tiles.
             if let Some(id) = self.wm.focused() {
@@ -577,10 +634,31 @@ impl Desk {
                         say!("window {id} is {p}, {w} by {h}");
                     }
                 }
-                Out::Close(id) => self.push(id, [event::CLOSE, 0, 0, 0, 0]),
+                Out::Close(id) => {
+                    // The person closed it: on the undo list, so the one
+                    // undo opens it again at its return point.
+                    if let Some(w) = self.wins.iter().find(|w| w.id == id) {
+                        let mut l = alloc::vec![label::WINDOW, w.owner as u8];
+                        l.extend(w.title.bytes().take(fs::LABEL - 2));
+                        self.record(act::WINDOW, &l);
+                    }
+                    self.push(id, [event::CLOSE, 0, 0, 0, 0]);
+                }
                 Out::Grouped(id, g) => {
                     let name = GROUPS.get(g as usize - 1).map_or("?", |x| x.0);
                     say!("window {id} is in the group {name}");
+                    if let Some(w) = self.wins.iter().find(|w| w.id == id) {
+                        let role = w.owner;
+                        let old = self
+                            .groups_of
+                            .iter()
+                            .find(|x| x.0 == role)
+                            .map_or(0, |x| x.1);
+                        let mut l = alloc::vec![label::GROUP, role as u8, old as u8, g as u8];
+                        l.extend(w.title.bytes().take(fs::LABEL - 4));
+                        self.set_group_of(role, g);
+                        self.record(act::GROUP, &l);
+                    }
                     self.damage_all();
                 }
                 Out::Pointer {
@@ -815,21 +893,29 @@ impl Desk {
 
     /// A click on the dock or a group label; true if it was one.
     fn shell_click(&mut self, x: i32, y: i32) -> bool {
+        if self.ask.is_some() {
+            // Only the question's buttons answer while it is asked.
+            let (yes, no) = scene::question_buttons(self.width, self.height);
+            if yes.contains(x, y) {
+                self.answer(true);
+            } else if no.contains(x, y) {
+                self.answer(false);
+            }
+            return true;
+        }
+        let [undo, happened] = scene::strip_buttons();
+        if undo.contains(x, y) {
+            self.undo_last();
+            return true;
+        }
+        if happened.contains(x, y) {
+            self.show_app(dk::role::BACK, "What happened?");
+            return true;
+        }
         let n = dock_items(self.look).count();
         for (i, (name, _, r)) in dock_items(self.look).enumerate() {
             if scene::dock_item(self.width, self.height, n, i).contains(x, y) {
-                match self.wins.iter().rev().find(|w| w.owner == r).map(|w| w.id) {
-                    Some(id) => {
-                        let mut out = Vec::new();
-                        self.wm.raise(id, &mut out);
-                        self.apply(out);
-                    }
-                    None => {
-                        // Ask the first program to start it.
-                        say!("starting {name}");
-                        let _ = alaya_sys::signal(self.session_ntfn, 1 << r);
-                    }
-                }
+                self.show_app(r, name);
                 return true;
             }
         }
@@ -839,6 +925,265 @@ impl Desk {
             return true;
         }
         false
+    }
+
+    /// Bring the app with role `r` to the front, or start it.
+    fn show_app(&mut self, r: u64, name: &str) {
+        match self.wins.iter().rev().find(|w| w.owner == r).map(|w| w.id) {
+            Some(id) => {
+                let mut out = Vec::new();
+                self.wm.raise(id, &mut out);
+                self.apply(out);
+            }
+            None => {
+                // Ask the first program to start it.
+                say!("starting {name}");
+                let _ = alaya_sys::signal(self.session_ntfn, 1 << r);
+            }
+        }
+    }
+
+    /// The store of the person whose desktop is open.
+    fn mine(&self) -> Option<Store> {
+        match self.stage {
+            Stage::Open(i) => Some(self.person_store(self.people[i].id)),
+            _ => None,
+        }
+    }
+
+    /// Put something the desktop did on the undo list.
+    fn record(&mut self, kind: u64, l: &[u8]) {
+        if let Some(s) = self.mine()
+            && let Err(e) = s.record_action(kind, l)
+        {
+            say!("the undo list did not take it: {e}");
+        }
+    }
+
+    fn set_group_of(&mut self, role: u64, g: u32) {
+        self.groups_of.retain(|x| x.0 != role);
+        if g != 0 {
+            self.groups_of.push((role, g));
+        }
+    }
+
+    fn say_note(&mut self, text: String) {
+        say!("strip: {text}");
+        self.note = text;
+        self.note_until = rt::now_ms() + NOTE_MS;
+        self.damage(Rect::new(0, 0, self.width, alaya_ui::wm::STRIP));
+    }
+
+    /// The one undo: the person's last action, anywhere (decision 110).
+    fn undo_last(&mut self) {
+        let Some(s) = self.mine() else { return };
+        match s.last_action() {
+            Ok(Some(a)) => self.undo_action(&s, a),
+            Ok(None) => self.say_note(String::from("Nothing to undo")),
+            Err(e) => say!("the undo list could not be read: {e}"),
+        }
+    }
+
+    /// Undo one action from the list (an undo of an undo is a redo).
+    fn undo_action(&mut self, s: &Store, a: st::Action) {
+        let about = st::describe(&a.label);
+        // The look lives in the person's app files, which the store does
+        // not put back: the desktop does, and checks first that nothing
+        // changed it since (rule B6). For a redo, it must still be the old
+        // look.
+        let expect = if a.kind == act::UNDO {
+            a.label[1]
+        } else {
+            a.label[2]
+        };
+        if a.label[0] == label::LOOK && self.look_code(s) != expect {
+            self.ask_about(
+                Asked::Action(a.no),
+                &about,
+                alloc::vec![String::from("the look")],
+            );
+            return;
+        }
+        let r = s.undo(a.no, false);
+        self.undone(Asked::Action(a.no), r, &about);
+    }
+
+    /// "What happened?" asks for an undo (dk::UNDO).
+    fn undo_for(&mut self, by: u64, n: u64, app: u64) -> u64 {
+        let Some(s) = self.mine() else {
+            return dk::BAD_REQUEST;
+        };
+        if self.ask.is_some() {
+            return dk::BAD_REQUEST;
+        }
+        match by {
+            dk::undo_by::LAST => self.undo_last(),
+            dk::undo_by::ACTION => {
+                let found = s
+                    .actions(n + 1, 1)
+                    .ok()
+                    .and_then(|l| l.first().copied())
+                    .filter(|a| a.no == n && !a.undone);
+                match found {
+                    Some(a) => self.undo_action(&s, a),
+                    None => return dk::BAD_REQUEST,
+                }
+            }
+            dk::undo_by::CHANGE => {
+                let about = alloc::format!("what {} changed", st::app_name(app));
+                let r = s.undo_change(n, app, false);
+                self.undone(Asked::Change(n, app), r, &about);
+            }
+            _ => return dk::BAD_REQUEST,
+        }
+        dk::OK
+    }
+
+    /// What an undo did: put windows back, or ask.
+    fn undone(&mut self, what: Asked, r: Result<Undone, u64>, about: &str) {
+        let Some(s) = self.mine() else { return };
+        match r {
+            Ok(Undone::Done {
+                kind,
+                label: l,
+                files,
+            }) => {
+                let redo = kind == act::UNDO;
+                // Desktop actions: the store marked them; the desktop puts
+                // the window back (or, for a redo, does it again).
+                match (l[0], redo) {
+                    (label::WINDOW, false) => {
+                        let role = u64::from(l[1]);
+                        if !self.wins.iter().any(|w| w.owner == role) {
+                            let _ = alaya_sys::signal(self.session_ntfn, 1 << role);
+                        }
+                    }
+                    (label::WINDOW, true) => {
+                        let role = u64::from(l[1]);
+                        let ids: Vec<u32> = self
+                            .wins
+                            .iter()
+                            .filter(|w| w.owner == role)
+                            .map(|w| w.id)
+                            .collect();
+                        for id in ids {
+                            self.push(id, [event::CLOSE, 0, 0, 0, 0]);
+                        }
+                    }
+                    (label::LOOK, _) => {
+                        let code = if redo { l[2] } else { l[1] };
+                        if let Ok(apps) = s.root(APPS)
+                            && let Ok(f) = s.open(apps, "look")
+                        {
+                            let _ = s.write_all(f, &[code]);
+                            let _ = s.save();
+                        }
+                    }
+                    (label::GROUP, _) => {
+                        let role = u64::from(l[1]);
+                        let g = u32::from(if redo { l[3] } else { l[2] });
+                        if let Some(id) = self
+                            .wins
+                            .iter()
+                            .rev()
+                            .find(|w| w.owner == role)
+                            .map(|w| w.id)
+                        {
+                            self.wm.set_group(id, (g != 0).then_some(g));
+                        }
+                        self.set_group_of(role, g);
+                        self.damage_all();
+                    }
+                    _ => {}
+                }
+                // A setting may have gone back.
+                self.read_look();
+                let what = if l[0] == 0 {
+                    String::from(about)
+                } else {
+                    st::describe(&l)
+                };
+                let text = alloc::format!(
+                    "{} {}{}",
+                    if redo { "Redone:" } else { "Undone:" },
+                    what,
+                    match files.len() {
+                        0 => String::new(),
+                        1 => String::from(" (1 file back)"),
+                        n => alloc::format!(" ({n} files back)"),
+                    }
+                );
+                self.say_note(text);
+            }
+            Ok(Undone::Conflicts(files)) => {
+                let mut names: Vec<String> = files
+                    .iter()
+                    .take(3)
+                    .map(|&f| s.name_of(f, 0).unwrap_or_else(|_| String::from("a file")))
+                    .collect();
+                let more = files.len().saturating_sub(3);
+                if more > 0 {
+                    names.push(alloc::format!("{more} more"));
+                }
+                self.ask_about(what, about, names);
+            }
+            Err(e) => {
+                say!("undo failed: {e}");
+                self.say_note(String::from("That could not be undone"));
+            }
+        }
+    }
+
+    /// Something else changed it since: show what, and ask (rule B6).
+    fn ask_about(&mut self, what: Asked, about: &str, names: Vec<String>) {
+        let body = alloc::format!(
+            "Since then, something else changed {}. Undo anyway puts it back as it \
+             was before; the newer version stays in the timeline.",
+            names.join(", "),
+        );
+        say!("asked: undo anyway? {} changed since", names.join(", "));
+        self.ask = Some(Ask {
+            what,
+            title: alloc::format!("Undo \"{about}\"?"),
+            body,
+        });
+        self.damage_all();
+    }
+
+    /// The look's code in the person's app files now.
+    fn look_code(&self, s: &Store) -> u8 {
+        s.root(APPS)
+            .and_then(|a| s.lookup(a, "look"))
+            .and_then(|f| s.read_all(f))
+            .ok()
+            .and_then(|b| b.first().copied())
+            .unwrap_or(0)
+    }
+
+    /// The answer to the question.
+    fn answer(&mut self, yes: bool) {
+        let Some(a) = self.ask.take() else { return };
+        self.damage_all();
+        let Some(s) = self.mine() else { return };
+        if !yes {
+            self.say_note(String::from("Kept as it is: nothing was undone"));
+            return;
+        }
+        let about = a
+            .title
+            .trim_start_matches("Undo \"")
+            .trim_end_matches("\"?");
+        let about = String::from(about);
+        match a.what {
+            Asked::Action(no) => {
+                let r = s.undo(no, true);
+                self.undone(Asked::Action(no), r, &about);
+            }
+            Asked::Change(cn, app) => {
+                let r = s.undo_change(cn, app, true);
+                self.undone(Asked::Change(cn, app), r, &about);
+            }
+        }
     }
 
     fn forget(&mut self, owner: u64) {
@@ -860,14 +1205,14 @@ impl Desk {
         let x = self.wins.remove(i);
         let out = self.wm.remove(x.id);
         self.apply(out);
-        // Take the pages back from the app, then free them.
+        // Take the pages back from the app (every copy it was lent); the
+        // desktop keeps them for the slot's next window.
         for p in x.pages {
             let _ = alaya_sys::revoke(self.mem.at(p));
-            let _ = alaya_sys::page_unmap(p);
-            let _ = alaya_sys::delete(self.mem.at(p));
         }
         let _ = alaya_sys::delete(self.mem.at(x.ntfn));
         let slot = ((x.va - PICTURES) / PICTURE_STEP) as usize;
+        self.slot_pages[slot] = x.pages;
         self.free_slots[slot] = true;
         self.damage_all();
         say!("window {} closed", x.id);
@@ -895,14 +1240,24 @@ impl Desk {
                     Err(_) => return ([dk::NO_MEMORY, 0, 0, 0, 0, 0], 0),
                 };
                 let va = PICTURES + slot as u64 * PICTURE_STEP;
-                let mut pages = [0u64; dk::PAGES as usize];
-                for (i, p) in pages.iter_mut().enumerate() {
-                    let Ok(h) = self.mem.make(Kind::Page, 21) else {
-                        return ([dk::NO_MEMORY, 0, 0, 0, 0, 0], 0);
+                let mut pages = self.slot_pages[slot];
+                if pages[0] != 0 {
+                    // Used before: wipe what the last window drew, so no
+                    // app sees another's picture.
+                    // SAFETY: the slot's pages are mapped at `va`.
+                    unsafe {
+                        core::ptr::write_bytes(va as *mut u8, 0, (dk::PAGES * (2 << 20)) as usize)
                     };
-                    alaya_sys::page_map(h, start::SPACE, va + i as u64 * (2 << 20), map::WRITE)
-                        .expect("map a picture page");
-                    *p = h;
+                } else {
+                    for (i, p) in pages.iter_mut().enumerate() {
+                        let Ok(h) = self.mem.make(Kind::Page, 21) else {
+                            return ([dk::NO_MEMORY, 0, 0, 0, 0, 0], 0);
+                        };
+                        alaya_sys::page_map(h, start::SPACE, va + i as u64 * (2 << 20), map::WRITE)
+                            .expect("map a picture page");
+                        *p = h;
+                    }
+                    self.slot_pages[slot] = pages;
                 }
                 self.free_slots[slot] = false;
                 let id = self.next_id;
@@ -1000,6 +1355,10 @@ impl Desk {
                 self.read_look();
                 ([dk::OK, 0, 0, 0, 0, 0], 0)
             }
+            dk::UNDO if owner == role::BACK || owner == 0 => {
+                let r = self.undo_for(w[0], w[1], w[2]);
+                ([r, u64::from(self.ask.is_some()), 0, 0, 0, 0], 0)
+            }
             // Everything below is for the first program only.
             _ if owner != 0 => ([dk::BAD_REQUEST, 0, 0, 0, 0, 0], 0),
             dk::LOCK => {
@@ -1040,11 +1399,16 @@ impl Desk {
             },
             dk::PLACES => {
                 let n = dock_items(self.look).count();
+                let (yes, no) = scene::question_buttons(self.width, self.height);
                 let r = match w[0] {
+                    dk::places::UNDO => Some(scene::strip_buttons()[0]),
+                    dk::places::HAPPENED => Some(scene::strip_buttons()[1]),
+                    dk::places::YES => self.ask.as_ref().map(|_| yes),
+                    dk::places::NO => self.ask.as_ref().map(|_| no),
                     i if i < dk::places::CHIP && (i as usize) < n => {
                         Some(scene::dock_item(self.width, self.height, n, i as usize))
                     }
-                    i if i >= dk::places::CHIP => self
+                    i if (dk::places::CHIP..dk::places::UNDO).contains(&i) => self
                         .wm
                         .groups
                         .get((i - dk::places::CHIP) as usize)
@@ -1085,7 +1449,7 @@ impl Desk {
                     u64::from(self.wm.focused().unwrap_or(0)),
                     u64::from(self.wm.tiling),
                     self.frames,
-                    0,
+                    u64::from(self.ask.is_some()) | (self.note.len() as u64) << 1,
                 ],
                 0,
             ),

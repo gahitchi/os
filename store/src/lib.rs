@@ -1829,6 +1829,20 @@ impl<D: Disk> Store<D> {
         self.ok()?;
         let people = self.people()?;
         for p in people {
+            self.thin_one(p, now)?;
+        }
+        let budget = self.space.blocks * HISTORY_BUDGET_PERCENT / 100;
+        while self.history_blocks > budget {
+            if !self.drop_oldest(now)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Thin one person's moments by decision 33 (not the budget).
+    pub(crate) fn thin_one(&mut self, p: Person, now: u64) -> Result<(), Error> {
+        {
             let moments = self.history(p)?;
             let pins = self.pinned(p)?;
             let mut keep_bucket: BTreeSet<(u64, u64)> = BTreeSet::new();
@@ -1851,12 +1865,6 @@ impl<D: Disk> Store<D> {
                 if !keep_bucket.insert(bucket) {
                     self.drop_snapshot(p, Class::Documents, m.cn)?;
                 }
-            }
-        }
-        let budget = self.space.blocks * HISTORY_BUDGET_PERCENT / 100;
-        while self.history_blocks > budget {
-            if !self.drop_oldest(now)? {
-                break;
             }
         }
         Ok(())

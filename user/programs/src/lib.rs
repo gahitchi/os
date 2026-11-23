@@ -454,6 +454,89 @@ pub mod files {
     /// AS_OF: file, on → the result shows a fixed moment (or not).
     pub const AS_OF: u64 = 27;
 
+    // ---- Going back (milestone 7). ----
+
+    /// RENAME: dir, to dir, name length, new name length (the name at 0,
+    /// the new name at [`NAME2`] in the transfer pages).
+    pub const RENAME: u64 = 28;
+    /// ACTION_BEGIN: what was gathered so far is saved, so the action the
+    /// app is about to do starts clean; saving by itself waits (at most
+    /// [`ACTION_MS`]) until RECORD_ACTION.
+    pub const ACTION_BEGIN: u64 = 29;
+    /// RECORD_ACTION: kind, label length (label in the pages, at most
+    /// [`LABEL`] bytes) → action number. Saved at once.
+    pub const RECORD_ACTION: u64 = 30;
+    /// ACTIONS: before (0: from the newest), most → count; [`ACTION_BYTES`]
+    /// each: number, commit, app, kind | undone << 8 | undoes << 16, label.
+    pub const ACTIONS: u64 = 31;
+    /// UNDO: action, force → [`undo`] result, count of files (in the pages,
+    /// 8 bytes each), the kind of the action, its label (2 words).
+    pub const UNDO: u64 = 32;
+    /// UNDO_CHANGE: commit, app, force → as UNDO (a "What happened?" line
+    /// that was not an action).
+    pub const UNDO_CHANGE: u64 = 33;
+    /// HAPPENINGS: before (0: from the newest), most → rows, commits;
+    /// [`HAPPENING_BYTES`] each: commit, time, app, file, what.
+    pub const HAPPENINGS: u64 = 34;
+    /// NAME_OF: file, commit (0: now) → name length, folder (name in the
+    /// pages).
+    pub const NAME_OF: u64 = 35;
+    /// NAME_VERSION: commit, name length (0: take the name away).
+    pub const NAME_VERSION: u64 = 36;
+    /// NAMED: → count; [`NAMED_BYTES`] each: commit, time, name length,
+    /// name in 32 bytes.
+    pub const NAMED: u64 = 37;
+    /// PAST_LIST: commit, dir → count; [`PAST_ENTRY_BYTES`] each: file,
+    /// name length, size, is_dir, name in 32 bytes.
+    pub const PAST_LIST: u64 = 38;
+    /// RESTORE: commit, count (files in the pages) → [`undo`] result,
+    /// count (files that are back, or that cannot go back).
+    pub const RESTORE: u64 = 39;
+    /// STORY: file, most → made by (app), made in (commit), made at
+    /// (time), changes, files made from it; changes are
+    /// [`STORY_BYTES`] each (commit, time, app, what), then the files.
+    pub const STORY: u64 = 40;
+    /// FAKE_HISTORY: days, hours between moments → moments made (tests
+    /// only: a year of history, made fast, as if it had been lived).
+    pub const FAKE_HISTORY: u64 = 41;
+
+    pub const NAME2: usize = 64;
+    pub const LABEL: usize = 16;
+    pub const ACTION_BYTES: usize = 48;
+    pub const HAPPENING_BYTES: usize = 40;
+    pub const NAMED_BYTES: usize = 56;
+    pub const PAST_ENTRY_BYTES: usize = 64;
+    pub const STORY_BYTES: usize = 32;
+    pub const ACTION_MS: u64 = 2000;
+
+    /// Kinds of action (`alaya_store::history::act`).
+    pub mod act {
+        pub const FILES: u64 = 1;
+        pub const SETTINGS: u64 = 2;
+        pub const WINDOW: u64 = 3;
+        pub const GROUP: u64 = 4;
+        pub const UNDO: u64 = 5;
+    }
+
+    /// What an undo or a restore did.
+    pub mod undo {
+        pub const DONE: u64 = 0;
+        /// Something else changed it since: nothing was done (rule B6).
+        pub const CONFLICTS: u64 = 1;
+    }
+
+    /// What changed in a file (`alaya_store::what`).
+    pub mod what {
+        pub const CREATED: u64 = 1;
+        pub const WROTE: u64 = 2;
+        pub const DELETED: u64 = 4;
+        pub const RENAMED: u64 = 8;
+        pub const MADE: u64 = 16;
+        pub const FORGOTTEN: u64 = 32;
+        pub const RESTORED: u64 = 64;
+        pub const KEPT: u64 = 128;
+    }
+
     /// Status words.
     pub mod st {
         pub const OK: u64 = 0;
@@ -661,7 +744,9 @@ pub mod desktop {
     pub const SIZE: u64 = 7;
     /// TILING: on (1) or off (0). Test and keyboard use.
     pub const TILING: u64 = 8;
-    /// STATE: → windows, focused window, tiling, frames drawn.
+    /// STATE: → windows, focused window, tiling, frames drawn, whether a
+    /// question is asked (1) and what the strip says now (its length;
+    /// milestone 7).
     pub const STATE: u64 = 9;
     /// WINDOW: window → status, x, y, width, height, place.
     pub const WINDOW: u64 = 10;
@@ -690,10 +775,29 @@ pub mod desktop {
     /// WINDOW_OF: app (its role) → status, its newest window (the first
     /// program only).
     pub const WINDOW_OF: u64 = 20;
+    /// UNDO: how ([`undo_by`]), action or commit, app. The desktop undoes
+    /// it as the one undo does: it asks first when something else changed
+    /// the same thing since, and puts windows and the look back. Only
+    /// "What happened?" (and the first program) may ask.
+    pub const UNDO: u64 = 21;
+    pub mod undo_by {
+        /// The last action (as Alaya key + Z).
+        pub const LAST: u64 = 0;
+        /// One action on the list, by its number.
+        pub const ACTION: u64 = 1;
+        /// What one app changed in one commit.
+        pub const CHANGE: u64 = 2;
+    }
 
     pub mod places {
         pub const DOCK: u64 = 0;
         pub const CHIP: u64 = 16;
+        /// The strip's buttons: Undo, What happened?
+        pub const UNDO: u64 = 32;
+        pub const HAPPENED: u64 = 33;
+        /// The question's buttons, while one is asked.
+        pub const YES: u64 = 40;
+        pub const NO: u64 = 41;
     }
 
     /// What the desktop shows.
@@ -718,7 +822,9 @@ pub mod desktop {
         pub const FILES: u64 = 2;
         pub const CHART: u64 = 3;
         pub const SETTINGS: u64 = 4;
-        pub const COUNT: u64 = 4;
+        /// "What happened?" and the timeline (milestone 7).
+        pub const BACK: u64 = 5;
+        pub const COUNT: u64 = 5;
     }
 
     pub const OK: u64 = 0;
@@ -834,11 +940,22 @@ pub mod desktop {
                     "down" => Some((108, 0)),
                     "backspace" => Some((14, 0)),
                     "escape" => Some((1, 0)),
-                    _ => name
-                        .strip_prefix("ctrl+")
-                        .and_then(|k| k.chars().next())
-                        .and_then(key_code)
-                        .map(|(c, s)| (c, 2 | u8::from(s))),
+                    "home" => Some((102, 0)),
+                    "end" => Some((107, 0)),
+                    "delete" => Some((111, 0)),
+                    _ => match name.strip_prefix("super+") {
+                        // The Alaya key (the Windows-logo key).
+                        Some(k) => k
+                            .chars()
+                            .next()
+                            .and_then(key_code)
+                            .map(|(c, s)| (c, 4 | u8::from(s))),
+                        None => name
+                            .strip_prefix("ctrl+")
+                            .and_then(|k| k.chars().next())
+                            .and_then(key_code)
+                            .map(|(c, s)| (c, 2 | u8::from(s))),
+                    },
                 };
                 if let Some((c, m)) = code {
                     f(c, m);

@@ -655,6 +655,70 @@ impl<D: Disk> Store<D> {
         Ok(a)
     }
 
+    /// Undo what app `of` changed in commit `cn` ("What happened?": a line
+    /// that is not on the undo list, such as an app saving by itself), as
+    /// `app`. The change goes on the undo list as an action first (or the
+    /// action already there is used), so the undo can be undone like any
+    /// other. Same rules as [`Store::undo`].
+    pub fn undo_change(
+        &mut self,
+        p: Person,
+        app: App,
+        cn: u64,
+        of: App,
+        force: bool,
+        now: u64,
+    ) -> Result<Undo, Error> {
+        self.ok()?;
+        if side::is_side(p) || cn == 0 || cn >= self.pending_gen() {
+            return Err(Error::BadRequest);
+        }
+        if !self.changes(p, cn)?.iter().any(|c| c.app == of) {
+            return Err(Error::NotFound);
+        }
+        // An action already recorded for exactly this change.
+        let mut before = 0;
+        let mut found = None;
+        'look: loop {
+            let batch = self.actions(p, before, 64)?;
+            for a in &batch {
+                if a.cn == cn && a.app == of && a.kind != act::UNDO {
+                    found = Some(*a);
+                    break 'look;
+                }
+                if a.cn < cn {
+                    break 'look;
+                }
+            }
+            match batch.last() {
+                Some(a) => before = a.no,
+                None => break,
+            }
+        }
+        let no = match found {
+            Some(a) if a.undone => return Err(Error::BadRequest),
+            Some(a) => a.no,
+            None => {
+                let no = self.record_action_inner(p, of, act::FILES, b"", 0)?;
+                // It is about commit `cn`, not the one being gathered.
+                let Store { dev, branches, .. } = self;
+                let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+                let v = b
+                    .hist
+                    .get(dev, &b.keys, k_act(no))?
+                    .ok_or(Error::NotFound)?;
+                let mut a = Action::decode(no, &v);
+                a.cn = cn;
+                b.hist.insert(dev, &b.keys, k_act(no), a.encode())?;
+                no
+            }
+        };
+        // On a conflict nothing is undone; an action written here stays on
+        // the list (it describes a real change) and is saved with the next
+        // commit.
+        self.undo(p, app, no, force, now)
+    }
+
     /// Undo action `no` as `app` (the desktop), and commit. Its files go
     /// back to how they were just before it. If one of them changed since
     /// (by anyone), nothing is done unless `force` (rule B6: show both and
@@ -739,6 +803,55 @@ impl<D: Disk> Store<D> {
             action: a,
             files: done,
         })
+    }
+
+    /// A test aid: `days` of history for person `p`, a moment every
+    /// `hours`, as if it had been lived from time 1 on (one small file,
+    /// "year.txt", changed each time), thinned as it goes as the store
+    /// would have. Commits what was gathered first, at `now`. Returns how
+    /// many moments were made. Only for a person used by nothing else:
+    /// their time labels run ahead of the clock.
+    pub fn fake_history(
+        &mut self,
+        p: Person,
+        app: App,
+        days: u64,
+        hours: u64,
+        now: u64,
+    ) -> Result<u64, Error> {
+        self.ok()?;
+        if side::is_side(p) || hours == 0 || days > 3660 {
+            return Err(Error::BadRequest);
+        }
+        self.branch(p)?;
+        if self.has_changes() {
+            self.commit(now)?;
+        }
+        let saved = self.now;
+        let docs = self.root(Class::Documents);
+        let f = match self.lookup(p, docs, b"year.txt") {
+            Ok(f) => f,
+            Err(Error::NotFound) => self.create(p, app, docs, b"year.txt", false)?,
+            Err(e) => return Err(e),
+        };
+        let step = hours * 3600;
+        let mut t = 1;
+        let mut made = 0;
+        while t <= days * 24 * 3600 {
+            let line = alloc::format!("day {:4}, hour {:2}\n", t / 86400, t / 3600 % 24);
+            self.write(p, app, f, 0, line.as_bytes())?;
+            self.commit(t)?;
+            made += 1;
+            // Thinning runs once a day in Alaya.
+            if made % (24 / hours.min(24)).max(1) == 0 {
+                self.thin_one(p, t)?;
+            }
+            t += step;
+        }
+        self.thin_one(p, t)?;
+        self.commit(t)?;
+        self.now = saved;
+        Ok(made)
     }
 
     // ---- What happened? and file stories ----

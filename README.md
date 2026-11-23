@@ -13,6 +13,17 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 7, step 1: going back.** One undo for the whole computer:
+the Alaya key plus Z, or the Undo button in the top strip, undoes your last
+action anywhere (a deleted file, a setting, a closed window), and asks first
+if something else changed it since. "What happened?" lists changes in
+plain words with an undo on each line; the timeline shows your documents
+as they were at any kept moment, brings one back and names versions; the
+file browser tells each file's story. Underneath, the store gives every
+file its own lock key (so a forgotten file can never be read again) and
+learns side branches (checks 76 to 84). How it works:
+[`docs/going-back.md`](docs/going-back.md).
+
 **Milestone 6, step 4 (6c): "is this still up to date?"** The first show
 of living validity, something no other system does. The chart maker tells
 Alaya what its picture and summary were made from; the store checks that

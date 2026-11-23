@@ -6,16 +6,17 @@
 //! every two seconds.
 //!
 //! Up and down choose a file; A says the chosen result shows a fixed
-//! moment ("as of a date"), or not any more.
+//! moment ("as of a date"), or not any more. Delete (or D) deletes it, as
+//! one action on the undo list (milestone 7); W, or the button, tells its
+//! story: where it came from and what was made from it.
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_apps::store::{Entry, Kind, Mark, Store, Why};
+use alaya_apps::store::{Entry, Kind, Mark, Store, Why, app_name, label, make_label};
 use alaya_apps::{self as app, Event, Window};
-use alaya_programs::desktop::role;
-use alaya_programs::files::{self as fs, DOCS};
+use alaya_programs::files::{DOCS, act, what};
 use alaya_sys::abi::StartInfo;
 use alaya_sys::rt::{self, Mem};
 use alaya_sys::say;
@@ -32,15 +33,43 @@ fn size(n: u64) -> String {
     }
 }
 
-/// The name people know an app by.
-fn app_name(app: u64) -> &'static str {
-    match app {
-        a if a == fs::app_id(role::EDITOR) => "the text editor",
-        a if a == fs::app_id(role::FILES) => "the file browser",
-        a if a == fs::app_id(role::CHART) => "the chart maker",
-        a if a == fs::app_id(role::SETTINGS) => "Settings",
-        _ => "another app",
+/// A file's story in a few sentences (rule R2: from file identities and
+/// the record of changes only).
+fn story(store: &Store, rows: &[Entry], e: &Entry) -> String {
+    let Ok(st) = store.story(e.file, 64) else {
+        return String::from("Its story could not be read.");
+    };
+    let mut out = match st.made_by {
+        0 => String::from("Made before the oldest moment Alaya still keeps."),
+        app => format!("Made by {}.", app_name(app)),
+    };
+    let edits = st.changes.iter().filter(|c| c.3 & what::WROTE != 0).count();
+    let mut by: Vec<&str> = st.changes.iter().map(|c| app_name(c.2)).collect();
+    by.sort();
+    by.dedup();
+    if edits > 0 {
+        out.push_str(&format!(
+            " Changed {edits} time{} by {}.",
+            if edits == 1 { "" } else { "s" },
+            by.join(" and ")
+        ));
     }
+    if st.changes.iter().any(|c| c.3 & what::RESTORED != 0) {
+        out.push_str(" Put back once from an earlier moment.");
+    }
+    if !st.used_by.is_empty() {
+        let names: Vec<String> = st
+            .used_by
+            .iter()
+            .map(|f| {
+                rows.iter()
+                    .find(|r| r.file == *f)
+                    .map_or(String::from("a file in a folder"), |r| r.name.clone())
+            })
+            .collect();
+        out.push_str(&format!(" Made from it: {}.", names.join(", ")));
+    }
+    out
 }
 
 /// The mark's words and colours.
@@ -104,6 +133,10 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut selected: Option<usize> = None;
     let mut last_look = 0;
     let mut said = String::new();
+    // The story shown for the chosen file (W), until another is chosen.
+    let mut told: Option<(u64, String)> = None;
+    let mut ask_story = false;
+    let mut delete = false;
     loop {
         let mut keys = Vec::new();
         while let Some(e) = win.next_event() {
@@ -119,7 +152,11 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             match k {
                 Key::Down => selected = Some(selected.map_or(0, |s| (s + 1).min(last))),
                 Key::Up => selected = Some(selected.map_or(0, |s| s.saturating_sub(1))),
+                Key::Home => selected = Some(0),
+                Key::End => selected = Some(last),
                 Key::Char('r') => look = true,
+                Key::Char('w') => ask_story = true,
+                Key::Delete | Key::Char('d') => delete = true,
                 Key::Char('a') => {
                     if let Some(r) = selected.and_then(|i| rows.get(i))
                         && r.mark.kind != Kind::NoMark
@@ -142,10 +179,47 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 _ => {}
             }
         }
+        if delete {
+            delete = false;
+            if let Some(r) = selected.and_then(|i| rows.get(i))
+                && !r.e.is_dir
+            {
+                // One action on the undo list: the one undo brings it back.
+                let name = r.e.name.clone();
+                let ok = store.action_begin().is_ok()
+                    && store.remove(docs, &name).is_ok()
+                    && store
+                        .record_action(act::FILES, make_label(label::DELETED, &name).as_bytes())
+                        .is_ok();
+                say!(
+                    "{}",
+                    if ok {
+                        format!("deleted {name}; the one undo brings it back")
+                    } else {
+                        format!("could not delete {name}")
+                    }
+                );
+                look = true;
+            }
+        }
+        if ask_story {
+            ask_story = false;
+            if let Some(r) = selected.and_then(|i| rows.get(i)) {
+                let es: Vec<Entry> = rows.iter().map(|r| r.e.clone()).collect();
+                let t = story(&store, &es, &r.e);
+                say!("story of {}: {t}", r.e.name);
+                told = Some((r.e.file, t));
+            }
+        }
         if look {
             last_look = rt::now_ms();
+            // The chosen file stays chosen when others come and go.
+            let chosen = selected.and_then(|i| rows.get(i)).map(|r| r.e.file);
             if let Ok(mut l) = store.list(docs) {
                 l.sort_by(|a, b| a.name.cmp(&b.name));
+                if let Some(f) = chosen {
+                    selected = l.iter().position(|e| e.file == f).or(selected);
+                }
                 let marks: Vec<Mark> = l
                     .iter()
                     .map(|e| {
@@ -187,8 +261,14 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             _ if rows.is_empty() => {
                 String::from("No documents yet. Save something in the text editor.")
             }
-            Some(r) => r.about.clone(),
-            None => String::from("Up and down choose a file. A marks a result \"as of a date\"."),
+            Some(r) => match &told {
+                Some((f, t)) if *f == r.e.file => t.clone(),
+                _ => r.about.clone(),
+            },
+            None => String::from(
+                "Up and down choose a file. A marks a result \"as of a date\". \
+                 Delete deletes it; Alaya key + Z brings it back.",
+            ),
         };
         let lines = fonts.wrap(Face::Text, 12, &hint, win.width - 28);
         {
@@ -210,13 +290,19 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             let texts: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
             let pills: Vec<_> = rows.iter().map(|r| pill(&r.mark)).collect();
             if let Some(i) = ui.list(
-                Rect::new(12, 40, w - 24, h - 100),
+                Rect::new(12, 40, w - 24, h - 144),
                 "Documents",
                 &texts,
                 selected,
                 &pills,
             ) {
                 selected = Some(i);
+            }
+            if selected.is_some() {
+                let (story_hit, r) = ui.button(12, h - 96, "Where did this come from?", false);
+                ask_story |= story_hit;
+                let (del_hit, _) = ui.button(r.right() + 8, h - 96, "Delete", false);
+                delete |= del_hit;
             }
             for (i, (a, b)) in lines.iter().take(3).enumerate() {
                 let y = h - 54 + 16 * i as i32;
@@ -226,6 +312,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             win.pointer.released = false;
         }
         win.damage_all();
-        win.wait();
+        // A button pressed: act on it at once.
+        if !(ask_story || delete) {
+            win.wait();
+        }
     }
 }

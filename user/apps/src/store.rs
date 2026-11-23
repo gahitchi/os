@@ -63,7 +63,63 @@ pub struct Mark {
     pub sources: u64,
 }
 
+/// One action on the undo list.
+#[derive(Clone, Copy, Debug)]
+pub struct Action {
+    pub no: u64,
+    pub cn: u64,
+    pub app: u64,
+    pub kind: u64,
+    pub undone: bool,
+    pub undoes: u64,
+    pub label: [u8; fs::LABEL],
+}
+
+impl Action {
+    pub fn label(&self) -> String {
+        let n = self.label.iter().position(|&b| b == 0).unwrap_or(fs::LABEL);
+        String::from_utf8_lossy(&self.label[..n]).into_owned()
+    }
+}
+
+/// What an undo did.
+#[derive(Clone, Debug)]
+pub enum Undone {
+    /// Done: the kind and label of the action undone, and the files put
+    /// back.
+    Done {
+        kind: u64,
+        label: [u8; fs::LABEL],
+        files: Vec<u64>,
+    },
+    /// Nothing done: these files changed since (rule B6).
+    Conflicts(Vec<u64>),
+}
+
+/// One change in "What happened?".
+#[derive(Clone, Copy, Debug)]
+pub struct Happening {
+    pub cn: u64,
+    pub time: u64,
+    pub app: u64,
+    pub file: u64,
+    pub what: u64,
+}
+
+/// A file's story.
+#[derive(Clone, Debug, Default)]
+pub struct Story {
+    /// The app that made it, the commit and time (0: not known).
+    pub made_by: u64,
+    pub made_cn: u64,
+    pub made_at: u64,
+    /// (commit, time, app, what), newest first.
+    pub changes: Vec<(u64, u64, u64, u64)>,
+    pub used_by: Vec<u64>,
+}
+
 /// One entry of a directory.
+#[derive(Clone, Debug)]
 pub struct Entry {
     pub name: String,
     pub file: u64,
@@ -265,6 +321,223 @@ impl Store {
         Ok(out)
     }
 
+    /// Rename or move `name` in `dir` to `to_name` in `to_dir`.
+    pub fn rename(&self, dir: u64, name: &str, to_dir: u64, to_name: &str) -> Result<(), Status> {
+        if to_name.is_empty() || to_name.len() > 32 {
+            return Err(st::BAD_REQUEST);
+        }
+        let n = Self::name(name)?;
+        xfer()[fs::NAME2..fs::NAME2 + to_name.len()].copy_from_slice(to_name.as_bytes());
+        self.call(fs::RENAME, &[dir, to_dir, n, to_name.len() as u64])
+            .map(|_| ())
+    }
+
+    pub fn remove(&self, dir: u64, name: &str) -> Result<(), Status> {
+        let n = Self::name(name)?;
+        self.call(fs::REMOVE, &[dir, n]).map(|_| ())
+    }
+
+    /// The person is about to do something that goes on the undo list:
+    /// what was gathered before is saved first.
+    pub fn action_begin(&self) -> Result<(), Status> {
+        self.call(fs::ACTION_BEGIN, &[]).map(|_| ())
+    }
+
+    /// What the person just did goes on the undo list (saved at once).
+    pub fn record_action(&self, kind: u64, label: &[u8]) -> Result<u64, Status> {
+        let n = label.len().min(fs::LABEL);
+        xfer()[..n].copy_from_slice(&label[..n]);
+        Ok(self.call(fs::RECORD_ACTION, &[kind, n as u64])?[1])
+    }
+
+    /// The undo list, newest first, below action `before` (0: all).
+    pub fn actions(&self, before: u64, max: u64) -> Result<Vec<Action>, Status> {
+        let n = self.call(fs::ACTIONS, &[before, max])?[1] as usize;
+        let b = xfer();
+        Ok((0..n)
+            .map(|i| {
+                let o = fs::ACTION_BYTES * i;
+                let w =
+                    |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+                Action {
+                    no: w(0),
+                    cn: w(1),
+                    app: w(2),
+                    kind: w(3) & 0xff,
+                    undone: w(3) >> 8 & 1 != 0,
+                    undoes: w(3) >> 16,
+                    label: b[o + 32..o + 48].try_into().unwrap(),
+                }
+            })
+            .collect())
+    }
+
+    /// The newest action that is not undone (and not itself an undo).
+    pub fn last_action(&self) -> Result<Option<Action>, Status> {
+        let mut before = 0;
+        loop {
+            let l = self.actions(before, 32)?;
+            let Some(last) = l.last() else {
+                return Ok(None);
+            };
+            if let Some(a) = l.iter().find(|a| !a.undone && a.kind != fs::act::UNDO) {
+                return Ok(Some(*a));
+            }
+            before = last.no;
+        }
+    }
+
+    fn undone(r: [u64; 6]) -> Undone {
+        let n = r[2] as usize;
+        let b = xfer();
+        let files = (0..n)
+            .map(|i| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap()))
+            .collect();
+        if r[1] == fs::undo::DONE {
+            let mut label = [0u8; fs::LABEL];
+            label[..8].copy_from_slice(&r[4].to_le_bytes());
+            label[8..].copy_from_slice(&r[5].to_le_bytes());
+            Undone::Done {
+                kind: r[3],
+                label,
+                files,
+            }
+        } else {
+            Undone::Conflicts(files)
+        }
+    }
+
+    /// Undo action `no` (`force`: even though something changed since).
+    pub fn undo(&self, no: u64, force: bool) -> Result<Undone, Status> {
+        Ok(Self::undone(self.call(fs::UNDO, &[no, force as u64])?))
+    }
+
+    /// Undo what `app` changed in commit `cn`.
+    pub fn undo_change(&self, cn: u64, app: u64, force: bool) -> Result<Undone, Status> {
+        Ok(Self::undone(
+            self.call(fs::UNDO_CHANGE, &[cn, app, force as u64])?,
+        ))
+    }
+
+    /// What happened, newest first, in commits below `before` (0: from
+    /// the newest), at most `max` commits.
+    pub fn happenings(&self, before: u64, max: u64) -> Result<Vec<Happening>, Status> {
+        let n = self.call(fs::HAPPENINGS, &[before, max])?[1] as usize;
+        let b = xfer();
+        Ok((0..n)
+            .map(|i| {
+                let o = fs::HAPPENING_BYTES * i;
+                let w =
+                    |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+                Happening {
+                    cn: w(0),
+                    time: w(1),
+                    app: w(2),
+                    file: w(3),
+                    what: w(4),
+                }
+            })
+            .collect())
+    }
+
+    /// A document's name now (`cn` 0) or at moment `cn`.
+    pub fn name_of(&self, f: u64, cn: u64) -> Result<String, Status> {
+        let r = self.call(fs::NAME_OF, &[f, cn])?;
+        let n = (r[1] as usize).min(32);
+        Ok(String::from_utf8_lossy(&xfer()[..n]).into_owned())
+    }
+
+    /// The moments history keeps: (commit, time), oldest first.
+    pub fn history(&self) -> Result<Vec<(u64, u64)>, Status> {
+        let r = self.call(fs::HISTORY, &[])?;
+        let n = r[1] as usize;
+        let b = xfer();
+        let w = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        // The store lists the newest first.
+        let mut out: Vec<(u64, u64)> = (0..n).map(|i| (w(2 * i), w(2 * i + 1))).collect();
+        out.reverse();
+        Ok(out)
+    }
+
+    /// Give moment `cn` a name (an empty name takes it away).
+    pub fn name_version(&self, cn: u64, name: &str) -> Result<(), Status> {
+        let n = if name.is_empty() {
+            0
+        } else {
+            Self::name(name)?
+        };
+        self.call(fs::NAME_VERSION, &[cn, n]).map(|_| ())
+    }
+
+    /// Named versions: (commit, time, name), oldest first.
+    pub fn named(&self) -> Result<Vec<(u64, u64, String)>, Status> {
+        let n = self.call(fs::NAMED, &[])?[1] as usize;
+        let b = xfer();
+        Ok((0..n)
+            .map(|i| {
+                let o = fs::NAMED_BYTES * i;
+                let w =
+                    |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+                let len = (w(2) as usize).min(32);
+                (
+                    w(0),
+                    w(1),
+                    String::from_utf8_lossy(&b[o + 24..o + 24 + len]).into_owned(),
+                )
+            })
+            .collect())
+    }
+
+    /// What `dir` held at moment `cn`.
+    pub fn past_list(&self, cn: u64, dir: u64) -> Result<Vec<Entry>, Status> {
+        let n = self.call(fs::PAST_LIST, &[cn, dir])?[1] as usize;
+        let b = xfer();
+        Ok((0..n)
+            .map(|i| {
+                let o = fs::PAST_ENTRY_BYTES * i;
+                let w =
+                    |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+                let len = (w(1) as usize).min(32);
+                Entry {
+                    name: String::from_utf8_lossy(&b[o + 32..o + 32 + len]).into_owned(),
+                    file: w(0),
+                    size: w(2),
+                    version: 0,
+                    is_dir: w(3) != 0,
+                }
+            })
+            .collect())
+    }
+
+    /// Put `files` back as they were at moment `cn`.
+    pub fn restore(&self, cn: u64, files: &[u64]) -> Result<Undone, Status> {
+        let b = xfer();
+        for (i, f) in files.iter().enumerate() {
+            b[8 * i..8 * i + 8].copy_from_slice(&f.to_le_bytes());
+        }
+        let r = self.call(fs::RESTORE, &[cn, files.len() as u64])?;
+        Ok(Self::undone([r[0], r[1], r[2], 0, 0, 0]))
+    }
+
+    /// Where `f` came from and what was made from it.
+    pub fn story(&self, f: u64, max: u64) -> Result<Story, Status> {
+        let r = self.call(fs::STORY, &[f, max])?;
+        let b = xfer();
+        let w = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        let n = r[4] as usize;
+        let changes: Vec<_> = (0..n)
+            .map(|i| (w(4 * i), w(4 * i + 1), w(4 * i + 2), w(4 * i + 3)))
+            .collect();
+        let used_by = (0..r[5] as usize).map(|i| w(4 * n + i)).collect();
+        Ok(Story {
+            made_by: r[1],
+            made_cn: r[2],
+            made_at: r[3],
+            changes,
+            used_by,
+        })
+    }
+
     /// Make everything so far safe on the disk now (it is anyway within
     /// five seconds).
     pub fn save(&self) -> Result<u64, Status> {
@@ -278,4 +551,58 @@ fn words(key: &[u8; 32]) -> [u64; 4] {
         *x = u64::from_le_bytes(key[8 * i..8 * i + 8].try_into().unwrap());
     }
     w
+}
+
+/// The name people know an app by.
+pub fn app_name(app: u64) -> &'static str {
+    use alaya_programs::desktop::role;
+    match app {
+        a if a == fs::app_id(role::EDITOR) => "the text editor",
+        a if a == fs::app_id(role::FILES) => "the file browser",
+        a if a == fs::app_id(role::CHART) => "the chart maker",
+        a if a == fs::app_id(role::SETTINGS) => "Settings",
+        a if a == fs::app_id(role::BACK) => "the timeline",
+        fs::DESKTOP_APP => "the desktop",
+        fs::INIT_APP => "Alaya's checks",
+        _ => "another app",
+    }
+}
+
+/// Labels on the undo list: a letter for what was done, then a name.
+pub mod label {
+    pub const DELETED: u8 = b'd';
+    pub const RENAMED: u8 = b'r';
+    pub const LOOK: u8 = b'l';
+    pub const WINDOW: u8 = b'W';
+    /// A window into a group: then its role, the group it was in, the
+    /// group it went to.
+    pub const GROUP: u8 = b'G';
+}
+
+/// A label for the undo list: what (a [`label`] letter) and the name.
+pub fn make_label(what: u8, name: &str) -> String {
+    let mut s = String::new();
+    s.push(what as char);
+    for c in name.chars() {
+        if s.len() + c.len_utf8() > fs::LABEL {
+            break;
+        }
+        s.push(c);
+    }
+    s
+}
+
+/// What an action was, in a few plain words ("delete notes.txt").
+pub fn describe(label: &[u8]) -> String {
+    let n = label.iter().position(|&b| b == 0).unwrap_or(label.len());
+    let rest = |from: usize| String::from_utf8_lossy(&label[from.min(n)..n]).into_owned();
+    match label.first() {
+        Some(&label::DELETED) => alloc::format!("delete {}", rest(1)),
+        Some(&label::RENAMED) => alloc::format!("rename to {}", rest(1)),
+        Some(&label::LOOK) => String::from("change the look"),
+        Some(&label::WINDOW) => alloc::format!("close {}", rest(2)),
+        Some(&label::GROUP) => alloc::format!("move {} into a group", rest(4)),
+        _ if n == 0 => String::from("a change"),
+        _ => rest(0),
+    }
 }

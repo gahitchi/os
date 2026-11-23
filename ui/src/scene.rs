@@ -46,6 +46,99 @@ pub struct Desktop<'a> {
     pub locked: bool,
     /// The real PIN box is open: this person's picture shows in the strip.
     pub trusted: Option<usize>,
+    /// The going-back buttons in the strip ("Undo", "What happened?").
+    pub buttons: bool,
+    /// A question only Alaya asks (drawn over the windows).
+    pub question: Option<&'a Question<'a>>,
+}
+
+/// A question Alaya asks before it does something (rule B6: something
+/// else changed it since; undo anyway?).
+pub struct Question<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub yes: &'a str,
+    pub no: &'a str,
+}
+
+/// The strip's buttons: Undo, and What happened?
+pub fn strip_buttons() -> [Rect; 2] {
+    [Rect::new(96, 5, 68, 24), Rect::new(172, 5, 128, 24)]
+}
+
+/// The names on the strip's buttons.
+pub const STRIP_BUTTONS: [&str; 2] = ["Undo", "What happened?"];
+
+/// Where a question is drawn on a screen `w` by `h`, and its two buttons
+/// (yes, no).
+pub fn question_rect(w: i32, h: i32) -> Rect {
+    Rect::new((w - 460) / 2, (h - 210) / 2, 460, 210)
+}
+
+pub fn question_buttons(w: i32, h: i32) -> (Rect, Rect) {
+    let q = question_rect(w, h);
+    (
+        Rect::new(q.right() - 330, q.bottom() - 52, 150, 32),
+        Rect::new(q.right() - 168, q.bottom() - 52, 150, 32),
+    )
+}
+
+fn draw_question(cv: &mut Canvas, fonts: &mut Fonts, q: &Question, sw: i32, sh: i32) {
+    let r = question_rect(sw, sh);
+    cv.shadow(r, 12, 16);
+    cv.round_rect(r, 12, theme::WIN);
+    cv.round_frame(r, 12, theme::LINE);
+    let (asc, _) = fonts.metrics(Face::Strong, 16);
+    fonts.draw(
+        cv,
+        Face::Strong,
+        16,
+        r.x + 22,
+        r.y + 20 + asc,
+        q.title,
+        theme::INK,
+    );
+    let (a2, l2) = fonts.metrics(Face::Text, 13);
+    let lines = fonts.wrap(Face::Text, 13, q.body, r.w - 44);
+    for (i, (a, b)) in lines.iter().take(5).enumerate() {
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            r.x + 22,
+            r.y + 54 + i as i32 * (l2 + 2) + a2,
+            q.body[*a..*b].trim_end(),
+            theme::MUTED,
+        );
+    }
+    let (yes, no) = question_buttons(sw, sh);
+    for (b, name, primary) in [(yes, q.yes, true), (no, q.no, false)] {
+        cv.round_rect(
+            b,
+            7,
+            if primary {
+                theme::ACCENT
+            } else {
+                theme::CHROME
+            },
+        );
+        cv.round_frame(b, 7, if primary { theme::ACCENT } else { theme::LINE });
+        let tw = fonts.width(Face::Strong, 13, name);
+        let (a3, l3) = fonts.metrics(Face::Strong, 13);
+        fonts.draw(
+            cv,
+            Face::Strong,
+            13,
+            b.x + (b.w - tw) / 2,
+            b.y + (b.h - l3) / 2 + a3,
+            name,
+            if primary {
+                theme::ACCENT_INK
+            } else {
+                theme::INK
+            },
+        );
+    }
 }
 
 /// The group labels' rectangles, left of the dock.
@@ -307,6 +400,23 @@ pub fn draw<'a>(
             theme::BAR_INK,
         );
     }
+    if desk.buttons && !desk.locked {
+        for (r, name) in strip_buttons().iter().zip(STRIP_BUTTONS) {
+            cv.round_rect(*r, 6, theme::CHROME);
+            cv.round_frame(*r, 6, theme::LINE);
+            let tw = fonts.width(Face::Strong, 12, name);
+            let (a2, l2) = fonts.metrics(Face::Strong, 12);
+            fonts.draw(
+                cv,
+                Face::Strong,
+                12,
+                r.x + (r.w - tw) / 2,
+                r.y + (r.h - l2) / 2 + a2,
+                name,
+                theme::BAR_INK,
+            );
+        }
+    }
     let cw = fonts.width(Face::Text, 14, desk.clock);
     fonts.draw(
         cv,
@@ -329,6 +439,9 @@ pub fn draw<'a>(
             desk.status,
             theme::MUTED,
         );
+    }
+    if let Some(q) = desk.question.filter(|_| !desk.locked) {
+        draw_question(cv, fonts, q, sw, sh);
     }
     if desk.show_pointer {
         let (px, py) = wm.pointer;

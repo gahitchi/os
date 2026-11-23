@@ -951,6 +951,31 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                 if line.contains(TYPED_MARKER) {
                     typed = true;
                 }
+                // The timeline's speed gate (milestone 7): under 100 ms a
+                // moment, measured on real speed (KVM). Plain emulation
+                // runs many times slower, so there the number is shown.
+                if let Some(rest) = line.split(TIMELINE_MARKER).nth(1)
+                    && let Some(us) = rest
+                        .split(" at most ")
+                        .nth(1)
+                        .and_then(|r| r.split(' ').next())
+                        .and_then(|n| n.parse::<u64>().ok())
+                {
+                    if accel == "KVM" && us >= 100_000 {
+                        break Err(format!(
+                            "the timeline's gate: a moment took {us} us (must be under 100 ms)"
+                        ));
+                    }
+                    println!(
+                        "  * timeline gate: {} ms a moment at most ({})",
+                        us / 1000,
+                        if accel == "KVM" {
+                            "under 100 ms: passed"
+                        } else {
+                            "emulated; the 100 ms gate is checked with KVM"
+                        }
+                    );
+                }
                 if line.contains(DESKTOP_SKIPPED_MARKER) {
                     break Err("the drag never reached the desktop".into());
                 }
@@ -1041,6 +1066,7 @@ const DRAG_MARKER: &str = "init: desktop: drag from";
 const DESKTOP_SKIPPED_MARKER: &str = "init: desktop: nobody dragged";
 const DESKTOP_DRAWN_MARKER: &str = "init: desktop: drawn after a screen driver crash";
 const KEYS_MARKER: &str = "init: keys: ";
+const TIMELINE_MARKER: &str = "init: timeline: each of";
 const SCREENSHOT_MARKER: &str = "init: screenshot ";
 /// After its checks the first program looks after drivers and apps.
 const SERVING_MARKER: &str = "init: looking after the drivers and the apps";
@@ -1263,6 +1289,12 @@ fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
                 "enter" => "ret".to_string(),
                 "backspace" => "backspace".to_string(),
                 "escape" => "esc".to_string(),
+                n if n.starts_with("super+") => {
+                    let k = n[6..].chars().next().ok_or("super+ what?")?;
+                    let (code, _) = qcode(k).ok_or(format!("no key for {k}"))?;
+                    press(q, &["meta_l", &code])?;
+                    continue;
+                }
                 n if n.starts_with("ctrl+") => {
                     let k = n[5..].chars().next().ok_or("ctrl+ what?")?;
                     let (code, _) = qcode(k).ok_or(format!("no key for {k}"))?;
