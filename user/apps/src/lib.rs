@@ -161,7 +161,7 @@ impl Window {
     }
 
     /// The next event, if one is waiting. Keeps size and pointer state.
-    pub fn next(&mut self) -> Option<Event> {
+    pub fn next_event(&mut self) -> Option<Event> {
         loop {
             let r = call(self.ep, dk::EVENT, &[self.id]);
             if r[0] != dk::OK {

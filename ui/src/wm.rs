@@ -247,13 +247,13 @@ impl Wm {
 
     /// Bring a window to the front.
     pub fn raise(&mut self, id: u32, out: &mut Vec<Out>) {
-        if let Some(i) = self.index(id) {
-            if i + 1 != self.wins.len() {
-                let w = self.wins.remove(i);
-                out.push(Self::damage(w.frame));
-                self.wins.push(w);
-                out.push(Out::Focus(id));
-            }
+        if let Some(i) = self.index(id)
+            && i + 1 != self.wins.len()
+        {
+            let w = self.wins.remove(i);
+            out.push(Self::damage(w.frame));
+            self.wins.push(w);
+            out.push(Out::Focus(id));
         }
     }
 

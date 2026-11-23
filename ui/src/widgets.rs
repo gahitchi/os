@@ -18,7 +18,7 @@ use crate::text::{Face, Fonts};
 /// Colours of the light look, from the mock-up.
 pub mod theme {
     use crate::canvas::Color;
-    pub const PAGE: Color = 0x0e_15_16;
+    pub const PAGE: Color = 0x000e_1516;
     pub const WALL_TOP: Color = 0x2b_5d_60;
     pub const WALL_BOTTOM: Color = 0x14_29_2b;
     pub const BAR: Color = 0xf6_f9_f8;
@@ -361,13 +361,13 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
             edit.set_position(line, col);
         }
         let mut changed = false;
-        if focused {
-            if let Some(k) = self.key {
-                if k != Key::Tab && k != Key::Escape {
-                    self.key = None;
-                    changed = edit.key(k, multiline);
-                }
-            }
+        if let Some(k) = self.key
+            && focused
+            && k != Key::Tab
+            && k != Key::Escape
+        {
+            self.key = None;
+            changed = edit.key(k, multiline);
         }
         self.cv.round_rect(r, 6, theme::WIN);
         self.cv

@@ -35,7 +35,7 @@ fn main(info: &'static StartInfo) -> ! {
             let mut ui = Ui::new(&mut cv, &mut fonts, win.pointer);
             ui.focus = focus;
             let mut pending = alloc::vec::Vec::new();
-            while let Some(e) = win.next() {
+            while let Some(e) = win.next_event() {
                 pending.push(e);
             }
             let mut close = false;

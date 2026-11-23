@@ -140,6 +140,7 @@ impl<'a> Fonts<'a> {
 
     /// Draw `s` with its baseline at `y`, starting at `x`; returns the x
     /// after the last character.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         cv: &mut Canvas,

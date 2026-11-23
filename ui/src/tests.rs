@@ -53,7 +53,7 @@ fn letters_have_solid_strokes_and_holes() {
     assert!(max >= 250, "the left stroke of O is not solid ({max})");
     // Coverage is never more than full anywhere.
     let l = font.rasterize(font.glyph('l').unwrap(), 30.0);
-    assert!(l.coverage.iter().any(|&c| c == 255));
+    assert!(l.coverage.contains(&255));
 }
 
 #[test]
