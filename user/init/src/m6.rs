@@ -468,7 +468,9 @@ pub fn run<'a>(
                 x = Some(v);
             }
         }
-        let px = x.map_or(u64::MAX, |x| u64::from(x) * w / (u64::from(ev::ABS_MAX) + 1));
+        let px = x.map_or(u64::MAX, |x| {
+            u64::from(x) * w / (u64::from(ev::ABS_MAX) + 1)
+        });
         say!("input: key 'a' pressed and let go; click at x = {px}");
         if px.abs_diff(w / 2) <= 2 {
             // The host script clicks the middle of the screen.
