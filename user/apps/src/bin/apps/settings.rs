@@ -44,13 +44,15 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             }
         }
         let mut chosen = None;
-        {
+        // One drawing pass per key: keys typed quickly arrive together,
+        // and each must reach the piece that has the keyboard then.
+        for pass in 0..keys.len().max(1) {
             let mut cv = win.canvas();
             let (w, h) = (win.width, win.height);
             cv.fill(Rect::new(0, 0, w, h), theme::WIN);
             let mut ui = Ui::new(&mut cv, &mut fonts, win.pointer);
             ui.focus = focus;
-            ui.key = keys.first().copied();
+            ui.key = keys.get(pass).copied();
             ui.text(16, 14, Face::Strong, 15, "The look", theme::INK);
             ui.text(
                 16,
