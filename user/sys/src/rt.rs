@@ -36,6 +36,12 @@ pub fn now_ms() -> u64 {
     (crate::clock() as u128 * 1000 / hz as u128) as u64
 }
 
+/// Microseconds since boot.
+pub fn now_us() -> u64 {
+    let hz = CLOCK_HZ.load(Ordering::Relaxed);
+    (crate::clock() as u128 * 1_000_000 / hz as u128) as u64
+}
+
 struct Line {
     buf: [u8; 240],
     len: usize,

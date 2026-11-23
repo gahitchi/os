@@ -22,6 +22,8 @@
 
 #![no_std]
 
+pub mod virtio;
+
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Bytes in a disk sector.
@@ -486,4 +488,118 @@ pub mod files {
     /// Caches nobody used for this many days are emptied (choice D).
     pub const CACHE_UNUSED_DAYS: u64 = 30;
     pub const AUTOSAVE_MS: u64 = 5000;
+}
+
+/// The screen, keyboard and mouse (milestone 6): what their drivers share
+/// with the program that uses them (for now the first program; the
+/// compositor next).
+///
+/// Each driver gets one shared page at [`driver::JOB_PAGE`] and nothing
+/// else of its client. A driver that crashes is started again with the
+/// same pages: the screen driver shows the picture still in the screen
+/// memory, the input drivers carry on writing events after the last one.
+pub mod seat {
+    use core::sync::atomic::AtomicU64;
+
+    /// PCI device numbers (virtio, modern).
+    pub const VIRTIO_VENDOR: u16 = 0x1af4;
+    pub const GPU_DEVICE: u16 = 0x1050;
+    pub const INPUT_DEVICE: u16 = 0x1052;
+
+    /// Given capabilities: its notification, the client's, the interrupt.
+    pub const G_NTFN: u64 = 0;
+    pub const G_CLIENT: u64 = 1;
+    pub const G_IRQ: u64 = 2;
+
+    /// Bits on a driver's notification.
+    pub const IRQ_BIT: u64 = 1;
+    /// The client posted a frame.
+    pub const FRAME_BIT: u64 = 2;
+    /// Test only: crash now.
+    pub const CRASH_BIT: u64 = 4;
+
+    /// Bits on the client's notification.
+    pub const SHOWN_BIT: u64 = 1;
+    pub const INPUT_BIT: u64 = 2;
+
+    /// The screen memory: in the driver, and as the device sees it.
+    pub const SCREEN: u64 = 0x5200_0000_0000;
+    pub const IOVA_SCREEN: u64 = 0x4000_0000;
+    /// Screen memory comes in 2 MiB pages; at most this many (8 MiB, for
+    /// 1920 by 1080).
+    pub const SCREEN_PAGES: u64 = 4;
+    /// Args after the device page codes (same places as [`super::driver`]).
+    pub const ARG_SCREEN_PAGES: usize = 15;
+
+    /// The screen driver's shared page.
+    #[repr(C)]
+    pub struct ScreenPage {
+        /// [`super::run`] state, and why it failed.
+        pub state: AtomicU64,
+        pub error: AtomicU64,
+        /// How many times a driver started on this page.
+        pub starts: AtomicU64,
+        /// The screen's size in pixels, from the device. Pixels are 32-bit
+        /// words 0x00RRGGBB, row after row.
+        pub width: AtomicU64,
+        pub height: AtomicU64,
+        /// Frames the client posted, and the last one on the screen.
+        pub posted: AtomicU64,
+        pub shown: AtomicU64,
+        /// The part of the screen that changed: x, y, width, height (the
+        /// union of everything posted since the last frame shown).
+        pub dirty: [AtomicU64; 4],
+        /// Time the last frame took in the driver, in microseconds.
+        pub flush_us: AtomicU64,
+    }
+
+    /// Kinds of input device, as the driver finds out from its name.
+    pub mod kind {
+        pub const UNKNOWN: u64 = 0;
+        pub const KEYBOARD: u64 = 1;
+        pub const POINTER: u64 = 2;
+    }
+
+    /// Event types and codes (the same numbers Linux uses, which is what
+    /// virtio input sends).
+    pub mod ev {
+        pub const SYN: u16 = 0;
+        pub const KEY: u16 = 1;
+        pub const REL: u16 = 2;
+        pub const ABS: u16 = 3;
+        pub const ABS_X: u16 = 0;
+        pub const ABS_Y: u16 = 1;
+        pub const BTN_LEFT: u16 = 0x110;
+        pub const BTN_RIGHT: u16 = 0x111;
+        /// Pointer positions run from 0 to this.
+        pub const ABS_MAX: u32 = 0x7fff;
+    }
+
+    pub const EVENTS: usize = 500;
+
+    /// An input driver's shared page: a ring of events the driver writes
+    /// and the client reads at its own pace.
+    #[repr(C)]
+    pub struct InputPage {
+        pub state: AtomicU64,
+        pub error: AtomicU64,
+        pub starts: AtomicU64,
+        pub kind: AtomicU64,
+        /// Events written so far; event `n` is at `n % EVENTS`.
+        pub head: AtomicU64,
+        _pad: [u64; 3],
+        /// type << 48 | code << 32 | value.
+        pub events: [AtomicU64; EVENTS],
+    }
+
+    pub const fn pack(kind: u16, code: u16, value: u32) -> u64 {
+        (kind as u64) << 48 | (code as u64) << 32 | value as u64
+    }
+
+    pub const fn unpack(e: u64) -> (u16, u16, u32) {
+        ((e >> 48) as u16, (e >> 32) as u16, e as u32)
+    }
+
+    const _: () = assert!(core::mem::size_of::<ScreenPage>() <= 4096);
+    const _: () = assert!(core::mem::size_of::<InputPage>() <= 4096);
 }
