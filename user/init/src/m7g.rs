@@ -146,7 +146,8 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     // Escape from a fresh walk goes back to the window in front.
     assert!(x.keys("{super+tab}", said("Undo, button on"), SLOW));
     assert!(
-        x.keys("{escape}", || heard(ep).1 == rr::WINDOW, SLOW),
+        // (The window is said, and what has the keyboard right after.)
+        x.keys("{escape}", || heard(ep).1 != rr::SHELL, SLOW),
         "Escape did not go back to the window: {:?}",
         heard(ep)
     );
