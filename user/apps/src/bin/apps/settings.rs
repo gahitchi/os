@@ -10,6 +10,10 @@
 //! And the backup stick (decision 36): B backs up now (then by itself
 //! every ten minutes when something changed), R shows the recovery key,
 //! G gets documents back from the stick (type the recovery key, Enter).
+//!
+//! And how big things are on the screen this window is on (milestone
+//! 7b): Alaya's pick from the screen's size, or 100 to 200 percent. S
+//! steps through them.
 
 use alloc::format;
 use alloc::string::String;
@@ -23,6 +27,7 @@ use alaya_sys::abi::{StartInfo, start};
 use alaya_sys::rt::Mem;
 use alaya_sys::{Caps, Msg, say};
 use alaya_ui::Rect;
+use alaya_ui::input::Layout;
 use alaya_ui::login::Look;
 use alaya_ui::text::Face;
 use alaya_ui::widgets::{Key, Ui, theme};
@@ -38,7 +43,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             .and_then(|b| b.first().copied())
             .unwrap_or(0),
     );
-    let mut win = Window::open(&mut mem, 560, 600, "Settings").expect("open a window");
+    let mut win = Window::open(&mut mem, 640, 460, "Settings").expect("open a window");
     let mut focus = 0;
     // The backup part: what it says, the recovery key while shown, and
     // the key being typed to get documents back.
@@ -47,7 +52,14 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut typing: Option<String> = None;
     let mut chosen_grant = 0usize;
     let mut said = usize::MAX;
+    let mut part = Part::Look;
+    let mut seeing;
     loop {
+        let mut again = false;
+        // Alaya key + C or Enter may have changed it meanwhile.
+        seeing = win.seeing();
+        let mut new_part = None;
+        let mut new_seeing = None;
         // An undo may have put the old look back.
         if let Some(&c) = store.read_all(file).ok().as_deref().and_then(|b| b.first()) {
             look = Look::from_code(c);
@@ -74,6 +86,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         let mut back_up = false;
         let mut show_key = false;
         let mut get_back = false;
+        let mut next_scale = 0usize;
         let mut keys = Vec::new();
         while let Some(e) = win.next_event() {
             match (e, typing.as_mut()) {
@@ -94,108 +107,281 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 (Event::Close, _) => crate::closed(&win),
                 (_, Some(_)) => {}
                 (e, None) => match e {
-                    Event::Key(Key::Char('b')) => back_up = true,
-                    Event::Key(Key::Char('r')) => show_key = true,
+                    // Letter keys work from any part, and show theirs.
+                    Event::Key(Key::Char('b')) => {
+                        back_up = true;
+                        new_part = Some(Part::Backup);
+                    }
+                    Event::Key(Key::Char('r')) => {
+                        show_key = true;
+                        new_part = Some(Part::Backup);
+                    }
                     Event::Key(Key::Char('g')) => {
                         typing = Some(String::new());
                         backup_note = String::from("Type your recovery key, then Enter.");
+                        new_part = Some(Part::Backup);
                     }
-                    Event::Key(Key::Up) => chosen_grant = chosen_grant.saturating_sub(1),
-                    Event::Key(Key::Down) => chosen_grant += 1,
-                    Event::Key(Key::Char('t')) => take_back = true,
+                    Event::Key(Key::Up) => {
+                        chosen_grant = chosen_grant.saturating_sub(1);
+                        new_part = Some(Part::Apps);
+                    }
+                    Event::Key(Key::Down) => {
+                        chosen_grant += 1;
+                        new_part = Some(Part::Apps);
+                    }
+                    Event::Key(Key::Char('t')) => {
+                        take_back = true;
+                        new_part = Some(Part::Apps);
+                    }
+                    Event::Key(Key::Char('s')) => {
+                        next_scale += 1;
+                        new_part = Some(Part::Screen);
+                    }
                     Event::Key(k) => keys.push(k),
                     Event::Close => crate::closed(&win),
                     _ => {}
                 },
             }
         }
+        let (scale_now, scale_chosen) = win.screen_scale();
+        let (layout, _) = win.typing(u64::MAX);
+        let mut new_layout = None;
         let mut chosen = None;
+        let mut chosen_scale = None;
         // One drawing pass per key: keys typed quickly arrive together,
         // and each must reach the piece that has the keyboard then.
         for pass in 0..keys.len().max(1) {
             let mut cv = win.canvas();
             let (w, h) = (win.width, win.height);
             cv.fill(Rect::new(0, 0, w, h), theme::WIN);
+            cv.fill(Rect::new(0, 0, SIDE, h), theme::CHROME);
+            cv.fill(Rect::new(SIDE, 0, 1, h), theme::LINE);
             let mut ui = Ui::new(&mut cv, &mut fonts, win.pointer);
             ui.focus = focus;
             ui.key = keys.get(pass).copied();
-            ui.text(16, 14, Face::Strong, 15, "The look", theme::INK);
-            ui.text(
-                16,
-                40,
-                Face::Text,
-                13,
-                "What you use Alaya for. Changes the dock at once.",
-                theme::MUTED,
-            );
-            let mut x = 16;
-            for l in Look::ALL {
-                let (hit, r) = ui.button(x, 72, l.name(), l == look);
+            let x0 = SIDE + 16;
+            let right = w - 16;
+            // The part shown first, so Tab reaches its pieces first; the
+            // list of parts after it.
+            match part {
+                Part::Look => {
+                    ui.text(x0, 14, Face::Strong, 15, "The look", theme::INK);
+                    ui.text(
+                        x0,
+                        40,
+                        Face::Text,
+                        13,
+                        "What you use Alaya for. Changes the dock at once.",
+                        theme::MUTED,
+                    );
+                    let (mut x, mut y) = (x0, 68);
+                    for l in Look::ALL {
+                        let bw = ui.fonts.width(Face::Strong, 14, l.name()) + 24;
+                        if x + bw > right {
+                            (x, y) = (x0, y + 38);
+                        }
+                        let (hit, r) = ui.button(x, y, l.name(), l == look);
+                        if hit {
+                            chosen = Some(l);
+                        }
+                        x = r.right() + 8;
+                    }
+                    wrapped(
+                        &mut ui,
+                        x0,
+                        y + 50,
+                        right - x0,
+                        12,
+                        look.about(),
+                        theme::MUTED,
+                    );
+                }
+                Part::Seeing => {
+                    ui.text(x0, 14, Face::Strong, 15, "Seeing", theme::INK);
+                    let contrast = seeing & dk::seeing::CONTRAST != 0;
+                    let reader = seeing & dk::seeing::READER != 0;
+                    let (hit, _) = ui.button(x0, 44, &on_off("High contrast", contrast), contrast);
+                    if hit {
+                        new_seeing = Some(seeing ^ dk::seeing::CONTRAST);
+                    }
+                    wrapped(
+                        &mut ui,
+                        x0,
+                        82,
+                        right - x0,
+                        12,
+                        "Black ground, white text, yellow for what has the keyboard. Only colours change, never what anything does. Alaya key + C, anywhere.",
+                        theme::MUTED,
+                    );
+                    let (hit, _) = ui.button(x0, 140, &on_off("Screen reader", reader), reader);
+                    if hit {
+                        new_seeing = Some(seeing ^ dk::seeing::READER);
+                    }
+                    wrapped(
+                        &mut ui,
+                        x0,
+                        178,
+                        right - x0,
+                        12,
+                        "Says what has the keyboard, and how many of your files the app in front can see. Until Alaya has sound, it shows its words in a bar at the top. Alaya key + Enter, anywhere; Alaya key + Tab walks the strip, the dock and the group labels.",
+                        theme::MUTED,
+                    );
+                }
+                Part::Typing => {
+                    ui.text(x0, 14, Face::Strong, 15, "Typing", theme::INK);
+                    ui.text(x0, 40, Face::Text, 13, "Your keyboard:", theme::MUTED);
+                    let (mut x, mut y) = (x0, 62);
+                    for l in Layout::ALL {
+                        let bw = ui.fonts.width(Face::Strong, 14, l.name()) + 24;
+                        if x + bw > right {
+                            (x, y) = (x0, y + 38);
+                        }
+                        let (hit, r) = ui.button(x, y, l.name(), u64::from(l.code()) == layout);
+                        if hit {
+                            new_layout = Some(u64::from(l.code()));
+                        }
+                        x = r.right() + 6;
+                    }
+                    wrapped(
+                        &mut ui,
+                        x0,
+                        y + 46,
+                        right - x0,
+                        12,
+                        "Alaya key + Space switches between Latin letters, Japanese (type romaji, get kana) and Chinese (type pinyin, Space shows the characters, a number picks one). Accents: the dead keys of your keyboard, or Compose then two keys (a e: æ). Alaya key + . shows emoji, Alaya key + K a keyboard on the screen.",
+                        theme::MUTED,
+                    );
+                    ui.text(
+                        x0,
+                        y + 150,
+                        Face::Text,
+                        16,
+                        "Alaya: עברית · العربية · 日本語 · 中文 · 😀",
+                        theme::INK,
+                    );
+                }
+                Part::Screen => {
+                    ui.text(x0, 14, Face::Strong, 15, "Size on this screen", theme::INK);
+                    let about = if scale_chosen == 0 {
+                        format!("Now {scale_now}%, Alaya's pick from the screen's size.")
+                    } else {
+                        format!("Now {scale_now}%.")
+                    };
+                    ui.text(x0, 40, Face::Text, 13, &about, theme::MUTED);
+                    let (mut x, mut y) = (x0, 68);
+                    for &p in &dk::SCALES {
+                        let name = if p == 0 {
+                            String::from("Alaya picks")
+                        } else {
+                            format!("{p}%")
+                        };
+                        let bw = ui.fonts.width(Face::Strong, 14, &name) + 24;
+                        if x + bw > right {
+                            (x, y) = (x0, y + 38);
+                        }
+                        let (hit, r) = ui.button(x, y, &name, p == scale_chosen);
+                        if hit {
+                            chosen_scale = Some(p);
+                        }
+                        x = r.right() + 6;
+                    }
+                    wrapped(
+                        &mut ui,
+                        x0,
+                        y + 50,
+                        right - x0,
+                        12,
+                        "For the screen this window is on; each screen keeps its own. Windows keep their size when they move between screens. S steps through.",
+                        theme::MUTED,
+                    );
+                }
+                Part::Apps => {
+                    ui.text(x0, 14, Face::Strong, 15, "What apps can see", theme::INK);
+                    wrapped(
+                        &mut ui,
+                        x0,
+                        38,
+                        right - x0,
+                        12,
+                        "Only what you handed them in Alaya's Open and Save windows, and what they made.",
+                        theme::MUTED,
+                    );
+                    chosen_grant = chosen_grant.min(rows.len().saturating_sub(1));
+                    if rows.is_empty() {
+                        ui.text(x0, 80, Face::Text, 13, "Nothing yet.", theme::MUTED);
+                    } else {
+                        let texts: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+                        let pills: Vec<_> = grants.iter().map(|_| None).collect();
+                        if let Some(i) = ui.list(
+                            Rect::new(x0 - 4, 76, right - x0 + 4, 270),
+                            "What apps can see",
+                            &texts,
+                            Some(chosen_grant),
+                            &pills,
+                        ) {
+                            chosen_grant = i;
+                        }
+                        let (hit, _) = ui.button(x0, 356, "Take it back", false);
+                        take_back |= hit;
+                    }
+                    if let Some(m) = &marked {
+                        wrapped(&mut ui, x0, 396, right - x0, 12, m, theme::PAST);
+                    }
+                }
+                Part::Backup => {
+                    ui.text(x0, 14, Face::Strong, 15, "Backup", theme::INK);
+                    let status = backup_status(&store);
+                    wrapped(&mut ui, x0, 38, right - x0, 12, &status, theme::MUTED);
+                    let (hit, r) = ui.button(x0, 80, "Back up now", false);
+                    back_up |= hit;
+                    let (hit, r) =
+                        ui.button(r.right() + 10, 80, "Recovery key", shown_key.is_some());
+                    show_key |= hit;
+                    let (hit, _) = ui.button(r.right() + 10, 80, "Get them back", typing.is_some());
+                    if hit && typing.is_none() {
+                        typing = Some(String::new());
+                        backup_note = String::from("Type your recovery key, then Enter.");
+                    }
+                    if let Some(t) = &typing {
+                        let shown = format!("Recovery key: {t}|");
+                        ui.text(x0, 126, Face::Strong, 13, &shown, theme::INK);
+                    } else if let Some(k) = &shown_key {
+                        ui.text(x0, 126, Face::Strong, 15, k, theme::INK);
+                    }
+                    wrapped(&mut ui, x0, 154, right - x0, 12, &backup_note, theme::PAST);
+                }
+            }
+            for (i, p) in Part::ALL.iter().enumerate() {
+                let (hit, _) = ui.button(12, 14 + i as i32 * 40, p.name(), *p == part);
                 if hit {
-                    chosen = Some(l);
+                    new_part = Some(*p);
                 }
-                x = r.right() + 8;
             }
-            ui.text(16, 120, Face::Text, 12, look.about(), theme::MUTED);
-            ui.text(16, 168, Face::Strong, 15, "What apps can see", theme::INK);
-            ui.text(
-                16,
-                192,
-                Face::Text,
-                12,
-                "Only what you handed them in Alaya's Open and Save windows, and what they made.",
-                theme::MUTED,
-            );
-            chosen_grant = chosen_grant.min(rows.len().saturating_sub(1));
-            if rows.is_empty() {
-                ui.text(16, 222, Face::Text, 13, "Nothing yet.", theme::MUTED);
-            } else {
-                let texts: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
-                let pills: Vec<_> = grants.iter().map(|_| None).collect();
-                if let Some(i) = ui.list(
-                    Rect::new(12, 214, w - 24, 150),
-                    "What apps can see",
-                    &texts,
-                    Some(chosen_grant),
-                    &pills,
-                ) {
-                    chosen_grant = i;
-                }
-                let (hit, _) = ui.button(16, 372, "Take it back", false);
-                take_back |= hit;
-            }
-            if let Some(m) = &marked {
-                ui.text(160, 377, Face::Text, 12, m, theme::PAST);
-            }
-            ui.text(16, 420, Face::Strong, 15, "Backup", theme::INK);
-            let status = backup_status(&store);
-            ui.text(16, 444, Face::Text, 12, &status, theme::MUTED);
-            let (hit, r) = ui.button(16, 466, "Back up now", false);
-            back_up |= hit;
-            let (hit, r) = ui.button(r.right() + 10, 466, "Recovery key", shown_key.is_some());
-            show_key |= hit;
-            let (hit, _) = ui.button(r.right() + 10, 466, "Get them back", typing.is_some());
-            if hit && typing.is_none() {
-                typing = Some(String::new());
-                backup_note = String::from("Type your recovery key, then Enter.");
-            }
-            if let Some(t) = &typing {
-                let shown = format!("Recovery key: {t}|");
-                ui.text(16, 512, Face::Strong, 13, &shown, theme::INK);
-            } else if let Some(k) = &shown_key {
-                ui.text(16, 512, Face::Strong, 15, k, theme::INK);
-            }
-            ui.text(16, 538, Face::Text, 12, &backup_note, theme::PAST);
+            ui.text(14, h - 26, Face::Text, 11, "Alaya 0.0.1, 7b", theme::MUTED);
             focus = ui.finish();
-            ui.text(
-                16,
-                h - 30,
-                Face::Text,
-                12,
-                "Alaya 0.0.1, milestone 7.",
-                theme::MUTED,
-            );
+            win.tell(&ui.tree);
             win.pointer.released = false;
+        }
+        if let Some(p) = new_part.take()
+            && p != part
+        {
+            part = p;
+            // The keyboard starts on the new part's first piece.
+            focus = 0;
+            say!("Settings shows {}", p.name());
+            again = true;
+        }
+        if let Some(l) = new_layout
+            && l != layout
+        {
+            win.typing(l);
+            again = true;
+        }
+        if let Some(b) = new_seeing
+            && win.set_seeing(b)
+        {
+            // Drawn again with it at once.
+            again = true;
         }
         if let Some(l) = chosen
             && l != look
@@ -212,6 +398,25 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 Caps::default(),
             );
             say!("the look is now: {}", l.name());
+        }
+        // Presses that arrive together each count.
+        if next_scale > 0 {
+            let i = dk::SCALES
+                .iter()
+                .position(|&p| p == scale_chosen)
+                .unwrap_or(0);
+            chosen_scale = Some(dk::SCALES[(i + next_scale) % dk::SCALES.len()]);
+        }
+        if let Some(p) = chosen_scale
+            && p != scale_chosen
+            && win.set_screen_scale(p)
+        {
+            let what = if p == 0 {
+                String::from("Alaya's pick")
+            } else {
+                format!("{p}%")
+            };
+            say!("things on this screen are now drawn at {what}");
         }
         if back_up {
             backup_note = match store.backup(false) {
@@ -266,7 +471,57 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             }
         }
         win.damage_all();
-        win.wait();
+        if !again {
+            win.wait();
+        }
+    }
+}
+
+/// The width of the list of parts, at the left.
+const SIDE: i32 = 150;
+
+/// Settings' parts, one shown at a time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Look,
+    Seeing,
+    Typing,
+    Screen,
+    Apps,
+    Backup,
+}
+
+impl Part {
+    const ALL: [Part; 6] = [
+        Part::Look,
+        Part::Seeing,
+        Part::Typing,
+        Part::Screen,
+        Part::Apps,
+        Part::Backup,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Part::Look => "The look",
+            Part::Seeing => "Seeing",
+            Part::Typing => "Typing",
+            Part::Screen => "Screen size",
+            Part::Apps => "What apps see",
+            Part::Backup => "Backup",
+        }
+    }
+}
+
+fn on_off(what: &str, on: bool) -> String {
+    format!("{what}: {}", if on { "on" } else { "off" })
+}
+
+/// Text wrapped to `width`, from (`x`, `y`) down.
+fn wrapped(ui: &mut Ui, x: i32, y: i32, width: i32, px: u32, s: &str, c: alaya_ui::canvas::Color) {
+    let (_, lh) = ui.fonts.metrics(Face::Text, px);
+    for (i, &(a, z)) in ui.fonts.wrap(Face::Text, px, s, width).iter().enumerate() {
+        ui.text(x, y + i as i32 * lh, Face::Text, px, &s[a..z], c);
     }
 }
 

@@ -509,6 +509,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 ui.text(14, h - 22, Face::Text, 12, &note, theme::MUTED);
             }
             ui.finish();
+            win.tell(&ui.tree);
             win.pointer.released = false;
         }
         match press {

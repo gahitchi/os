@@ -526,7 +526,7 @@ pub(crate) fn run<'a>(
         "Figtree-Regular.ttf",
         "Figtree-SemiBold.ttf",
         "IBMPlexMono-Regular.ttf",
-        "NotoSans-Regular.ttf",
+        "NotoSans-Alaya.ttf",
     ];
     let font_pages = alloc_free::take_ro(0);
     let mut sizes = [0u64; 4];
@@ -954,6 +954,8 @@ pub(crate) fn run<'a>(
     crate::m7d::run(&mut x, pass);
     crate::m7e::run(&mut x, pass);
     crate::m7f::run(&mut x, pass);
+    crate::m7g::run(&mut x, pass);
+    crate::m7h::run(&mut x, pass);
     x
 }
 

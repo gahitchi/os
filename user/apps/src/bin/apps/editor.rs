@@ -349,6 +349,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             );
             ui.text(12, h - 34, Face::Text, 13, &status, theme::MUTED);
             ui.finish();
+            win.tell(&ui.tree);
             win.pointer.released = false;
         }
         win.damage_all();

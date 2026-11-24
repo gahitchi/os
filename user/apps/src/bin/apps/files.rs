@@ -483,6 +483,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 ui.text(14, y, Face::Text, 12, hint[*a..*b].trim_end(), theme::MUTED);
             }
             ui.finish();
+            win.tell(&ui.tree);
             win.pointer.released = false;
         }
         win.damage_all();

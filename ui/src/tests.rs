@@ -15,7 +15,7 @@ use crate::wm::{Hit, Out, Place, STRIP, Screen, TITLE, Wm};
 const FIGTREE: &[u8] = include_bytes!("../../fonts/Figtree-Regular.ttf");
 const FIGTREE_SEMI: &[u8] = include_bytes!("../../fonts/Figtree-SemiBold.ttf");
 const PLEX: &[u8] = include_bytes!("../../fonts/IBMPlexMono-Regular.ttf");
-const NOTO: &[u8] = include_bytes!("../../fonts/NotoSans-Regular.ttf");
+const NOTO: &[u8] = include_bytes!("../../fonts/NotoSans-Alaya.ttf");
 
 fn fonts() -> Fonts<'static> {
     Fonts::new(FIGTREE, FIGTREE_SEMI, PLEX, NOTO)
@@ -745,10 +745,12 @@ fn screens_come_and_go_and_windows_follow() {
     let main = Screen {
         id: 0,
         rect: Rect::new(0, 0, 1280, 800),
+        scale: 100,
     };
     let two = Screen {
         id: 1,
         rect: Rect::new(1280, 0, 1024, 768),
+        scale: 100,
     };
     wm.set_screens(vec![main, two]);
     wm.add(1, 500, 300);
@@ -781,4 +783,252 @@ fn screens_come_and_go_and_windows_follow() {
     // The edge between two screens is a way across, not a snap.
     assert_eq!(wm.screen_at(1279, 400), 0);
     assert_eq!(wm.screen_at(1280, 400), 1);
+}
+
+#[test]
+fn a_window_keeps_its_size_in_points_across_scales() {
+    let mut wm = Wm::new(1280, 800);
+    let main = Screen {
+        id: 0,
+        rect: Rect::new(0, 0, 1280, 800),
+        scale: 100,
+    };
+    let dense = Screen {
+        id: 1,
+        rect: Rect::new(1280, 0, 1920, 1200),
+        scale: 150,
+    };
+    wm.set_screens(vec![main, dense]);
+    wm.add(1, 400, 300);
+    let c = wm.get(1).unwrap().content();
+    assert_eq!((c.w, c.h), (400, 300));
+    // Onto the dense screen: half as many pixels again, the same points.
+    let out = wm.to_screen(1, 1);
+    let w = wm.get(1).unwrap();
+    assert_eq!((w.content().w, w.content().h, w.scale), (600, 450, 150));
+    assert!(
+        out.iter().any(|o| matches!(o, Out::Resized(1, 600, 450))),
+        "{out:?}"
+    );
+    // Back: as it was.
+    wm.to_screen(1, 1);
+    let w = wm.get(1).unwrap();
+    assert_eq!((w.content().w, w.content().h, w.scale), (400, 300, 100));
+    // The main screen goes to 200: the window doubles and says so.
+    let out = wm.set_scale(0, 200);
+    let w = wm.get(1).unwrap();
+    assert_eq!((w.content().w, w.content().h, w.scale), (800, 600, 200));
+    assert!(out.iter().any(|o| matches!(o, Out::Resized(1, 800, 600))));
+    // A new window there opens at 200 too.
+    wm.add(2, 300, 200);
+    let c = wm.get(2).unwrap().content();
+    assert_eq!((c.w, c.h), (600, 400));
+}
+
+#[test]
+fn a_scaled_canvas_draws_points_as_pixel_blocks() {
+    let mut px = vec![0u32; 40 * 40];
+    {
+        let mut cv = Canvas::new(&mut px, 40, 40, 40).unwrap().scaled(200);
+        assert_eq!((cv.width, cv.height), (20, 20));
+        cv.fill(Rect::new(1, 1, 2, 2), 0xff);
+        assert_eq!(cv.get(1, 1), Some(0xff));
+    }
+    // Points 1..3 are pixels 2..6.
+    for y in 0..40 {
+        for x in 0..40 {
+            let on = (2..6).contains(&x) && (2..6).contains(&y);
+            assert_eq!(px[y * 40 + x] == 0xff, on, "({x}, {y})");
+        }
+    }
+    // The clip is in points too, and comes back as it was asked.
+    {
+        let mut cv = Canvas::new(&mut px, 40, 40, 40).unwrap().scaled(150);
+        let old = cv.set_clip(Rect::new(0, 0, 4, 4));
+        assert_eq!(cv.clip(), Rect::new(0, 0, 4, 4));
+        cv.fill(Rect::new(0, 0, 20, 20), 0x11);
+        cv.set_clip(old);
+    }
+    assert_eq!(px[5 * 40 + 5], 0x11);
+    assert_eq!(px[6 * 40 + 6], 0, "the clip ends at pixel 6");
+}
+
+#[test]
+fn high_contrast_text_is_at_least_seven_to_one() {
+    use crate::canvas::{contrast, high_contrast as hc};
+    use crate::widgets::theme as t;
+    // The ratio itself: black on white is 21 to 1.
+    assert!((2099..=2100).contains(&contrast(0, 0xff_ff_ff)));
+    let pairs = [
+        ("text on a window", t::INK, t::WIN),
+        ("quiet text on a window", t::MUTED, t::WIN),
+        ("the strip", t::BAR_INK, t::BAR),
+        ("a primary button", t::ACCENT_INK, t::ACCENT),
+        ("the keyboard ring", t::ACCENT, t::WIN),
+        ("a hovered button", t::INK, t::ACCENT_SOFT),
+        ("a button", t::INK, t::CHROME),
+        ("changed", t::OK, t::OK_BG),
+        ("needs a look", t::WARN, t::WARN_BG),
+        ("from the past", t::PAST, t::PAST_BG),
+        ("unknown", t::UNKNOWN, t::UNKNOWN_BG),
+        ("now", t::NOW, t::WIN),
+        ("a frame line", t::LINE, t::WIN),
+    ];
+    for (what, fg, bg) in pairs {
+        let c = contrast(hc(fg), hc(bg));
+        assert!(c >= 700, "{what}: {c} (from {})", contrast(fg, bg));
+    }
+    // Colours of apps' own (a chart's bars) stay readable on the ground.
+    for c in [0x22_88_cc, 0xcc_33_33, 0x33_aa_55, 0x88_88_88, 0x40_40_40] {
+        let k = contrast(hc(c), hc(t::WIN));
+        assert!(k >= 450, "{c:06x}: {k}");
+    }
+}
+
+#[test]
+fn the_screen_reader_reads_the_tree_an_app_sends() {
+    use crate::widgets::{Node, decode_tree, encode_tree, say_focused};
+    let node = |role, name: &str, value: &str, focused| Node {
+        role,
+        name: name.into(),
+        rect: Rect::default(),
+        value: value.into(),
+        focused,
+    };
+    let tree = vec![
+        node(Role::Button, "Back up now", "", false),
+        node(Role::List, "What apps can see", "", true),
+        node(Role::ListItem, "Editor · notes.txt", "", false),
+        node(Role::ListItem, "Chart · data.txt", "selected", false),
+        node(Role::TextBox, "note", "héllo", false),
+    ];
+    let b = encode_tree(&tree, 4096);
+    let back = decode_tree(&b);
+    assert_eq!(back.len(), 5);
+    assert_eq!(back[4].value, "héllo");
+    assert_eq!(
+        say_focused(&back),
+        Some((
+            Role::List,
+            "What apps can see, list, 2 items, chosen: Chart · data.txt".into()
+        ))
+    );
+    // A cut tree still reads; rubbish from an app ends it.
+    assert!(decode_tree(&b[..b.len() - 3]).len() == 4);
+    assert!(decode_tree(&[9, 9, 9, 9, 9]).is_empty());
+    assert!(encode_tree(&tree, 20).len() <= 20);
+}
+
+#[test]
+fn right_to_left_lines_read_in_the_right_order() {
+    use crate::script::{join_arabic, visual};
+    assert_eq!(visual("plain text"), "plain text");
+    assert_eq!(visual("אבג"), "גבא");
+    // A Hebrew word in an English line.
+    assert_eq!(visual("hello שלום world"), "hello םולש world");
+    // An English word in a Hebrew line; the line runs from the right.
+    assert_eq!(visual("שלום hello עולם"), "םלוע hello םולש");
+    // Numbers read left to right among Hebrew.
+    assert_eq!(visual("שנת 2024"), "2024 תנש");
+    // Brackets turn round inside a right-to-left run.
+    assert_eq!(visual("א(ב)"), "(ב)א");
+    // Arabic letters join: س at the start, لا as one sign, م alone.
+    assert_eq!(join_arabic("سلام"), "\u{FEB3}\u{FEFC}\u{FEE1}");
+    assert_eq!(visual("سلام"), "\u{FEE1}\u{FEFC}\u{FEB3}");
+    // Letters that only join backwards break the word: د then ر.
+    assert_eq!(join_arabic("بدر"), "\u{FE91}\u{FEAA}\u{FEAD}");
+    // Marks do not break a join: بَب.
+    assert_eq!(join_arabic("بَب"), "\u{FE91}\u{064E}\u{FE90}");
+}
+
+#[test]
+fn layouts_dead_keys_and_compose_give_the_right_letters() {
+    use crate::input::{Ime, Layout, Out, Sym, code, sym};
+    let text = |o: Out| match o {
+        Out::Commit(s) => s,
+        o => panic!("{o:?}"),
+    };
+    // German: the key US calls y is z; ´ then e is é; AltGr+q is @.
+    assert_eq!(sym(Layout::German, 21, false, false), Some(Sym::Char('z')));
+    assert_eq!(sym(Layout::German, 16, false, true), Some(Sym::Char('@')));
+    let mut ime = Ime::new(Layout::German);
+    assert_eq!(ime.key(13, false, false), Out::Held);
+    assert_eq!(text(ime.key(18, false, false)), "é");
+    // A dead key then space: the mark itself.
+    ime.key(13, false, false);
+    assert_eq!(text(ime.key(code::SPACE, false, false)), "´");
+    // A dead key then a letter it cannot mark: both.
+    ime.key(41, false, false);
+    assert_eq!(text(ime.key(45, false, false)), "^x");
+    // French AZERTY: the first letter key is a; the 2 key gives é.
+    assert_eq!(sym(Layout::French, 16, false, false), Some(Sym::Char('a')));
+    let mut fr = Ime::new(Layout::French);
+    assert_eq!(text(fr.key(3, false, false)), "é");
+    // ^ then e: ê.
+    fr.key(26, false, false);
+    assert_eq!(text(fr.key(18, false, false)), "ê");
+    // Spanish ñ; Italian è; UK £.
+    assert_eq!(sym(Layout::Spanish, 39, false, false), Some(Sym::Char('ñ')));
+    assert_eq!(sym(Layout::Italian, 26, false, false), Some(Sym::Char('è')));
+    assert_eq!(sym(Layout::Uk, 4, true, false), Some(Sym::Char('£')));
+    // US is as before.
+    assert_eq!(sym(Layout::Us, 30, true, false), Some(Sym::Char('A')));
+    // Compose: a e is æ; s s is ß; ' e is é; e = is €.
+    let mut us = Ime::new(Layout::Us);
+    for (keys, want) in [
+        ([30u16, 18], "æ"),
+        ([31, 31], "ß"),
+        ([40, 18], "é"),
+        ([18, 13], "€"),
+    ] {
+        assert_eq!(us.key(code::COMPOSE, false, false), Out::Held);
+        assert_eq!(us.key(keys[0], false, false), Out::Held);
+        assert_eq!(text(us.key(keys[1], false, false)), want);
+    }
+    // Keys without text pass to the window.
+    assert_eq!(us.key(code::ENTER, false, false), Out::Pass);
+}
+
+#[test]
+fn japanese_and_chinese_are_typed_from_latin_letters() {
+    use crate::input::{Ime, Layout, Mode, Out, code, kana, pinyin};
+    assert_eq!(kana("nihongo"), ("にほんご".into(), "".into()));
+    assert_eq!(kana("kitte"), ("きって".into(), "".into()));
+    assert_eq!(kana("shinbun"), ("しんぶ".into(), "n".into()));
+    assert_eq!(kana("ky"), ("".into(), "ky".into()));
+    assert_eq!(pinyin("nihao")[0], "你好");
+    assert_eq!(pinyin("shi")[0], "是");
+    // Type with the keyboard's codes: n i h o n g o, Enter.
+    let keys = |ime: &mut Ime, s: &str| {
+        let mut last = Out::Held;
+        for c in s.chars() {
+            let (code, _) = crate::input::tests_code(c);
+            last = ime.key(code, false, false);
+        }
+        last
+    };
+    let mut ime = Ime::new(Layout::Us);
+    ime.next_mode();
+    assert_eq!(ime.mode, Mode::Japanese);
+    keys(&mut ime, "nihongo");
+    assert_eq!(ime.preedit(), "にほんご");
+    assert_eq!(
+        ime.key(code::ENTER, false, false),
+        Out::Commit("にほんご".into())
+    );
+    ime.next_mode();
+    assert_eq!(ime.mode, Mode::Chinese);
+    keys(&mut ime, "nihao");
+    assert_eq!(ime.key(code::SPACE, false, false), Out::Held);
+    assert_eq!(ime.candidates[0], "你好");
+    assert_eq!(
+        ime.key(code::SPACE, false, false),
+        Out::Commit("你好".into())
+    );
+    // A digit picks a candidate: shi, then 2.
+    keys(&mut ime, "shi");
+    ime.key(code::SPACE, false, false);
+    assert_eq!(ime.key(3, false, false), Out::Commit("时".into()));
+    ime.next_mode();
+    assert_eq!(ime.mode, Mode::Latin);
 }

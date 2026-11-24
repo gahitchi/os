@@ -21,5 +21,26 @@ Check 103 plugs a 1024 by 768 screen in and out while apps run: the
 editor moves to it, fills it, comes back whole when it is unplugged, and
 returns to its place when it is plugged in again.
 
-Still to come in this step: a scale for each screen (100 %, 125 %, 150 %,
-200 %), set in Settings.
+## How big things are (scale)
+
+Each screen has its own scale. Alaya picks one from the screen's size
+(100 % for most, 150 % for one wider than 2500 pixels, 200 % wider than
+3200), or the person picks 100, 125, 150, 175 or 200 % in Settings, under
+"Size on this screen", for the screen the Settings window is on (S steps
+through the choices). The choices are kept with the person's app files
+(`scales`), one per output of the card.
+
+Apps draw in **points**. The toolkit's canvas turns points into pixels in
+one place (at 150 %, 2 points are 3 pixels; letters are drawn at the
+pixel size, so they stay sharp), and the window tells the app its size
+and the pointer in points. So a window keeps its size in points: moved to
+a screen with another scale, or when the scale changes, it grows or
+shrinks in pixels and draws again.
+
+Check 104 moves the editor and Settings to a second screen, sets 150 %
+there with three presses of S, sees the editor grow by half, and sees it
+come back to its own size on the main screen.
+
+Not yet: Alaya's own bars (the strip, the dock, title bars) stay at
+100 %; they follow in the next step. A window is at most 1280 by 800
+pixels until pictures can be bigger.

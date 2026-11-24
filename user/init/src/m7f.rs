@@ -2,6 +2,7 @@
 //! Milestone 7b checks, step one: several screens. A screen is plugged in
 //! and out while apps run: no window is lost or left where no screen
 //! shows it, and a window whose screen comes back goes back to it.
+//! Then each screen gets its own size for things (scale).
 
 use alaya_programs::desktop::{self as dk, place, role};
 
@@ -11,6 +12,8 @@ use crate::m6b::{Session, ask};
 const SLOW: u64 = 30_000;
 /// The main screen's width (QEMU's card is set to 1280 by 800).
 const MAIN_W: u64 = 1280;
+/// A window's title bar, in pixels (the window rules' TITLE).
+const TITLE_BAR: u64 = 32;
 
 pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     let ep = x.ep;
@@ -73,4 +76,75 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     pass(
         "plug and unplug a screen while apps run: no window lost, and each goes back to its screen",
     );
+
+    // ---- 104. Each screen its own scale: a window keeps its size in
+    // points on the way across.
+    let (_, layout) = x.s.screens();
+    assert!(x.s.plug(0b10, 1024, 768));
+    assert!(
+        sleep_until(SLOW, || x.s.screens() == (2, layout + 1)),
+        "the second screen did not come back"
+    );
+    if x.window_of(role::SETTINGS).is_none() {
+        x.start_app(role::SETTINGS);
+        assert!(sleep_until(SLOW, || x.window_of(role::SETTINGS).is_some()));
+    }
+    let settings = x.window_of(role::SETTINGS).unwrap();
+    let at = |w: u64| {
+        let r = ask(ep, dk::WINDOW, &[w]);
+        (r[1], r[2], r[3], r[4])
+    };
+    // The editor was on the second screen when it went: it goes back
+    // there by itself (check 103), still at 100%. (Each key wait below
+    // starts from a state the keys change, so no typing arrives late.)
+    assert!(
+        sleep_until(SLOW, || at(editor).0 >= MAIN_W),
+        "the editor did not go back to the second screen: {:?}",
+        at(editor)
+    );
+    let (ew, eh) = (at(editor).2, at(editor).3);
+    // Settings goes there too.
+    assert!(at(settings).0 < MAIN_W, "Settings is already there");
+    ask(ep, dk::RAISE, &[settings]);
+    assert!(
+        x.keys("{super+shift+right}", || at(settings).0 >= MAIN_W, SLOW),
+        "Settings did not go to the second screen"
+    );
+    crate::say!("Settings ({settings}) is at {:?}", at(settings));
+    // In Settings, S three times: Alaya's pick, 100%, 125%, 150%.
+    let title = TITLE_BAR;
+    let grown = || {
+        let f = at(editor);
+        f.2 == ew * 3 / 2 && f.3 - title == (eh - title) * 3 / 2
+    };
+    assert!(
+        x.keys("sss", grown, SLOW),
+        "at 150% the editor is {:?}, not {} by {}",
+        at(editor),
+        ew * 3 / 2,
+        title + (eh - title) * 3 / 2
+    );
+    crate::say!("at 150% the editor is {:?}", at(editor));
+    // Back on the main screen (still 100%): as it was.
+    ask(ep, dk::RAISE, &[editor]);
+    assert!(
+        x.keys(
+            "{super+shift+left}",
+            || {
+                let f = at(editor);
+                f.0 < MAIN_W && (f.2, f.3) == (ew, eh)
+            },
+            SLOW
+        ),
+        "back on the main screen the editor is {:?}",
+        at(editor)
+    );
+    // Settings back to Alaya's pick there (175%, 200%, pick), and the
+    // second screen out.
+    ask(ep, dk::RAISE, &[settings]);
+    assert!(x.keys("sss", || true, SLOW));
+    assert!(sleep_until(SLOW, || at(settings).2 <= 640));
+    assert!(x.s.plug(0, 0, 0));
+    assert!(sleep_until(SLOW, || at(settings).0 < MAIN_W && x.s.screens().0 == 1));
+    pass("each screen its own scale: a window keeps its size in points across screens");
 }

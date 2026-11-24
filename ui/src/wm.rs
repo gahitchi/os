@@ -50,6 +50,8 @@ pub struct Window {
     /// Its screen went away: which screen, where it was on it and how it
     /// sat there. When that screen comes back, so does the window.
     pub home: Option<(u32, Rect, Place)>,
+    /// The scale (percent) its content is drawn at: its screen's.
+    pub scale: i32,
 }
 
 /// One screen, in the desktop's picture (milestone 7b). The first is the
@@ -59,6 +61,9 @@ pub struct Screen {
     /// The output number on the card: the same screen keeps it.
     pub id: u32,
     pub rect: Rect,
+    /// How big things are drawn on it, in percent (100: one pixel a
+    /// point; 200: two by two).
+    pub scale: i32,
 }
 
 impl Window {
@@ -191,6 +196,7 @@ impl Wm {
             screens: alloc::vec![Screen {
                 id: 0,
                 rect: Rect::new(0, 0, width, height),
+                scale: 100,
             }],
         }
     }
@@ -216,6 +222,29 @@ impl Wm {
     /// middle.
     pub fn screen_of(&self, r: Rect) -> usize {
         self.screen_at(r.x + r.w / 2, r.y + TITLE / 2)
+    }
+
+    /// The scale of the screen a frame is on.
+    pub fn scale_of(&self, r: Rect) -> i32 {
+        self.screens.get(self.screen_of(r)).map_or(100, |s| s.scale)
+    }
+
+    /// Screen `i` gets a new scale: the windows on it keep their size in
+    /// points (so they grow or shrink in pixels) and draw again.
+    pub fn set_scale(&mut self, i: usize, scale: i32) -> Vec<Out> {
+        let mut out = Vec::new();
+        let Some(s) = self.screens.get_mut(i) else {
+            return out;
+        };
+        s.scale = scale.clamp(50, 400);
+        for w in 0..self.wins.len() {
+            let f = self.wins[w].frame;
+            self.set_frame(w, f, &mut out);
+        }
+        if self.tiling {
+            self.retile(&mut out);
+        }
+        out
     }
 
     fn area_of(&self, r: Rect) -> Rect {
@@ -247,12 +276,18 @@ impl Wm {
                 .copied();
             // Back home? (`home` holds the place on its own screen.)
             if let Some((sid, r, place)) = self.wins[i].home
-                && let Some(s) = self.screens.iter().find(|s| s.id == sid)
+                && let Some(s) = self.screens.iter().find(|s| s.id == sid).copied()
             {
                 let at = Rect::new(s.rect.x + r.x, s.rect.y + r.y, r.w, r.h);
+                // It was this size at that screen's scale.
+                let prev = core::mem::replace(&mut self.wins[i].scale, s.scale);
                 self.wins[i].home = None;
                 self.wins[i].place = place;
                 self.set_frame(i, at, &mut out);
+                if prev != s.scale {
+                    let c = self.wins[i].content();
+                    out.push(Out::Resized(self.wins[i].id, c.w, c.h));
+                }
                 continue;
             }
             match was {
@@ -343,9 +378,13 @@ impl Wm {
         r
     }
 
-    /// A new window with content `w` by `h`, in front.
+    /// A new window with content `w` by `h` points, in front: in pixels,
+    /// that much at its screen's scale.
     pub fn add(&mut self, id: u32, w: i32, h: i32) -> Vec<Out> {
-        let a = self.work_area(self.screen_at(self.pointer.0, self.pointer.1));
+        let on = self.screen_at(self.pointer.0, self.pointer.1);
+        let a = self.work_area(on);
+        let scale = self.screens.get(on).map_or(100, |s| s.scale);
+        let (w, h) = (w * scale / 100, h * scale / 100);
         let step = 28;
         let x = a.x + 60 + self.next_cascade * step;
         let y = a.y + 30 + self.next_cascade * step;
@@ -358,6 +397,7 @@ impl Wm {
             free: frame,
             group: None,
             home: None,
+            scale,
         });
         self.tiles.push(id);
         let mut out = Vec::new();
@@ -366,7 +406,7 @@ impl Wm {
         } else {
             out.push(Self::damage(frame));
             let c = self.wins.last().unwrap().content();
-            if (c.w, c.h) != (w, h) {
+            if (c.w, c.h) != (w, h) || scale != 100 {
                 out.push(Out::Resized(id, c.w, c.h));
             }
         }
@@ -472,13 +512,26 @@ impl Wm {
 
     fn set_frame(&mut self, i: usize, r: Rect, out: &mut Vec<Out>) {
         let old = self.wins[i].frame;
-        if old == r {
+        let (was, now) = (self.wins[i].scale, self.scale_of(r));
+        let mut r = r;
+        if was != now && self.wins[i].place == Place::Free {
+            // Onto a screen with another scale: the same size in points.
+            let a = self.area_of(r);
+            let w = (r.w * now / was).clamp(MIN_W, a.w);
+            let h = ((r.h - TITLE) * now / was).clamp(MIN_H, a.h - TITLE);
+            let x = r.x.clamp(a.x, (a.right() - w).max(a.x));
+            let y = r.y.clamp(a.y, (a.bottom() - h - TITLE).max(a.y));
+            r = Rect::new(x, y, w, h + TITLE);
+            self.wins[i].free = r;
+        }
+        self.wins[i].scale = now;
+        if old == r && was == now {
             return;
         }
         self.wins[i].frame = r;
         out.push(Self::damage(old));
         out.push(Self::damage(r));
-        if (old.w, old.h) != (r.w, r.h) {
+        if (old.w, old.h) != (r.w, r.h) || was != now {
             let c = self.wins[i].content();
             out.push(Out::Resized(self.wins[i].id, c.w, c.h));
         }
@@ -735,6 +788,9 @@ impl Wm {
                             self.wins[i].free = Rect::new(k.x, k.y.max(self.area.y), k.w, k.h);
                         }
                     } else if let Some(i) = self.index(id) {
+                        // Dropped on a screen with another scale?
+                        let f = self.wins[i].frame;
+                        self.set_frame(i, f, &mut out);
                         self.wins[i].free = self.wins[i].frame;
                     }
                 }

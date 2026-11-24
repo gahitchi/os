@@ -186,6 +186,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             save |= pressed;
             ui.text(14, h - 28, Face::Text, 12, &note, theme::MUTED);
             ui.finish();
+            win.tell(&ui.tree);
             win.pointer.released = false;
             draw_chart(
                 &mut cv,

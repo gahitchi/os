@@ -14,7 +14,7 @@ use alaya_sys::{Caps, Msg, MsgInfo};
 use alaya_ui::Rect;
 use alaya_ui::canvas::Canvas;
 use alaya_ui::text::Fonts;
-use alaya_ui::widgets::{Key, Pointer, us_key};
+use alaya_ui::widgets::{Key, Node, Pointer, encode_tree, us_key};
 
 use alaya_programs::desktop::{self as dk, event};
 
@@ -73,9 +73,19 @@ pub struct Window {
     ep: u64,
     pub ntfn: u64,
     pub id: u64,
+    /// The size in points: what the app draws in.
     pub width: i32,
     pub height: i32,
-    /// Pointer state for the toolkit.
+    /// Pixels per 100 points on the window's screen (milestone 7b).
+    pub scale: i32,
+    /// The size in pixels.
+    pw: i32,
+    ph: i32,
+    /// The person asked for high contrast: the canvas draws in it.
+    pub contrast: bool,
+    /// What was last handed to the screen reader (a checksum).
+    told: u64,
+    /// Pointer state for the toolkit (in points).
     pub pointer: Pointer,
 }
 
@@ -131,15 +141,72 @@ impl Window {
             id,
             width: w,
             height: h,
+            scale: 100,
+            pw: w,
+            ph: h,
+            contrast: false,
+            told: 0,
             pointer: Pointer::default(),
         };
         win.set_title(title);
         let s = call(ep, dk::SIZE, &[id]);
         if s[0] == dk::OK {
-            win.width = s[1] as i32;
-            win.height = s[2] as i32;
+            win.sized(s[1], s[2], s[3], s[4]);
         }
         Some(win)
+    }
+
+    /// The desktop says the size in pixels and the scale.
+    fn sized(&mut self, w: u64, h: u64, scale: u64, seeing: u64) {
+        self.contrast = seeing & dk::seeing::CONTRAST != 0;
+        self.scale = if (50..=400).contains(&scale) {
+            scale as i32
+        } else {
+            100
+        };
+        (self.pw, self.ph) = (w as i32, h as i32);
+        self.width = self.pw * 100 / self.scale;
+        self.height = self.ph * 100 / self.scale;
+    }
+
+    /// Pixels to points.
+    fn pt(&self, v: i32) -> i32 {
+        v * 100 / self.scale
+    }
+
+    /// How big things are drawn on this window's screen (percent), and
+    /// what the person chose there (0: Alaya picks).
+    pub fn screen_scale(&self) -> (u64, u64) {
+        let r = call(self.ep, dk::SCALE, &[self.id, u64::MAX]);
+        if r[0] == dk::OK {
+            (r[1], r[2])
+        } else {
+            (100, 0)
+        }
+    }
+
+    /// The keyboard layout and the way of typing (`dk::TYPING`): set
+    /// the layout (or `u64::MAX` to ask) → (layout, mode).
+    pub fn typing(&self, layout: u64) -> (u64, u64) {
+        let r = call(self.ep, dk::TYPING, &[self.id, layout]);
+        if r[0] == dk::OK { (r[1], r[2]) } else { (0, 0) }
+    }
+
+    /// High contrast and the screen reader, as the person has them.
+    pub fn seeing(&self) -> u64 {
+        let r = call(self.ep, dk::SEEING, &[self.id, u64::MAX]);
+        if r[0] == dk::OK { r[1] } else { 0 }
+    }
+
+    /// Turn high contrast or the screen reader on or off (Settings).
+    pub fn set_seeing(&self, bits: u64) -> bool {
+        call(self.ep, dk::SEEING, &[self.id, bits])[0] == dk::OK
+    }
+
+    /// Choose how big things are drawn on this window's screen (one of
+    /// [`dk::SCALES`]); the window hears of it as a resize.
+    pub fn set_screen_scale(&self, pct: u64) -> bool {
+        call(self.ep, dk::SCALE, &[self.id, pct])[0] == dk::OK
     }
 
     /// Tell the person something (32 bytes at most). `kind` is only a
@@ -181,15 +248,46 @@ impl Window {
         let px = unsafe {
             core::slice::from_raw_parts_mut(PICTURE as *mut u32, (dk::STRIDE * dk::MAX_H) as usize)
         };
-        Canvas::new(px, self.width, self.height, dk::STRIDE as i32).expect("picture")
+        Canvas::new(px, self.pw, self.ph, dk::STRIDE as i32)
+            .expect("picture")
+            .scaled(self.scale)
+            .with_contrast(self.contrast)
     }
 
-    /// Tell the desktop a part changed.
+    /// Hand the screen reader what the window shows (the toolkit's
+    /// tree of this pass); only a change is written.
+    pub fn tell(&mut self, tree: &[Node]) {
+        let b = encode_tree(tree, (dk::TREE_MAX - 8) as usize);
+        let sum = b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| {
+            (h ^ u64::from(x)).wrapping_mul(0x100_0000_01b3)
+        });
+        if sum == self.told {
+            return;
+        }
+        self.told = sum;
+        let at = (PICTURE + dk::TREE_AT) as *mut u8;
+        // SAFETY: the tree's place is in the mapped picture pages, after
+        // the pixels; the desktop only reads it.
+        unsafe {
+            let count = at as *mut u32;
+            let n = count.read_volatile().wrapping_add(1);
+            (at.add(4) as *mut u32).write_volatile(b.len() as u32);
+            core::ptr::copy_nonoverlapping(b.as_ptr(), at.add(8), b.len());
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            count.write_volatile(n);
+        }
+    }
+
+    /// Tell the desktop a part changed (in points).
     pub fn damage(&self, r: Rect) {
+        let s = |v: i32| (v * self.scale).div_euclid(100);
+        let (x, y) = (s(r.x), s(r.y));
+        // Rounded out, so the last pixel row of the part is in.
+        let (w, h) = (s(r.x + r.w) - x + 1, s(r.y + r.h) - y + 1);
         call(
             self.ep,
             dk::DAMAGE,
-            &[self.id, r.x as u64, r.y as u64, r.w as u64, r.h as u64],
+            &[self.id, x as u64, y as u64, w as u64, h as u64],
         );
     }
 
@@ -239,7 +337,7 @@ impl Window {
                     }
                 }
                 event::POINTER => {
-                    let (x, y) = (r[2] as i32, r[3] as i32);
+                    let (x, y) = (self.pt(r[2] as i32), self.pt(r[3] as i32));
                     let button = (r[4] & 0xff) as u8;
                     let down = r[4] >> 8 != 0;
                     let p = &mut self.pointer;
@@ -258,8 +356,7 @@ impl Window {
                     Event::Pointer { x, y, button, down }
                 }
                 event::RESIZED => {
-                    self.width = r[2] as i32;
-                    self.height = r[3] as i32;
+                    self.sized(r[2], r[3], r[4], r[5]);
                     Event::Resized(self.width, self.height)
                 }
                 event::CLOSE => Event::Close,
@@ -275,6 +372,10 @@ impl Window {
                 },
                 event::MAKE_AGAIN => Event::MakeAgain(r[2]),
                 event::MOMENT => Event::Moment(r[2]),
+                event::TEXT => match char::from_u32(r[2] as u32) {
+                    Some(c) if !c.is_control() => Event::Key(Key::Char(c)),
+                    _ => continue,
+                },
                 _ => continue,
             };
             return Some(e);

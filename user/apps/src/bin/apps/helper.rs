@@ -285,6 +285,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store, hostile: bool) 
             ask |= pressed;
             ui.text(14, h - 40, Face::Text, 12, &note, theme::MUTED);
             ui.finish();
+            win.tell(&ui.tree);
             win.pointer.released = false;
         }
         ask |= keys.contains(&Key::Enter);

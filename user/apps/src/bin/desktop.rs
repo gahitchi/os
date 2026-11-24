@@ -49,6 +49,10 @@ use alaya_ui::wm::{Out, Place, Screen, Wm};
 mod groups;
 #[path = "desktop/inbox.rs"]
 mod inbox;
+#[path = "desktop/reader.rs"]
+mod reader;
+#[path = "desktop/typing.rs"]
+mod typing;
 use groups::GroupScreen;
 
 alaya_sys::heap!();
@@ -214,6 +218,17 @@ struct Desk {
     full: (i32, i32),
     /// The screens' changes seen so far.
     layout: u64,
+    /// The scale the person chose for each screen (by its output number;
+    /// 0: Alaya picks from its size), from their app files ("scales").
+    scales: [u16; seat::MAX_SCREENS],
+    /// High contrast and the screen reader (`dk::seeing`), the person's.
+    seeing: u64,
+    /// The screen reader's state.
+    reader: reader::Reader,
+    /// Where the walk through Alaya's own parts is (Alaya key + Tab).
+    ring: Option<usize>,
+    /// The input method (milestone 7b, step 3).
+    typing: typing::Typing,
     shift: bool,
     super_key: bool,
     abs: (u32, u32),
@@ -353,6 +368,11 @@ fn main(info: &'static StartInfo) -> ! {
         frames: 0,
         full: (width, height),
         layout: load(&screen.layout),
+        scales: [0; seat::MAX_SCREENS],
+        seeing: 0,
+        reader: reader::Reader::default(),
+        ring: None,
+        typing: typing::Typing::default(),
         shift: false,
         super_key: false,
         abs: (0, 0),
@@ -406,6 +426,7 @@ fn screens_of(page: &ScreenPage) -> Vec<Screen> {
                     load(&r[2]) as i32,
                     load(&r[3]) as i32,
                 ),
+                scale: 100,
             }
         })
         .collect()
@@ -413,6 +434,17 @@ fn screens_of(page: &ScreenPage) -> Vec<Screen> {
 
 /// The main screen's size (the whole picture when the driver says
 /// nothing of screens).
+/// The scale Alaya picks for a screen nobody chose one for. The card
+/// does not say how big the screen is in centimetres, so its pixels
+/// decide: a screen this wide is almost always a dense one.
+fn auto_scale(r: Rect) -> i32 {
+    match r.w.max(r.h) {
+        3200.. => 200,
+        2500.. => 150,
+        _ => 100,
+    }
+}
+
 fn main_screen(page: &ScreenPage) -> (i32, i32) {
     match screens_of(page).first() {
         Some(s) => (s.rect.w, s.rect.h),
@@ -469,6 +501,7 @@ impl Desk {
                     }
                 }
             }
+            self.reader_poll();
             self.frame();
         }
     }
@@ -516,9 +549,12 @@ impl Desk {
     /// on them again and draw everything.
     fn read_screens(&mut self) {
         self.layout = load(&self.screen.layout);
-        let list = screens_of(self.screen);
+        let mut list = screens_of(self.screen);
         if list.is_empty() {
             return;
+        }
+        for sc in &mut list {
+            sc.scale = self.scale_for(sc);
         }
         self.full = (
             load(&self.screen.width) as i32,
@@ -542,6 +578,125 @@ impl Desk {
         self.damage_all();
     }
 
+    /// The scale screen `sc` is drawn at: the person's, or Alaya's pick.
+    fn scale_for(&self, sc: &Screen) -> i32 {
+        match self.scales.get(sc.id as usize) {
+            Some(&p) if p != 0 => i32::from(p),
+            _ => auto_scale(sc.rect),
+        }
+    }
+
+    /// High contrast or the screen reader changed: kept with the
+    /// person's app files, and every window draws again.
+    fn set_seeing(&mut self, bits: u64) {
+        if bits == self.seeing {
+            return;
+        }
+        if let Some(s) = self.mine()
+            && let Ok(a) = s.root(APPS)
+            && let Ok(f) = s.open(a, "seeing")
+        {
+            let _ = s.write_all(f, &[bits as u8]);
+        }
+        self.seeing_now(bits);
+    }
+
+    fn seeing_now(&mut self, bits: u64) {
+        let was = core::mem::replace(&mut self.seeing, bits);
+        if was == bits {
+            return;
+        }
+        say!(
+            "high contrast {}, screen reader {}",
+            if bits & dk::seeing::CONTRAST != 0 {
+                "on"
+            } else {
+                "off"
+            },
+            if bits & dk::seeing::READER != 0 {
+                "on"
+            } else {
+                "off"
+            }
+        );
+        if (was ^ bits) & dk::seeing::READER != 0 {
+            self.reader_changed();
+        }
+        let all: Vec<(u32, (i32, i32))> = self.wins.iter().map(|w| (w.id, w.content)).collect();
+        for (id, (w, h)) in all {
+            let scale = self.wm.get(id).map_or(100, |x| x.scale);
+            self.push(id, [event::RESIZED, w as u64, h as u64, scale as u64, bits]);
+        }
+        self.damage_all();
+    }
+
+    /// Read the person's scales again and draw each screen at its own.
+    fn load_scales(&mut self) {
+        self.scales = [0; seat::MAX_SCREENS];
+        if let Some(s) = self.mine()
+            && let Ok(b) = s
+                .root(APPS)
+                .and_then(|a| s.lookup(a, "scales"))
+                .and_then(|f| s.read_all(f))
+        {
+            for (i, c) in b.chunks_exact(2).take(seat::MAX_SCREENS).enumerate() {
+                let p = u16::from_le_bytes([c[0], c[1]]);
+                if dk::SCALES.contains(&u64::from(p)) {
+                    self.scales[i] = p;
+                }
+            }
+        }
+        self.apply_scales();
+    }
+
+    fn apply_scales(&mut self) {
+        for i in 0..self.wm.screens.len() {
+            let sc = self.wm.screens[i];
+            let want = self.scale_for(&sc);
+            if want != sc.scale {
+                let out = self.wm.set_scale(i, want);
+                self.apply(out);
+                say!("screen {} is drawn at {want}%", sc.id);
+            }
+        }
+    }
+
+    /// SCALE: the window's screen, at `pct` (0: Alaya picks; MAX: ask).
+    fn scale_request(&mut self, id: u32, pct: u64) -> [u64; 6] {
+        let Some(i) = self.wm.get(id).map(|w| self.wm.screen_of(w.frame)) else {
+            return [dk::NO_WINDOW, 0, 0, 0, 0, 0];
+        };
+        let out_id = self.wm.screens[i].id as usize;
+        if pct != u64::MAX {
+            say!(
+                "window {id} at {:?} asks for {pct}% on screen {i} (output {out_id})",
+                self.wm.get(id).map(|w| w.frame)
+            );
+            if !dk::SCALES.contains(&pct) || out_id >= seat::MAX_SCREENS {
+                return [dk::BAD_REQUEST, 0, 0, 0, 0, 0];
+            }
+            self.scales[out_id] = pct as u16;
+            if let Some(s) = self.mine()
+                && let Ok(a) = s.root(APPS)
+                && let Ok(f) = s.open(a, "scales")
+            {
+                let b: Vec<u8> = self.scales.iter().flat_map(|p| p.to_le_bytes()).collect();
+                let _ = s.write_all(f, &b);
+            }
+            self.apply_scales();
+            self.damage_all();
+        }
+        let sc = self.wm.screens[i];
+        [
+            dk::OK,
+            sc.scale as u64,
+            u64::from(self.scales.get(out_id).copied().unwrap_or(0)),
+            0,
+            0,
+            0,
+        ]
+    }
+
     /// Draw what changed and hand it to the screen driver, unless a frame
     /// is still on its way.
     fn frame(&mut self) {
@@ -551,7 +706,10 @@ impl Desk {
         let clip = self.dirty;
         self.dirty = Rect::default();
         let (w, h) = self.full;
-        let mut cv = Canvas::new(screen_px(w, h), w, h, w).expect("screen");
+        let contrast = self.seeing & dk::seeing::CONTRAST != 0;
+        let mut cv = Canvas::new(screen_px(w, h), w, h, w)
+            .expect("screen")
+            .with_contrast(contrast);
         let screen_rects: Vec<Rect> = self.wm.screens.iter().map(|s| s.rect).collect();
         let labels: Vec<(u32, String, u32)> = self
             .groups
@@ -740,8 +898,38 @@ impl Desk {
             Stage::Open(_) => {}
         }
         cv.set_clip(old);
-        let mut cv = Canvas::new(screen_px(w, h), w, h, w).expect("screen");
+        let mut cv = Canvas::new(screen_px(w, h), w, h, w)
+            .expect("screen")
+            .with_contrast(contrast);
         let old = cv.set_clip(clip);
+        if let Some(r) = self.ring_rect() {
+            // The walk's ring: thick and always seen.
+            cv.round_frame(r, 9, alaya_ui::widgets::theme::ACCENT);
+            cv.round_frame(r.grow(1), 10, alaya_ui::widgets::theme::ACCENT);
+            cv.round_frame(r.grow(2), 11, alaya_ui::widgets::theme::ACCENT_INK);
+        }
+        if self.reader_on() && matches!(self.stage, Stage::Open(_)) {
+            let r = self.caption_rect();
+            cv.fill(r, alaya_ui::widgets::theme::INK);
+            let text = if self.reader.before.is_empty() {
+                self.reader.said.clone()
+            } else {
+                alloc::format!("{}   ·   {}", self.reader.said, self.reader.before)
+            };
+            let (asc, lh) = self.fonts.metrics(alaya_ui::text::Face::Strong, 14);
+            self.fonts.draw(
+                &mut cv,
+                alaya_ui::text::Face::Strong,
+                14,
+                12,
+                r.y + (r.h - lh) / 2 + asc,
+                &text,
+                alaya_ui::widgets::theme::ACCENT_INK,
+            );
+        }
+        if matches!(self.stage, Stage::Open(_)) {
+            self.draw_typing(&mut cv);
+        }
         let (px, py) = self.wm.pointer;
         scene::draw_pointer(&mut cv, px, py);
         cv.set_clip(old);
@@ -827,6 +1015,9 @@ impl Desk {
                     self.group_open(g);
                     return;
                 }
+                if down && b == 1 && (self.picker_click(x, y) || self.osk_click(x, y)) {
+                    return;
+                }
                 if down && b == 1 && self.shell_click(x, y) {
                     return;
                 }
@@ -842,6 +1033,7 @@ impl Desk {
         match code {
             42 | 54 => self.shift = value != 0,
             29 | 97 => self.ctrl = value != 0,
+            100 => self.typing.altgr = value != 0,
             125 | 126 => self.super_key = value != 0,
             _ => {}
         }
@@ -903,6 +1095,54 @@ impl Desk {
             }
             return;
         }
+        if self.typing.picker.is_some() {
+            // The emoji picker takes the keys while it is open.
+            if value != 0 {
+                self.picker_key(code);
+            }
+            return;
+        }
+        if self.super_key && value == 1 && code == 57 {
+            // Alaya key + Space: the next way of typing.
+            self.next_mode();
+            return;
+        }
+        if self.super_key && value == 1 && code == 52 {
+            // Alaya key + .: the emoji picker.
+            self.picker_open();
+            return;
+        }
+        if self.super_key && value == 1 && code == 37 {
+            // Alaya key + K: the on-screen keyboard.
+            self.osk_toggle();
+            return;
+        }
+        if self.super_key && value == 1 && code == 28 {
+            // Alaya key + Enter: the screen reader on or off.
+            let b = self.seeing ^ dk::seeing::READER;
+            self.set_seeing(b);
+            return;
+        }
+        if self.super_key && value == 1 && code == 46 {
+            // Alaya key + C: high contrast on or off.
+            let b = self.seeing ^ dk::seeing::CONTRAST;
+            self.set_seeing(b);
+            return;
+        }
+        if self.super_key && value == 1 && code == 15 {
+            // Alaya key + Tab: walk Alaya's own parts.
+            self.walk(self.shift);
+            return;
+        }
+        if self.ring.is_some() {
+            // The walk takes the keys while it is on.
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.walk_key(k);
+            }
+            return;
+        }
         if self.super_key && value == 1 && code == 33 {
             // Alaya key + F: search.
             self.search_start();
@@ -945,6 +1185,15 @@ impl Desk {
             return;
         }
         if let Some(id) = self.wm.focused() {
+            // Text goes through the input method; other keys (and Ctrl
+            // shortcuts, and every release) go to the window as keys.
+            if value != 0
+                && !self.ctrl
+                && !self.paused_window(id)
+                && self.type_key(code, self.shift)
+            {
+                return;
+            }
             self.push(
                 id,
                 [
@@ -958,9 +1207,16 @@ impl Desk {
         }
     }
 
+    fn paused_window(&self, id: u32) -> bool {
+        self.wins
+            .iter()
+            .find(|w| w.id == id)
+            .is_some_and(|w| self.paused_role(w.owner))
+    }
+
     fn push(&mut self, id: u32, e: [u64; 5]) {
         // A paused task's apps are frozen: keys and the pointer wait.
-        if (e[0] == event::KEY || e[0] == event::POINTER)
+        if (e[0] == event::KEY || e[0] == event::POINTER || e[0] == event::TEXT)
             && self
                 .wins
                 .iter()
@@ -988,13 +1244,21 @@ impl Desk {
                     for w in self.wins.iter().map(|w| w.id).collect::<Vec<_>>() {
                         self.push(w, [event::FOCUS, u64::from(w == id), 0, 0, 0]);
                     }
+                    if self.ring.is_none() {
+                        self.reader_window(id);
+                    }
                 }
                 Out::Resized(id, w, h) => {
                     let (w, h) = (w.min(dk::MAX_W as i32), h.min(dk::MAX_H as i32));
                     if let Some(x) = self.wins.iter_mut().find(|x| x.id == id) {
                         x.content = (w, h);
                     }
-                    self.push(id, [event::RESIZED, w as u64, h as u64, 0, 0]);
+                    let scale = self.wm.get(id).map_or(100, |x| x.scale);
+                    let seeing = self.seeing;
+                    self.push(
+                        id,
+                        [event::RESIZED, w as u64, h as u64, scale as u64, seeing],
+                    );
                     if let Some(win) = self.wm.get(id) {
                         let p = match win.place {
                             Place::Free => "free",
@@ -1003,7 +1267,11 @@ impl Desk {
                             Place::Full => "full screen",
                             Place::Tiled => "tiled",
                         };
-                        say!("window {id} is {p}, {w} by {h}");
+                        if win.scale == 100 {
+                            say!("window {id} is {p}, {w} by {h}");
+                        } else {
+                            say!("window {id} is {p}, {w} by {h} at {}%", win.scale);
+                        }
                     }
                 }
                 Out::Close(id) => {
@@ -1252,6 +1520,16 @@ impl Desk {
             say!("the look is {}", look.name());
         }
         self.load_groups();
+        self.load_scales();
+        self.load_typing();
+        let seeing = s
+            .root(APPS)
+            .and_then(|a| s.lookup(a, "seeing"))
+            .and_then(|f| s.read_all(f))
+            .ok()
+            .and_then(|b| b.first().copied())
+            .map_or(0, u64::from);
+        self.seeing_now(seeing);
     }
 
     /// A click on the dock or a group label; true if it was one.
@@ -2542,7 +2820,11 @@ impl Desk {
             dk::SIZE => match find(self, w[0]) {
                 Some(i) => {
                     let (cw, ch) = self.wins[i].content;
-                    ([dk::OK, cw as u64, ch as u64, 0, 0, 0], 0)
+                    let scale = self.wm.get(self.wins[i].id).map_or(100, |x| x.scale);
+                    (
+                        [dk::OK, cw as u64, ch as u64, scale as u64, self.seeing, 0],
+                        0,
+                    )
                 }
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
             },
@@ -2551,6 +2833,28 @@ impl Desk {
                     let id = self.wins[i].id;
                     self.close_window(id);
                     ([dk::OK, 0, 0, 0, 0, 0], 0)
+                }
+                None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
+            },
+            dk::SEEING if owner != 0 => match find(self, w[0]) {
+                Some(_) => {
+                    if w[1] != u64::MAX {
+                        self.set_seeing(w[1] & (dk::seeing::CONTRAST | dk::seeing::READER));
+                    }
+                    ([dk::OK, self.seeing, 0, 0, 0, 0], 0)
+                }
+                None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
+            },
+            dk::TYPING if owner == 0 => (self.typing_request(w[1]), 0),
+            dk::TYPED if owner == 0 => (self.typed(), 0),
+            dk::TYPING => match find(self, w[0]) {
+                Some(_) => (self.typing_request(w[1]), 0),
+                None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
+            },
+            dk::SCALE => match find(self, w[0]) {
+                Some(i) => {
+                    let id = self.wins[i].id;
+                    (self.scale_request(id, w[1]), 0)
                 }
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
             },
@@ -2588,6 +2892,29 @@ impl Desk {
             }
             dk::GROUP_GO if owner == 0 => ([self.group_go(w[0] as u32), 0, 0, 0, 0, 0], 0),
             dk::BRIEF_LINE if owner == 0 => self.brief_line(w[0] as usize),
+            dk::READER if owner == 0 => {
+                let mut b = [0u8; 16];
+                let n = self.reader.said.len().min(16);
+                b[..n].copy_from_slice(&self.reader.said.as_bytes()[..n]);
+                let word = |k: usize| u64::from_le_bytes(b[k * 8..k * 8 + 8].try_into().unwrap());
+                (
+                    [
+                        dk::OK,
+                        self.reader.spoken,
+                        self.reader.role,
+                        self.reader.files,
+                        word(0),
+                        word(1),
+                    ],
+                    0,
+                )
+            }
+            dk::SEEING if owner == 0 => {
+                if w[1] != u64::MAX {
+                    self.set_seeing(w[1] & (dk::seeing::CONTRAST | dk::seeing::READER));
+                }
+                ([dk::OK, self.seeing, 0, 0, 0, 0], 0)
+            }
             dk::GROUP_SCREEN if owner == 0 => ([self.group_open(w[0] as u32), 0, 0, 0, 0, 0], 0),
             dk::MAKE_AGAIN if owner == role::FILES || owner == 0 => {
                 ([self.make_again(w[0]), 0, 0, 0, 0, 0], 0)
@@ -2642,6 +2969,7 @@ impl Desk {
                 let n = dock_items(self.look).count();
                 let (yes, no) = scene::question_buttons(self.width, self.height);
                 let r = match w[0] {
+                    k if k >= dk::places::KEY => self.typing_place(k),
                     dk::places::UNDO => Some(scene::strip_buttons()[0]),
                     dk::places::HAPPENED => Some(scene::strip_buttons()[1]),
                     dk::places::YES => self.ask.as_ref().map(|_| yes),

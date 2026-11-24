@@ -1053,6 +1053,48 @@ pub mod desktop {
     /// kind wait (now, about, can wait, just so you know) (the first
     /// program only).
     pub const INBOX: u64 = 32;
+    /// SCALE: window, percent → status, the scale now, what was chosen:
+    /// how big things are drawn on the screen that window is on (0:
+    /// Alaya picks from the screen's size; `u64::MAX`: only ask). Every
+    /// window there keeps its size in points and draws again.
+    pub const SCALE: u64 = 33;
+    /// The scales a person can choose, in percent (0: Alaya picks).
+    pub const SCALES: [u64; 6] = [0, 100, 125, 150, 175, 200];
+    /// SEEING: window, bits ([`seeing`]) or `u64::MAX` to only ask →
+    /// status, the bits now: high contrast and the screen reader, for
+    /// the person (kept with their app files). Every window hears of a
+    /// change as a resize of the same size, and draws again.
+    pub const SEEING: u64 = 34;
+    pub mod seeing {
+        /// Strong colours: black ground, white text, yellow focus.
+        pub const CONTRAST: u64 = 1;
+        /// The screen reader: says what has the keyboard.
+        pub const READER: u64 = 2;
+    }
+    /// READER: → status, how many times it spoke, the role of what has
+    /// the keyboard (`reader_role`), how many of the person's files the
+    /// window's app can see, and the first 16 bytes of what it said
+    /// (the first program only, for checks).
+    pub const READER: u64 = 35;
+    /// TYPING: window, layout (`alaya_ui::input::Layout` code) or
+    /// `u64::MAX` to only ask → status, the layout, the input mode
+    /// (Latin, Japanese, Chinese). Kept with the person's app files.
+    pub const TYPING: u64 = 36;
+    /// TYPED: → status, how many characters the input method handed to
+    /// apps, then the last 32 bytes of them (the first program only, for
+    /// checks).
+    pub const TYPED: u64 = 37;
+    pub mod reader_role {
+        pub const WINDOW: u64 = 0;
+        pub const LABEL: u64 = 1;
+        pub const BUTTON: u64 = 2;
+        pub const TEXT_BOX: u64 = 3;
+        pub const LIST: u64 = 4;
+        pub const LIST_ITEM: u64 = 5;
+        pub const GROUP: u64 = 6;
+        /// Something of Alaya's own: the strip, the dock, a group label.
+        pub const SHELL: u64 = 7;
+    }
     /// The decision inbox's kinds.
     pub mod inbox {
         pub const NOW: u64 = 0;
@@ -1093,6 +1135,10 @@ pub mod desktop {
         /// The question's buttons, while one is asked.
         pub const YES: u64 = 40;
         pub const NO: u64 = 41;
+        /// The on-screen keyboard's key with this key code, while shown.
+        pub const KEY: u64 = 0x100;
+        /// A cell of the emoji picker, while shown.
+        pub const EMOJI: u64 = 0x200;
     }
 
     /// What the desktop shows.
@@ -1156,6 +1202,10 @@ pub mod desktop {
         /// Show this moment (a commit) on the timeline: a receipt of
         /// "since you left" (milestone 7a).
         pub const MOMENT: u64 = 9;
+        /// Typed text, from the input method (milestone 7b): a character.
+        /// Apps get text only this way; the keys that make it stay with
+        /// the desktop.
+        pub const TEXT: u64 = 10;
     }
 
     /// Places, as WINDOW reports them.
@@ -1178,6 +1228,12 @@ pub mod desktop {
     pub const STRIDE: u64 = 1280;
     pub const MAX_W: u64 = 1280;
     pub const MAX_H: u64 = 800;
+    /// Where a window's accessibility tree is, in its picture pages,
+    /// after the pixels: a change count (u32), the length (u32), then
+    /// the tree (`alaya_ui::widgets::encode_tree`). The screen reader
+    /// reads it there; nothing else does.
+    pub const TREE_AT: u64 = STRIDE * MAX_H * 4;
+    pub const TREE_MAX: u64 = 16 << 10;
 
     /// Where the desktop finds what the first program shares with it. All
     /// of it, and the window pictures, sit within one 512 GiB part of the
@@ -1192,7 +1248,7 @@ pub mod desktop {
     pub const PICTURES: u64 = 0x5300_4000_0000;
     pub const PICTURE_STEP: u64 = 0x80_0000;
     /// Each font gets this much address space.
-    pub const FONT_STEP: u64 = 0x10_0000;
+    pub const FONT_STEP: u64 = 0x20_0000;
 
     /// The store's transfer pages of the program's channel (desktop and
     /// apps).
@@ -1255,6 +1311,8 @@ pub mod desktop {
                         "home" => 102,
                         "end" => 107,
                         "delete" => 111,
+                        "space" => 57,
+                        "compose" => 127,
                         _ => {
                             let mut cs = n.chars();
                             return match (cs.next(), cs.next()) {
