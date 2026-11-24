@@ -106,6 +106,20 @@ impl Pick {
     }
 }
 
+/// The search box (Alaya key + F, or the strip's Search button): the
+/// person's documents by name and text, and what they used to say.
+/// Opening a result hands that one file to the text editor.
+struct Search {
+    words: String,
+    found: Vec<st::Found>,
+    chosen: usize,
+}
+
+/// How many results the search box shows, and how many kept moments it
+/// looks back through.
+const SEARCH_MOST: u64 = 40;
+const SEARCH_MOMENTS: u64 = 48;
+
 /// How long a note stays in the strip.
 const NOTE_MS: u64 = 8000;
 
@@ -168,6 +182,11 @@ struct Desk {
     ask: Option<Ask>,
     /// An Open or Save window is up.
     pick: Option<Pick>,
+    /// The search box is up.
+    search: Option<Search>,
+    /// A file handed over from the search box, for an app that is still
+    /// starting: (role, the event its window gets).
+    hand: Option<(u64, [u64; 5])>,
     /// The loose group each app's window is in (by role), to put it back.
     groups_of: Vec<(u64, u32)>,
 }
@@ -278,6 +297,8 @@ fn main(info: &'static StartInfo) -> ! {
         note_until: 0,
         ask: None,
         pick: None,
+        search: None,
+        hand: None,
         groups_of: Vec::new(),
     };
     d.tick();
@@ -479,14 +500,45 @@ impl Desk {
                 if p.save { "save" } else { "open" }
             )
         });
-        let picker = self.pick.as_ref().map(|p| Picker {
-            title: pick_title.as_deref().unwrap_or(""),
-            rows: &pick_refs,
-            chosen: p.chosen,
-            name: p.save.then_some(p.name.as_str()),
-            lasts: p.choices()[p.lasts].words(),
-            ok: if p.save { "Save here" } else { "Hand it over" },
-        });
+        let pick_foot = self
+            .pick
+            .as_ref()
+            .map(|p| alloc::format!("Keeps it: {}", p.choices()[p.lasts].words()));
+        let search_rows: Vec<String> = self
+            .search
+            .as_ref()
+            .map(|q| q.found.iter().map(found_row).collect())
+            .unwrap_or_default();
+        let search_refs: Vec<&str> = search_rows.iter().map(|r| r.as_str()).collect();
+        let picker = match (&self.pick, &self.search) {
+            (Some(p), _) => Some(Picker {
+                title: pick_title.as_deref().unwrap_or(""),
+                hint: "Only what you pick is handed over. Tab: how long it keeps it.",
+                rows: &pick_refs,
+                chosen: p.chosen,
+                mark: !p.save,
+                field: p.save.then_some(("Name", p.name.as_str())),
+                foot: pick_foot.as_deref().unwrap_or(""),
+                empty: "No documents yet.",
+                ok: if p.save { "Save here" } else { "Hand it over" },
+            }),
+            (None, Some(q)) => Some(Picker {
+                title: "Search your documents",
+                hint: "Names, words, and what files used to say. Only what you open is handed over.",
+                rows: &search_refs,
+                chosen: q.chosen,
+                mark: true,
+                field: Some(("Find", q.words.as_str())),
+                foot: "Enter opens it in the text editor. Older versions open read only.",
+                empty: if q.words.trim().is_empty() {
+                    "Type what to look for."
+                } else {
+                    "Nothing found, now or in the past."
+                },
+                ok: "Open",
+            }),
+            _ => None,
+        };
         let desk = Desktop {
             clock: &self.clock,
             status,
@@ -618,12 +670,25 @@ impl Desk {
             }
             return;
         }
+        if self.search.is_some() {
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.search_key(k);
+            }
+            return;
+        }
         if self.ask.is_some() {
             // A question is asked: Enter answers yes, Escape no; nothing
             // else reaches the apps meanwhile.
             if value == 1 && (code == 28 || code == 1) {
                 self.answer(code == 28);
             }
+            return;
+        }
+        if self.super_key && value == 1 && code == 33 {
+            // Alaya key + F: search.
+            self.search_start();
             return;
         }
         if self.super_key && value == 1 && code == 44 {
@@ -978,6 +1043,21 @@ impl Desk {
             }
             return true;
         }
+        if let Some(q) = &mut self.search {
+            let (ok, no) = scene::picker_buttons(self.width, self.height);
+            let first = scene::picker_first(q.chosen);
+            if ok.contains(x, y) {
+                self.search_done(true);
+            } else if no.contains(x, y) {
+                self.search_done(false);
+            } else if let Some(i) = scene::picker_row_at(self.width, self.height, x, y, first)
+                && i < q.found.len()
+            {
+                q.chosen = i;
+                self.damage_all();
+            }
+            return true;
+        }
         if self.ask.is_some() {
             // Only the question's buttons answer while it is asked.
             let (yes, no) = scene::question_buttons(self.width, self.height);
@@ -988,7 +1068,11 @@ impl Desk {
             }
             return true;
         }
-        let [undo, happened] = scene::strip_buttons();
+        let [undo, happened, find] = scene::strip_buttons();
+        if find.contains(x, y) {
+            self.search_start();
+            return true;
+        }
         if undo.contains(x, y) {
             self.undo_last();
             return true;
@@ -1401,6 +1485,100 @@ impl Desk {
         );
     }
 
+    fn search_start(&mut self) {
+        if self.locked() || self.mine().is_none() || self.pick.is_some() || self.ask.is_some() {
+            return;
+        }
+        if self.search.is_none() {
+            say!("search opened");
+            self.search = Some(Search {
+                words: String::new(),
+                found: Vec::new(),
+                chosen: 0,
+            });
+        }
+        self.damage_all();
+    }
+
+    fn search_key(&mut self, k: Key) {
+        let Some(q) = &mut self.search else { return };
+        let mut again = false;
+        match k {
+            Key::Enter => return self.search_done(true),
+            Key::Escape => return self.search_done(false),
+            Key::Up => q.chosen = q.chosen.saturating_sub(1),
+            Key::Down => q.chosen = (q.chosen + 1).min(q.found.len().saturating_sub(1)),
+            Key::Backspace => again = q.words.pop().is_some(),
+            Key::Char(c) if q.words.len() < 64 && (c.is_ascii_graphic() || c == ' ') => {
+                q.words.push(c);
+                again = true;
+            }
+            _ => {}
+        }
+        if again {
+            // Look again as the person types: the store looks through the
+            // files themselves, there is no index to keep.
+            let words = q.words.clone();
+            let found = match self.mine() {
+                Some(s) if !words.trim().is_empty() => s
+                    .search(&words, SEARCH_MOST, SEARCH_MOMENTS)
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            if let Some(q) = &mut self.search {
+                q.found = found;
+                q.chosen = 0;
+            }
+        }
+        self.damage_all();
+    }
+
+    /// Open the chosen result: hand that one file to the text editor
+    /// (now and live, or the older version, read only).
+    fn search_done(&mut self, ok: bool) {
+        let Some(q) = self.search.take() else { return };
+        self.damage_all();
+        let Some(f) = q.found.get(q.chosen).filter(|_| ok) else {
+            return;
+        };
+        let Some(s) = self.mine() else { return };
+        let app = fs::app_id(role::EDITOR);
+        let (lasts, write) = match f.past {
+            Some((cn, _)) => (Lasts::Pinned(cn), false),
+            None => (Lasts::Live, true),
+        };
+        if let Err(e) = s.grant(app, f.file, write, lasts) {
+            say!("could not hand it over: {e}");
+            return;
+        }
+        say!(
+            "search for \"{}\": handed {} to {}, {}",
+            q.words.trim(),
+            f.name,
+            st::app_name(app),
+            lasts.words()
+        );
+        let e = [event::PICKED, f.file, 0, write as u64, lasts.code().0];
+        match self
+            .wins
+            .iter()
+            .rev()
+            .find(|w| w.owner == role::EDITOR)
+            .map(|w| w.id)
+        {
+            Some(id) => {
+                self.push(id, e);
+                let mut out = Vec::new();
+                self.wm.raise(id, &mut out);
+                self.apply(out);
+            }
+            None => {
+                self.hand = Some((role::EDITOR, e));
+                self.show_app(role::EDITOR, "Text editor");
+            }
+        }
+    }
+
     fn forget(&mut self, owner: u64) {
         let ids: Vec<u32> = self
             .wins
@@ -1507,6 +1685,12 @@ impl Desk {
                 let out = self.wm.add(id, cw, ch);
                 self.apply(out);
                 say!("window {id} opened, {cw} by {ch}");
+                if let Some((r, e)) = self.hand
+                    && r == owner
+                {
+                    self.hand = None;
+                    self.push(id, e);
+                }
                 ([dk::OK, u64::from(id), 0, 0, 0, 0], 0)
             }
             dk::PICK => ([self.pick_start(owner, &w), 0, 0, 0, 0, 0], 0),
@@ -1682,7 +1866,13 @@ impl Desk {
                     self.frames,
                     u64::from(self.ask.is_some())
                         | (self.note.len().min(1 << 20) as u64) << 1
-                        | u64::from(self.pick.is_some()) << 62,
+                        | u64::from(self.pick.is_some()) << 62
+                        | (self
+                            .search
+                            .as_ref()
+                            .map_or(0, |q| 1 + q.found.len().min(255))
+                            as u64)
+                            << 52,
                 ],
                 0,
             ),
@@ -1752,5 +1942,27 @@ fn capital(s: &str) -> String {
     match c.next() {
         Some(f) => f.to_uppercase().chain(c).collect(),
         None => String::new(),
+    }
+}
+
+/// One search result, as a row.
+fn found_row(f: &st::Found) -> String {
+    let what = match (&f.at, f.line.trim()) {
+        (None, _) => String::from("its name"),
+        (Some(_), l) => alloc::format!("\u{201c}{l}\u{201d}"),
+    };
+    match f.past {
+        None => alloc::format!("{}   ·   {what}", f.name),
+        Some((_, t)) => alloc::format!(
+            "{}   ·   {what}   ·   {} {}:{:02}",
+            f.name,
+            if f.gone {
+                "removed since; was there at"
+            } else {
+                "it said this at"
+            },
+            t / 3600 % 24,
+            t / 60 % 60
+        ),
     }
 }

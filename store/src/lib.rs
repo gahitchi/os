@@ -31,6 +31,7 @@ pub mod format;
 pub mod grants;
 pub mod history;
 pub mod made;
+pub mod search;
 pub mod side;
 pub mod space;
 pub mod tree;

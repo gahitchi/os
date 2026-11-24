@@ -3,7 +3,8 @@
 //! of a person's documents, only what the person handed it in Alaya's
 //! Open and Save windows, and what it made itself; each hand-over lasts
 //! as long as the person said (live, one version, until a time, until
-//! the app closes).
+//! the app closes). Search finds names, words and what files used to
+//! say, and hands over only the result the person opens.
 
 use alaya_programs::desktop::{self as dk, role};
 use alaya_programs::files::{self as fs, DOCS, st};
@@ -290,6 +291,76 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "an app kept a forgotten file"
     );
     pass("forget for good: gone at once, an hour to keep it, then no version can be read");
+
+    // ---- 90. Search: names, words, and what files used to say.
+    let plants = me.create(docs, "plants.txt").expect("plants.txt");
+    let said = b"water the ferns daily\n";
+    me.buf()[..said.len()].copy_from_slice(said);
+    assert!(me.call(fs::WRITE, &[plants, 0, said.len() as u64])[0] == st::OK);
+    me.call(fs::SAVE, &[]);
+    assert!(me.call(fs::TRUNCATE, &[plants, 0])[0] == st::OK);
+    me.buf()[..9].copy_from_slice(b"all done\n");
+    assert!(me.call(fs::WRITE, &[plants, 0, 9])[0] == st::OK);
+    let now_cn = me.call(fs::SAVE, &[])[1];
+    // The store finds it only in the older version, in either case.
+    me.buf()[..5].copy_from_slice(b"FERNS");
+    let r = me.call(fs::SEARCH, &[5, 10, 48]);
+    let row = |k: usize| u64::from_le_bytes(me.buf()[8 * k..8 * k + 8].try_into().unwrap());
+    assert!(
+        r[0] == st::OK && r[1] == 1 && row(0) == plants && row(3) != 0 && row(3) < now_cn,
+        "search did not find what plants.txt used to say: {r:?}"
+    );
+    // A forgotten file is never found, and apps cannot search at all.
+    me.buf()[..6].copy_from_slice(b"secret");
+    let r = me.call(fs::SEARCH, &[6, 10, 48]);
+    assert!(r[0] == st::OK && r[1] == 0, "search found a forgotten file");
+    them.buf()[..5].copy_from_slice(b"ferns");
+    assert!(
+        them.call(fs::SEARCH, &[5, 10, 48])[0] != st::OK,
+        "an app searched the person's documents"
+    );
+    // By hand: Alaya key + F, type, Enter. The editor gets that older
+    // version, read only, and nothing else.
+    let editor = x.window_of(role::EDITOR).expect("the editor's window");
+    ask(ep, dk::RAISE, &[editor]);
+    let shown = || match ask(ep, dk::STATE, &[])[5] >> 52 & 0x1ff {
+        0 => None,
+        n => Some(n - 1),
+    };
+    assert!(
+        x.keys("{super+f}", || shown().is_some(), SLOW),
+        "no search box"
+    );
+    assert!(
+        x.keys("ferns", || shown() == Some(1), SLOW),
+        "the search box did not find plants.txt: {:?}",
+        shown()
+    );
+    crate::say!("screenshot search");
+    let opened = || {
+        let mut b = [0u8; 512];
+        shown().is_none()
+            && return_point_of(&me, &mut b).is_some_and(|(_, len, _, n)| {
+                &b[48..48 + n.min(14)] == b"Old plants.txt"
+                    && b[48 + n..48 + n + len.min(64)].starts_with(b"water the ferns")
+            })
+    };
+    assert!(
+        x.keys("{enter}", opened, SLOW),
+        "the editor did not open the older plants.txt"
+    );
+    let r = me.call(fs::GRANTS, &[editor_app]);
+    let pinned = (0..r[1] as usize).any(|i| {
+        let o = fs::GRANT_BYTES * i;
+        let w =
+            |k: usize| u64::from_le_bytes(me.buf()[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+        w(1) == plants && w(2) & 0xff == 1 && w(2) >> 8 & 1 == 0
+    });
+    assert!(
+        pinned,
+        "the editor was not handed that one version, read only"
+    );
+    pass("search finds names, words and what files used to say; it hands over only what you open");
 }
 
 /// Backspace `erase` times, then type `name` and Enter.

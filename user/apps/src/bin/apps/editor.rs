@@ -101,7 +101,12 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         .as_ref()
         .map_or(String::from(FIRST), |(n, _, _)| n.clone());
     // The document it had open, if it still may; else its own first one.
+    // Text that belongs to no document it may change (an older version
+    // a search found) stays without one: Ctrl+S asks for a name.
     let mut file = store.lookup(docs, &name).ok().or_else(|| {
+        if back.as_ref().is_some_and(|b| b.2) {
+            return None;
+        }
         name = String::from(FIRST);
         store.open(docs, FIRST).ok()
     });
@@ -183,9 +188,32 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     note = String::from("Nothing was handed over.");
                     changed = true;
                 }
+                Event::Picked { save: false, .. } if dirty => {
+                    note = String::from("Save first (Ctrl+S), then open it again.");
+                    changed = true;
+                }
                 Event::Picked {
                     file: Some(f),
                     save: false,
+                    pinned: true,
+                } => {
+                    // An older version, found by search: read only. Ctrl+S
+                    // keeps it as a new document.
+                    if let Ok(b) = store.read_all(*f) {
+                        edit = TextEdit::new(&String::from_utf8_lossy(&b));
+                        let was = name_of(&store, docs, *f).unwrap_or(String::from("a document"));
+                        name = format!("Old {was}");
+                        file = None;
+                        note = format!("As {was} was then. Ctrl+S keeps it under a new name.");
+                        changed = true;
+                        dirty = true;
+                        say!("opened an older version of {}", was);
+                    }
+                }
+                Event::Picked {
+                    file: Some(f),
+                    save: false,
+                    ..
                 } => {
                     if let Ok(b) = store.read_all(*f) {
                         edit = TextEdit::new(&String::from_utf8_lossy(&b));
@@ -200,6 +228,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 Event::Picked {
                     file: Some(f),
                     save: true,
+                    ..
                 } => {
                     let ok =
                         store.write_all(*f, edit.text.as_bytes()).is_ok() && store.save().is_ok();

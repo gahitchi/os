@@ -525,6 +525,13 @@ pub mod files {
     pub const KEEP_FORGOTTEN: u64 = 48;
     /// The grace time before a document is forgotten for good.
     pub const FORGET_GRACE: u64 = 3600;
+    /// SEARCH: words length (the words in the transfer pages), most,
+    /// moments to look back through → count; [`SEARCH_BYTES`] each: file,
+    /// folder, where (u64::MAX: the name matched), the moment it was found
+    /// in (0: now), that moment's time, gone, name length, line length,
+    /// then the name (32 bytes) and the line (64 bytes). Not for apps that
+    /// see only what they are handed: they get the person's pick instead.
+    pub const SEARCH: u64 = 49;
 
     pub const NAME2: usize = 64;
     pub const LABEL: usize = 16;
@@ -534,6 +541,7 @@ pub mod files {
     pub const PAST_ENTRY_BYTES: usize = 64;
     pub const STORY_BYTES: usize = 32;
     pub const GRANT_BYTES: usize = 32;
+    pub const SEARCH_BYTES: usize = 160;
     pub const ACTION_MS: u64 = 2000;
 
     /// Kinds of action (`alaya_store::history::act`).
@@ -773,8 +781,9 @@ pub mod desktop {
     pub const TILING: u64 = 8;
     /// STATE: → windows, focused window, tiling, frames drawn, whether a
     /// question is asked (1) and what the strip says now (its length,
-    /// << 1; milestone 7), and whether the Open or Save window is up
-    /// (1 << 62).
+    /// << 1; milestone 7), whether the Open or Save window is up
+    /// (1 << 62), and the search box: 0 when it is not up, else 1 + how
+    /// many results it shows (<< 52, 9 bits).
     pub const STATE: u64 = 9;
     /// WINDOW: window → status, x, y, width, height, place.
     pub const WINDOW: u64 = 10;

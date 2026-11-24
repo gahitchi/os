@@ -874,6 +874,39 @@ impl Server<'_> {
                 }
                 Restored::Blocked(_) => return Err(Error::Exists),
             },
+            fs::SEARCH => {
+                let len = w[0] as usize;
+                if len == 0 || len > 64 {
+                    return Err(Error::BadRequest);
+                }
+                let q = xfer(ch)[..len].to_vec();
+                let most = (w[1] as usize).min(fs::XFER_BYTES / fs::SEARCH_BYTES);
+                let found = s.search(p, &q, most, w[2] as usize)?;
+                let buf = xfer(ch);
+                for (i, f) in found.iter().enumerate() {
+                    let o = fs::SEARCH_BYTES * i;
+                    let past = f.past.unwrap_or(alaya_store::Moment { cn: 0, time: 0 });
+                    put_words(
+                        buf,
+                        o,
+                        &[
+                            f.file.0,
+                            f.dir.0,
+                            f.at.unwrap_or(u64::MAX),
+                            past.cn,
+                            past.time,
+                            f.gone as u64,
+                            f.name.len() as u64,
+                            f.line.len() as u64,
+                        ],
+                    );
+                    buf[o + 64..o + 160].fill(0);
+                    buf[o + 64..o + 64 + f.name.len()].copy_from_slice(&f.name);
+                    let l = f.line.len().min(64);
+                    buf[o + 96..o + 96 + l].copy_from_slice(&f.line[..l]);
+                }
+                alloc::vec![found.len() as u64]
+            }
             fs::FAKE_HISTORY => {
                 let made = s.fake_history(p, app, w[0], w[1].max(1), now)?;
                 alloc::vec![made]

@@ -59,7 +59,7 @@ version only, own files stay own and survive a restart, forgetting takes a
 file back from every app, and forgetting waits, can be cancelled, then
 leaves old versions unreadable.
 
-Inside Alaya (`cargo xtask test`), checks 85 to 89:
+Inside Alaya (`cargo xtask test`), checks 85 to 90:
 
 | Check | What it shows |
 | --- | --- |
@@ -68,10 +68,31 @@ Inside Alaya (`cargo xtask test`), checks 85 to 89:
 | 87 | The text editor's Open window hands over only what is picked; Escape hands over nothing; the Save window saves a copy under a new name |
 | 88 | Settings lists what each app can see and takes it back |
 | 89 | Forget for good: gone at once, kept with K, then no version can be read and no app has it |
+| 90 | Search finds a sentence that is no longer in a file, never a forgotten file; an app cannot search; Alaya key + F, typing and Enter hand the editor that one older version, read only |
+
+## Search that remembers
+
+Alaya key + F (or **Search** on the strip) opens Alaya's search box. As
+you type, the store looks through your documents: names first, then the
+words in them, and then, new here, **what they used to say**. If a
+sentence was deleted from a file, or the file was removed, search still
+finds it in the moments history keeps ("it said this at 14:02"), and
+Enter opens that older version read only in the text editor; Ctrl+S
+keeps it under a new name.
+
+- **No index.** Search reads the files when asked. There is no second
+  copy of your words to lock, leak or go stale.
+- **Apps never search.** Only Alaya's own programs may ask. The result
+  you open is handed to the editor like a pick in the Open window: live
+  for a document as it is now, one version read only for an older one.
+- **Forgotten means forgotten.** A forgotten file's key is gone, so its
+  old versions are not found.
+- **Your files only.** Each person's search sees only their own
+  documents.
 
 ## What is not there yet
 
-- Search, backup and the private-file guard are the rest of step 2.
+- Backup and the private-file guard are the rest of step 2.
 - App files (settings, return points) are not yet kept apart per app.
 - The chart maker still finds its numbers by name (it made them); it
   gets an Open window when it can draw charts of other files.

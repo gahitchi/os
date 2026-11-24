@@ -51,9 +51,11 @@ pub enum Event {
     Focus(bool),
     /// The Open or Save window closed: the document handed over (None:
     /// the person cancelled), and whether it was a save.
+    /// `pinned`: one older version, read only (a search found it there).
     Picked {
         file: Option<u64>,
         save: bool,
+        pinned: bool,
     },
 }
 
@@ -227,6 +229,7 @@ impl Window {
                 event::PICKED => Event::Picked {
                     file: (r[2] != 0).then_some(r[2]),
                     save: r[3] != 0,
+                    pinned: r[5] == 1,
                 },
                 _ => continue,
             };

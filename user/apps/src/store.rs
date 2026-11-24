@@ -119,6 +119,22 @@ pub struct Story {
 }
 
 /// How long a hand-over lasts (as `alaya_store::grants::Lasts`).
+/// One search result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    pub file: u64,
+    pub dir: u64,
+    pub name: String,
+    /// Where the words start; None when the name matched.
+    pub at: Option<u64>,
+    /// The line around the words.
+    pub line: String,
+    /// Found only in an older version: (moment, its time in seconds).
+    pub past: Option<(u64, u64)>,
+    /// The file was removed since (it can be put back).
+    pub gone: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasts {
     Live,
@@ -645,6 +661,38 @@ impl Store {
     /// Keep a document that was waiting to be forgotten.
     pub fn keep_forgotten(&self, f: u64) -> Result<(), Status> {
         self.call(fs::KEEP_FORGOTTEN, &[f]).map(|_| ())
+    }
+
+    /// Search the person's documents (Alaya's own programs only): names,
+    /// text, and what files said at up to `moments` older moments.
+    pub fn search(&self, words: &str, most: u64, moments: u64) -> Result<Vec<Found>, Status> {
+        let q = words.trim().as_bytes();
+        if q.is_empty() || q.len() > 64 {
+            return Err(st::BAD_REQUEST);
+        }
+        xfer()[..q.len()].copy_from_slice(q);
+        let n = self.call(fs::SEARCH, &[q.len() as u64, most, moments])?[1] as usize;
+        let b = xfer();
+        Ok((0..n)
+            .map(|i| {
+                let o = fs::SEARCH_BYTES * i;
+                let w =
+                    |j: usize| u64::from_le_bytes(b[o + 8 * j..o + 8 * j + 8].try_into().unwrap());
+                let text = |at: usize, len: u64, most: usize| {
+                    String::from_utf8_lossy(&b[o + at..o + at + (len as usize).min(most)])
+                        .into_owned()
+                };
+                Found {
+                    file: w(0),
+                    dir: w(1),
+                    at: (w(2) != u64::MAX).then_some(w(2)),
+                    past: (w(3) != 0).then_some((w(3), w(4))),
+                    gone: w(5) != 0,
+                    name: text(64, w(6), 32),
+                    line: text(96, w(7), 64),
+                }
+            })
+            .collect())
     }
 
     /// An app's last window closed (the desktop only).

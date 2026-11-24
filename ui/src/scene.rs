@@ -55,18 +55,24 @@ pub struct Desktop<'a> {
     pub picker: Option<&'a Picker<'a>>,
 }
 
-/// The Open or Save window. The app asked; Alaya, not the app, shows
-/// the person's documents and hands over only the one picked, for as
-/// long as the person says.
+/// The Open or Save window, and the search box: Alaya, not an app,
+/// shows the person's documents and hands over only the one picked, for
+/// as long as the person says.
 pub struct Picker<'a> {
     /// "The text editor wants to open a document".
     pub title: &'a str,
+    /// The line under the title.
+    pub hint: &'a str,
     pub rows: &'a [&'a str],
     pub chosen: usize,
-    /// Save: the new document's name as typed (None: Open).
-    pub name: Option<&'a str>,
-    /// How long the app keeps it, as the person chose (Tab changes it).
-    pub lasts: &'a str,
+    /// Show which row is chosen.
+    pub mark: bool,
+    /// What is typed, and its label ("Name", "Find").
+    pub field: Option<(&'a str, &'a str)>,
+    /// The line at the bottom ("Keeps it: ...").
+    pub foot: &'a str,
+    /// What shows when there are no rows.
+    pub empty: &'a str,
     pub ok: &'a str,
 }
 
@@ -122,7 +128,7 @@ fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32)
         12,
         r.x + 22,
         r.y + 50 + a2,
-        "Only what you pick is handed over. Tab: how long it keeps it.",
+        p.hint,
         theme::MUTED,
     );
     let top = r.y + 84;
@@ -135,14 +141,14 @@ fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32)
             13,
             r.x + 26,
             top + 6 + a3,
-            "No documents yet.",
+            p.empty,
             theme::MUTED,
         );
     }
     for (i, row) in p.rows.iter().enumerate().skip(first).take(PICKER_ROWS) {
         let y = top + (i - first) as i32 * 26;
         let line = Rect::new(r.x + 16, y, r.w - 32, 24);
-        if i == p.chosen && p.name.is_none() {
+        if i == p.chosen && p.mark {
             cv.round_rect(line, 6, theme::ACCENT);
         }
         fonts.draw(
@@ -152,7 +158,7 @@ fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32)
             line.x + 10,
             line.y + (line.h - l3) / 2 + a3,
             row,
-            if i == p.chosen && p.name.is_none() {
+            if i == p.chosen && p.mark {
                 theme::ACCENT_INK
             } else {
                 theme::INK
@@ -160,11 +166,11 @@ fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32)
         );
     }
     let mut y = top + 26 * PICKER_ROWS as i32 + 8;
-    if let Some(name) = p.name {
+    if let Some((label, text)) = p.field {
         let field = Rect::new(r.x + 16, y, r.w - 32, 28);
         cv.round_rect(field, 6, theme::CHROME);
         cv.round_frame(field, 6, theme::ACCENT);
-        let shown = alloc::format!("Name: {name}|");
+        let shown = alloc::format!("{label}: {text}|");
         fonts.draw(
             cv,
             Face::Text,
@@ -176,8 +182,7 @@ fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32)
         );
         y += 34;
     }
-    let lasts = alloc::format!("Keeps it: {}", p.lasts);
-    fonts.draw(cv, Face::Strong, 12, r.x + 22, y + a2, &lasts, theme::PAST);
+    fonts.draw(cv, Face::Strong, 12, r.x + 22, y + a2, p.foot, theme::PAST);
     let (ok, no) = picker_buttons(sw, sh);
     for (b, name, primary) in [(ok, p.ok, true), (no, "Cancel", false)] {
         cv.round_rect(
@@ -217,13 +222,17 @@ pub struct Question<'a> {
     pub no: &'a str,
 }
 
-/// The strip's buttons: Undo, and What happened?
-pub fn strip_buttons() -> [Rect; 2] {
-    [Rect::new(96, 5, 68, 24), Rect::new(172, 5, 128, 24)]
+/// The strip's buttons: Undo, What happened? and Search.
+pub fn strip_buttons() -> [Rect; 3] {
+    [
+        Rect::new(96, 5, 68, 24),
+        Rect::new(172, 5, 128, 24),
+        Rect::new(308, 5, 72, 24),
+    ]
 }
 
 /// The names on the strip's buttons.
-pub const STRIP_BUTTONS: [&str; 2] = ["Undo", "What happened?"];
+pub const STRIP_BUTTONS: [&str; 3] = ["Undo", "What happened?", "Search"];
 
 /// Where a question is drawn on a screen `w` by `h`, and its two buttons
 /// (yes, no).
