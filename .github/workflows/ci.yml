@@ -46,13 +46,13 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
-          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-store --package alaya-ui --all-targets -- -D warnings
+          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-bundle --package alaya-store --package alaya-ui --all-targets -- -D warnings
           RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs --package alaya-apps \
             --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
 
       - name: Host tests (capability code, time budgets, toolkit)
-        run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-ui
+        run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-bundle --package alaya-ui
 
       # The store (milestone 5): crypto test vectors, a power cut at every
       # disk write and flush, damaged blocks, and what recording reads costs.
@@ -78,11 +78,11 @@ jobs:
         run: |
           set -o pipefail
           for n in 1 2 8; do
-            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 1800 | tee boot.log
+            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 3000 | tee boot.log
             grep -q "timer is the TSC-deadline timer" boot.log
           done
       - name: Boot, KVM, UEFI, 8 cores, 4 GiB (1 GiB pages)
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G --timeout 1800
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G --timeout 3000
 
       # Crash on purpose and check the fault reports.
       - name: Fault reports

@@ -171,7 +171,8 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     assert!(x.keys("{enter}", || job() == 2, SLOW), "no rules shown");
     crate::say!("screenshot job rules");
     assert!(
-        x.keys("{enter}", || job() == 3 || job() == 4, SLOW * 2),
+        // (Its fourteen tries take minutes on slow emulated machines.)
+        x.keys("{enter}", || job() == 3 || job() == 4, SLOW * 6),
         "the helper's job did not end with Alaya's checks"
     );
     crate::say!("screenshot job result");
@@ -235,7 +236,8 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     choose(x);
     assert!(x.keys("{enter}", || job() == 2, SLOW));
     assert!(
-        x.keys("{enter}", || job() == 3 || job() == 4, SLOW * 2),
+        // (Its fourteen tries take minutes on slow emulated machines.)
+        x.keys("{enter}", || job() == 3 || job() == 4, SLOW * 6),
         "the hostile helper's job did not end"
     );
     assert!(
