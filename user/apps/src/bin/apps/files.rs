@@ -10,6 +10,8 @@
 //! one action on the undo list (milestone 7); W, or the button, tells its
 //! story: where it came from and what was made from it. F, pressed twice,
 //! forgets it for good after an hour (decision 62); until then K keeps it.
+//! P marks it private, or not (decision 27): an app that reads a private
+//! document is marked, and needs your OK before it goes online.
 
 use alloc::format;
 use alloc::string::String;
@@ -90,6 +92,8 @@ struct Row {
     mark: Mark,
     /// The longer story of the mark, for the chosen file.
     about: String,
+    /// Marked private (P).
+    private: bool,
 }
 
 /// What the mark means here, in a sentence.
@@ -165,6 +169,25 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 Key::Delete | Key::Char('d') => delete = true,
                 Key::Char('f') => forget = true,
                 Key::Char('k') => keep = true,
+                Key::Char('p') => {
+                    if let Some(r) = selected.and_then(|i| rows.get(i))
+                        && !r.e.is_dir
+                    {
+                        let on = !r.private;
+                        if store.private(r.e.file, Some(on)).is_ok() {
+                            say!(
+                                "{} is {}",
+                                r.e.name,
+                                if on {
+                                    "private now"
+                                } else {
+                                    "not private any more"
+                                }
+                            );
+                        }
+                        look = true;
+                    }
+                }
                 Key::Char('a') => {
                     if let Some(r) = selected.and_then(|i| rows.get(i))
                         && r.mark.kind != Kind::NoMark
@@ -284,7 +307,12 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     .into_iter()
                     .zip(marks)
                     .zip(abouts)
-                    .map(|((e, mark), about)| Row { e, mark, about })
+                    .map(|((e, mark), about)| Row {
+                        private: !e.is_dir && store.private(e.file, None).unwrap_or(false),
+                        e,
+                        mark,
+                        about,
+                    })
                     .collect();
             }
             let line = rows
@@ -336,7 +364,12 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     if r.e.is_dir {
                         format!("{}  (folder)", r.e.name)
                     } else {
-                        format!("{}  ·  {}", r.e.name, size(r.e.size))
+                        format!(
+                            "{}  ·  {}{}",
+                            r.e.name,
+                            size(r.e.size),
+                            if r.private { "  ·  private" } else { "" }
+                        )
                     }
                 })
                 .collect();

@@ -114,7 +114,7 @@ pub fn recovery_from(text: &[u8]) -> Option<Recovery> {
     let mut n = 0;
     for &c in text {
         let c = c.to_ascii_uppercase();
-        if c == b'-' || c == b' ' {
+        if c == b'-' || c == b' ' || c == 0 {
             continue;
         }
         let v = LETTERS.iter().position(|&l| l == c)? as u64;
@@ -406,7 +406,37 @@ fn note_of(version: u64, edits: u64, parent: u64, name: &[u8], stick: u64) -> Va
     ])
 }
 
+/// Look for `needle` anywhere on `stick`, as raw bytes (tests: nothing
+/// of a document may be there in the clear).
+pub fn raw_find<S: Disk>(stick: &mut S, needle: &[u8]) -> Result<bool, Error> {
+    if needle.is_empty() || needle.len() > 64 {
+        return Err(Error::BadRequest);
+    }
+    let mut b = [0u8; BLOCK];
+    let mut carry: Vec<u8> = Vec::new();
+    for a in 0..stick.blocks() {
+        stick.read(a, &mut b).map_err(io)?;
+        carry.extend_from_slice(&b);
+        if carry.windows(needle.len()).any(|w| w == needle) {
+            return Ok(true);
+        }
+        let keep = carry.len() - (needle.len() - 1);
+        carry.drain(..keep);
+    }
+    Ok(false)
+}
+
 impl<D: Disk> Store<D> {
+    /// What the machine knows of person `p`'s last backup: the stick's
+    /// number, its run, and the moment it covered.
+    pub fn last_backup(&mut self, p: Person) -> Result<Option<(u64, u64, u64)>, Error> {
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        Ok(b.trees[Class::Apps as usize]
+            .get(dev, &b.keys, k_backup(0))?
+            .map(|v| (word(&v, 0), word(&v, 1), word(&v, 2))))
+    }
+
     /// The person's recovery key, made the first time it is asked for.
     /// The second value is true when it was just made (show it to the
     /// person, once).
@@ -432,17 +462,23 @@ impl<D: Disk> Store<D> {
     }
 
     /// Back up person `p`'s documents to `stick`: only what changed since
-    /// the stick's last run. `now` is the clock's label for the run.
-    pub fn backup<S: Disk>(&mut self, p: Person, stick: &mut S) -> Result<Ran, Error> {
+    /// the stick's last run. A stick that holds another backup (another
+    /// person's, or one this key does not open) is refused unless `erase`:
+    /// then it starts again, empty.
+    pub fn backup<S: Disk>(&mut self, p: Person, stick: &mut S, erase: bool) -> Result<Ran, Error> {
         self.ok()?;
         let (r, _) = self.recovery_key(p)?;
         if stick.blocks() < RECORDS_AT + 8 {
             return Err(Error::Full);
         }
-        let head = match read_head(stick, &r)? {
-            Some(h) if h.person == p => h,
-            Some(_) => return Err(Error::Exists),
-            None => {
+        let found = match read_head(stick, &r) {
+            Err(Error::WrongKey) if erase => None,
+            other => other?,
+        };
+        let head = match found {
+            Some(h) if h.person == p && !erase => h,
+            Some(_) if !erase => return Err(Error::Exists),
+            _ => {
                 // A new stick: everything goes on it.
                 let mut salt = [0u8; 32];
                 salt.copy_from_slice(&self.rng.next(b"backup salt"));
@@ -613,7 +649,13 @@ impl<D: Disk> Store<D> {
                 }
             }
         }
-        b.trees[Class::Apps as usize].insert(dev, &b.keys, k_backup(0), words(&[id, run]))?;
+        let moment = h.moment;
+        b.trees[Class::Apps as usize].insert(
+            dev,
+            &b.keys,
+            k_backup(0),
+            words(&[id, run, moment]),
+        )?;
         b.touched = true;
         ran.used = end;
         Ok(ran)

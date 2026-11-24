@@ -64,14 +64,14 @@ fn backs_up_only_what_changed_and_restores_on_a_fresh_alaya() {
     s.write(1, DESKTOP, big, 0, &pic).unwrap();
     s.commit(20).unwrap();
     let mut stick = MemDisk::new(2048);
-    let r1 = s.backup(1, &mut stick).unwrap();
+    let r1 = s.backup(1, &mut stick, false).unwrap();
     assert_eq!((r1.run, r1.written, r1.gone), (1, 3, 0));
     s.commit(21).unwrap();
     // Locked: none of it is on the stick in the clear.
     assert!(!raw_has(&mut stick, b"a quiet monday"));
     assert!(!raw_has(&mut stick, b"diary.txt"));
     // Nothing changed: nothing written.
-    let r2 = s.backup(1, &mut stick).unwrap();
+    let r2 = s.backup(1, &mut stick, false).unwrap();
     assert_eq!((r2.run, r2.written, r2.gone), (2, 0, 0));
     // One change, one rename, one removal.
     s.write(1, DESKTOP, a, 0, b"a busy  monday").unwrap();
@@ -80,11 +80,11 @@ fn backs_up_only_what_changed_and_restores_on_a_fresh_alaya() {
     let tmp = s.create(1, DESKTOP, docs, b"tmp.txt", false).unwrap();
     s.write(1, DESKTOP, tmp, 0, b"scratch").unwrap();
     s.commit(30).unwrap();
-    s.backup(1, &mut stick).unwrap();
+    s.backup(1, &mut stick, false).unwrap();
     s.commit(31).unwrap();
     s.remove(1, DESKTOP, docs, b"tmp.txt").unwrap();
     s.commit(40).unwrap();
-    let r3 = s.backup(1, &mut stick).unwrap();
+    let r3 = s.backup(1, &mut stick, false).unwrap();
     assert_eq!((r3.written, r3.gone), (0, 1));
     let used = r3.used;
     s.commit(41).unwrap();
@@ -139,7 +139,7 @@ fn a_forgotten_file_is_unreadable_on_the_stick_too() {
     s.write(1, DESKTOP, f, 0, b"the secret plan").unwrap();
     s.commit(20).unwrap();
     let mut stick = MemDisk::new(1024);
-    s.backup(1, &mut stick).unwrap();
+    s.backup(1, &mut stick, false).unwrap();
     s.commit(21).unwrap();
     // A copy of the stick from before (someone kept one).
     let mut before = MemDisk::new(1024);
@@ -150,7 +150,7 @@ fn a_forgotten_file_is_unreadable_on_the_stick_too() {
     }
     s.forget(1, DESKTOP, docs, b"secret.txt").unwrap();
     s.commit(30).unwrap();
-    let r = s.backup(1, &mut stick).unwrap();
+    let r = s.backup(1, &mut stick, false).unwrap();
     assert_eq!(r.gone, 1);
     s.commit(31).unwrap();
     let (key, _) = s.recovery_key(1).unwrap();
@@ -163,6 +163,11 @@ fn a_forgotten_file_is_unreadable_on_the_stick_too() {
     assert_eq!(done.documents, 1);
     let tdocs = t.root(Class::Documents);
     assert!(t.lookup(1, tdocs, b"secret.txt").is_err());
+    assert!(!alaya_store::backup::raw_find(&mut stick, b"the secret plan").unwrap());
+    // Another machine's person cannot back up over it without erasing.
+    let mut other = fresh(&OTHER_MACHINE);
+    assert_eq!(other.backup(1, &mut stick, false), Err(Error::WrongKey));
+    assert_eq!(other.backup(1, &mut stick, true).unwrap().run, 1);
     // Even pointing the newest header at the old records, the old key
     // table is gone: the stick's both tables were written.
     let mut tables = [0u8; 4096];
@@ -186,7 +191,7 @@ fn a_run_cut_off_leaves_the_last_one_whole() {
     s.write(1, DESKTOP, f, 0, b"first").unwrap();
     s.commit(20).unwrap();
     let mut stick = MemDisk::new(1024);
-    s.backup(1, &mut stick).unwrap();
+    s.backup(1, &mut stick, false).unwrap();
     s.commit(21).unwrap();
     s.write(1, DESKTOP, f, 0, b"later").unwrap();
     s.create(1, DESKTOP, docs, b"b.txt", false).unwrap();
@@ -197,7 +202,7 @@ fn a_run_cut_off_leaves_the_last_one_whole() {
     for (a, h) in heads.iter_mut().enumerate() {
         stick.read(a as u64, h).unwrap();
     }
-    s.backup(1, &mut stick).unwrap();
+    s.backup(1, &mut stick, false).unwrap();
     for (a, h) in heads.iter().enumerate() {
         stick.write(a as u64, h).unwrap();
     }
@@ -212,7 +217,7 @@ fn a_run_cut_off_leaves_the_last_one_whole() {
     // b.txt, removed meanwhile, does not come back.
     s.remove(1, DESKTOP, docs, b"b.txt").unwrap();
     s.commit(40).unwrap();
-    let r = s.backup(1, &mut stick).unwrap();
+    let r = s.backup(1, &mut stick, false).unwrap();
     assert_eq!((r.run, r.written), (2, 1));
     let mut u = fresh(&OTHER_MACHINE);
     u.restore_backup(1, DESKTOP, &mut stick, &key, b"x")

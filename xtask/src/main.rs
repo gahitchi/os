@@ -177,6 +177,8 @@ struct Options {
     plug: Option<u32>,
     /// QEMU's window: `None` lets `run` open one and keeps tests without.
     display: Option<String>,
+    /// Start with an empty backup stick (the boot test does).
+    fresh_stick: bool,
 }
 
 fn main() -> ExitCode {
@@ -203,8 +205,10 @@ fn main() -> ExitCode {
         long: false,
         plug: None,
         display: None,
+        fresh_stick: false,
     };
     let mut timeout_set = false;
+    let mut memory_set = false;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| {
             args.next()
@@ -250,7 +254,10 @@ fn main() -> ExitCode {
             "--vnc" => opts.display = Some("vnc=:0".into()),
             "--image" => opts.image = Some(PathBuf::from(value("--image"))),
             "--accel" => opts.accel = value("--accel"),
-            "--memory" => opts.memory = value("--memory"),
+            "--memory" => {
+                memory_set = true;
+                opts.memory = value("--memory")
+            }
             "--fault" => {
                 let kind = value("--fault");
                 if !FAULTS.iter().any(|(k, _)| *k == kind) {
@@ -271,8 +278,12 @@ fn main() -> ExitCode {
     }
     if opts.arch == Arch::Aarch64 {
         // ARM machines start from UEFI firmware; there is no BIOS. The
-        // firmware keeps more of the memory for itself than a PC's.
+        // firmware keeps more of the memory for itself than a PC's, and
+        // leaves it in smaller pieces: 1 GiB unless asked otherwise.
         opts.uefi = true;
+        if !memory_set {
+            opts.memory = "1G".into();
+        }
     }
     if opts.long && !timeout_set {
         opts.timeout = 15 * 60;
@@ -295,7 +306,10 @@ fn main() -> ExitCode {
         }
         "run" => run_image(&opts).and_then(|image| run(&image, &opts)),
         "test" if opts.plug.is_some() => image_for(&opts).and_then(|image| plug(&image, &opts)),
-        "test" => image_for(&opts).and_then(|image| test(&image, &opts)),
+        "test" => {
+            opts.fresh_stick = true;
+            image_for(&opts).and_then(|image| test(&image, &opts))
+        }
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -430,6 +444,45 @@ fn disk_image() -> Result<PathBuf, String> {
             .map_err(|e| format!("disk image: {e}"))?;
     }
     Ok(path)
+}
+
+/// The backup stick (milestone 7): a second virtual disk, shown to Alaya
+/// the way a USB stick will be (real USB comes in milestone 11). The boot
+/// test starts each run with an empty one.
+const STICK_BYTES: u64 = 64 << 20;
+
+fn stick_image(fresh: bool) -> Result<PathBuf, String> {
+    let path = root().join("build").join("stick.img");
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    if fresh {
+        let _ = fs::remove_file(&path);
+    }
+    let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if len < STICK_BYTES {
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("stick image: {e}"))?;
+        f.set_len(STICK_BYTES)
+            .map_err(|e| format!("stick image: {e}"))?;
+    }
+    Ok(path)
+}
+
+/// The stick's QEMU arguments: after every other device, so the disk
+/// comes first on the bus.
+fn stick_args(opts: &Options) -> Result<Vec<String>, String> {
+    Ok(vec![
+        "-drive".into(),
+        format!(
+            "file={},if=none,id=stick0,format=raw",
+            stick_image(opts.fresh_stick)?.display()
+        ),
+        "-device".into(),
+        "virtio-blk-pci,drive=stick0,disable-legacy=on,iommu_platform=on".into(),
+    ])
 }
 
 /// Code generation flags for programs (the kernel's are in
@@ -677,6 +730,7 @@ fn qemu(image: &Path, opts: &Options, serial: &str) -> Result<Command, String> {
         "virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on",
     ])
     .args(SEAT_DEVICES.iter().flat_map(|d| ["-device", d]))
+    .args(stick_args(opts)?)
     .arg("-cdrom")
     .arg(image);
     if use_kvm(opts)? {
@@ -742,7 +796,8 @@ fn qemu_arm(image: &Path, opts: &Options, serial: &str) -> Result<Command, Strin
             image.display()
         ))
         .args(["-device", "virtio-scsi-pci,id=scsi0"])
-        .args(["-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0"]);
+        .args(["-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0"])
+        .args(stick_args(opts)?);
     let firmware = aavmf()?;
     // Firmware images built for flash must be padded to 64 MiB; the plain
     // QEMU_EFI.fd works with -bios.

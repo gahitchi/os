@@ -695,6 +695,69 @@ impl Store {
             .collect())
     }
 
+    /// Back up to the stick now: (run, written, gone, blocks used, bytes).
+    pub fn backup(&self, erase: bool) -> Result<[u64; 5], Status> {
+        let r = self.call(fs::BACKUP, &[erase as u64])?;
+        Ok([r[1], r[2], r[3], r[4], r[5]])
+    }
+
+    /// The person's recovery key, as written down (and whether it is new).
+    pub fn recovery_key(&self) -> Result<(String, bool), Status> {
+        let r = self.call(fs::RECOVERY_KEY, &[])?;
+        Ok((
+            String::from_utf8_lossy(&xfer()[..39]).into_owned(),
+            r[1] != 0,
+        ))
+    }
+
+    /// Make the documents on the stick again, with the recovery key as
+    /// typed, in folder `into` (or the documents themselves, when empty):
+    /// (folders, documents, the folder, run).
+    pub fn restore_backup(&self, key: &str, into: &str) -> Result<[u64; 4], Status> {
+        if into.is_empty() || into.len() > 32 {
+            return Err(st::BAD_REQUEST);
+        }
+        let b = xfer();
+        b[..64].fill(0);
+        let k = key.as_bytes();
+        let mut n = 0;
+        for &c in k.iter().filter(|c| !c.is_ascii_whitespace()) {
+            if n < 39 {
+                b[n] = c;
+                n += 1;
+            }
+        }
+        b[64..64 + into.len()].copy_from_slice(into.as_bytes());
+        let r = self.call(fs::RESTORE_BACKUP, &[into.len() as u64])?;
+        Ok([r[1], r[2], r[3], r[4]])
+    }
+
+    /// Mark a document private (Some(true)), not (Some(false)), or ask.
+    pub fn private(&self, f: u64, on: Option<bool>) -> Result<bool, Status> {
+        let what = match on {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => 2,
+        };
+        Ok(self.call(fs::PRIVATE, &[f, what])?[1] != 0)
+    }
+
+    /// Apps that read a private document: (app, the document, since).
+    pub fn marks(&self) -> Result<Vec<(u64, u64, u64)>, Status> {
+        let n = self.call(fs::MARKS, &[])?[1] as usize;
+        let b = xfer();
+        let w = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        Ok((0..n)
+            .map(|i| (w(3 * i), w(3 * i + 1), w(3 * i + 2)))
+            .collect())
+    }
+
+    /// The stick: (there is one, its blocks, last run, last moment).
+    pub fn stick(&self) -> Result<[u64; 4], Status> {
+        let r = self.call(fs::STICK, &[])?;
+        Ok([r[1], r[2], r[3], r[4]])
+    }
+
     /// An app's last window closed (the desktop only).
     pub fn app_closed(&self, app: u64) -> Result<u64, Status> {
         Ok(self.call(fs::APP_CLOSED, &[app])?[1])

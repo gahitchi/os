@@ -39,6 +39,8 @@ const TICK_BIT: u64 = 1;
 /// slot 0 of the pages the keeper shares with this program.
 struct KeeperDisk {
     keeper: u64,
+    /// Where the keeper's buffer pages are mapped here.
+    buf: u64,
     first: u64,
     blocks: u64,
     /// Writes and flushes left before stopping dead (tests only).
@@ -81,14 +83,14 @@ impl Disk for KeeperDisk {
     fn read(&mut self, addr: u64, buf: &mut Block) -> Result<(), IoError> {
         self.ask(k::BREAD, &[self.first + addr, 0])?;
         // SAFETY: slot 0 of the shared buffer pages, mapped here.
-        unsafe { core::ptr::copy_nonoverlapping(fs::BUF as *const u8, buf.as_mut_ptr(), 4096) };
+        unsafe { core::ptr::copy_nonoverlapping(self.buf as *const u8, buf.as_mut_ptr(), 4096) };
         Ok(())
     }
 
     fn write(&mut self, addr: u64, buf: &Block) -> Result<(), IoError> {
         self.tick();
         // SAFETY: as in `read`.
-        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), fs::BUF as *mut u8, 4096) };
+        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), self.buf as *mut u8, 4096) };
         self.ask(k::BWRITE, &[self.first + addr, 0])
     }
 
@@ -161,6 +163,7 @@ fn main(info: &'static StartInfo) -> ! {
     let never = mem.make(Kind::Notification, 0).expect("notification");
     let disk = || KeeperDisk {
         keeper,
+        buf: fs::BUF,
         first: m.words[0],
         blocks,
         countdown: None,
@@ -211,9 +214,27 @@ fn main(info: &'static StartInfo) -> ! {
         store.last_commit()
     );
     let mut last_save = rt::now_ms();
+    // The backup stick, if there is one: its own keeper, its own pages.
+    let stick = (info.args[fs::ARG_FLAGS] & fs::FLAG_STICK != 0)
+        .then(|| {
+            let sk = g + fs::G_STICK;
+            let m = alaya_sys::ipc_call(sk, &Msg::new(k::BLOCKS, &[]), Caps::default()).ok()?;
+            say!("a backup stick of {} MiB is there", m.words[1] / 256);
+            Some(KeeperDisk {
+                keeper: sk,
+                buf: fs::STICK_BUF,
+                first: m.words[0],
+                blocks: m.words[1],
+                countdown: None,
+                dying,
+                never,
+            })
+        })
+        .flatten();
     let mut serve = Server {
         store: &mut store,
         hold_until: 0,
+        stick,
     };
     let mut msg = alaya_sys::msg_call(
         call::RECV,
@@ -225,6 +246,7 @@ fn main(info: &'static StartInfo) -> ! {
         },
     );
     let mut last_clean = u64::MAX;
+    let mut last_auto = now();
     loop {
         let answer = match msg {
             Ok(m) if m.info.has(MsgInfo::SIGNAL) => {
@@ -246,6 +268,31 @@ fn main(info: &'static StartInfo) -> ! {
                     }
                     if forgot > 0 && serve.store.commit(now()).is_ok() {
                         say!("forgot {forgot} documents for good: their keys are gone");
+                    }
+                }
+                // Backups by themselves (decision 36): for each person who
+                // made one, every ten minutes when something changed.
+                if m.badge & TICK_BIT != 0
+                    && now() >= last_auto + fs::BACKUP_EVERY
+                    && let Some(stick) = serve.stick.as_mut()
+                {
+                    last_auto = now();
+                    for p in serve.store.people().unwrap_or_default() {
+                        let Ok(Some((_, _, moment))) = serve.store.last_backup(p) else {
+                            continue;
+                        };
+                        let newest = serve.store.history(p).ok().and_then(|h| h.last().copied());
+                        if newest.is_some_and(|d| d.cn > moment) {
+                            match serve.store.backup(p, stick, false) {
+                                Ok(r) => say!(
+                                    "backed up by itself: run {}, {} changed, {} gone",
+                                    r.run,
+                                    r.written,
+                                    r.gone
+                                ),
+                                Err(e) => say!("the backup by itself did not run: {e:?}"),
+                            }
+                        }
                     }
                 }
                 if m.badge & TICK_BIT != 0
@@ -301,6 +348,8 @@ struct Server<'a> {
     store: &'a mut Store<KeeperDisk>,
     /// An app began an action: no saving by itself until then (ms).
     hold_until: u64,
+    /// The backup stick (milestone 7), if there is one.
+    stick: Option<KeeperDisk>,
 }
 
 /// Bytes to stir the key generator with, and whether the processor's
@@ -400,6 +449,11 @@ impl Server<'_> {
             }
             fs::READ | fs::STAT => match need(s, w[0], false)? {
                 Access::Pinned(cn) => {
+                    if label == fs::READ {
+                        // Reading a private document marks the app
+                        // (decision 27).
+                        s.note_private_read(p, app, FileId(w[0]), now)?;
+                    }
                     let past = s.past(p, Class::Documents, cn)?;
                     let f = FileId(w[0]);
                     if label == fs::STAT {
@@ -416,7 +470,12 @@ impl Server<'_> {
                         Ok(Some(alloc::vec![got as u64]))
                     }
                 }
-                _ => Ok(None),
+                _ => {
+                    if label == fs::READ {
+                        s.note_private_read(p, app, FileId(w[0]), now)?;
+                    }
+                    Ok(None)
+                }
             },
             fs::CREATE => {
                 if !docs(w[0]) {
@@ -906,6 +965,76 @@ impl Server<'_> {
                     buf[o + 96..o + 96 + l].copy_from_slice(&f.line[..l]);
                 }
                 alloc::vec![found.len() as u64]
+            }
+            fs::BACKUP | fs::RESTORE_BACKUP | fs::STICK_FIND => {
+                let Some(stick) = self.stick.as_mut() else {
+                    return Err(Error::NotFound);
+                };
+                match label {
+                    fs::BACKUP => {
+                        let r = s.backup(p, stick, w[0] != 0)?;
+                        s.commit(now)?;
+                        say!(
+                            "backup run {}: {} changed, {} gone, {} KiB",
+                            r.run,
+                            r.written,
+                            r.gone,
+                            r.bytes / 1024
+                        );
+                        alloc::vec![r.run, r.written, r.gone, r.used, r.bytes]
+                    }
+                    fs::RESTORE_BACKUP => {
+                        let b = xfer(ch);
+                        let key =
+                            alaya_store::backup::recovery_from(&b[..39]).ok_or(Error::WrongKey)?;
+                        let n = (w[0] as usize).min(alaya_store::NAME_MAX);
+                        let into = b[64..64 + n].to_vec();
+                        let r = s.restore_backup(p, app, stick, &key, &into)?;
+                        s.commit(now)?;
+                        alloc::vec![r.folders, r.documents, r.into, r.run]
+                    }
+                    _ => {
+                        if app != fs::INIT_APP {
+                            return Err(Error::BadRequest);
+                        }
+                        let n = (w[0] as usize).min(64);
+                        let needle = xfer(ch)[..n].to_vec();
+                        alloc::vec![alaya_store::backup::raw_find(stick, &needle)? as u64]
+                    }
+                }
+            }
+            fs::RECOVERY_KEY => {
+                use alaya_programs::desktop::role;
+                if ![fs::DESKTOP_APP, fs::INIT_APP, fs::app_id(role::SETTINGS)].contains(&app) {
+                    return Err(Error::BadRequest);
+                }
+                let (r, new) = s.recovery_key(p)?;
+                xfer(ch)[..39].copy_from_slice(&alaya_store::backup::recovery_text(&r));
+                alloc::vec![new as u64]
+            }
+            fs::PRIVATE => {
+                let f = FileId(w[0]);
+                if w[1] < 2 {
+                    s.set_private(p, f, w[1] == 1)?;
+                    s.commit(now)?;
+                }
+                alloc::vec![s.is_private(p, f)? as u64]
+            }
+            fs::MARKS => {
+                let l = s.marks(p)?;
+                let n = l.len().min(fs::XFER_BYTES / 24);
+                let buf = xfer(ch);
+                for (i, m) in l.iter().take(n).enumerate() {
+                    put_words(buf, 24 * i, &[m.app, m.file.0, m.since]);
+                }
+                alloc::vec![n as u64]
+            }
+            fs::STICK => {
+                let last = s.last_backup(p)?.map_or((0, 0), |(_, run, m)| (run, m));
+                match &self.stick {
+                    Some(k) => alloc::vec![1, k.blocks, last.0, last.1],
+                    None => alloc::vec![0, 0, last.0, last.1],
+                }
             }
             fs::FAKE_HISTORY => {
                 let made = s.fake_history(p, app, w[0], w[1].max(1), now)?;

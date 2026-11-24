@@ -80,6 +80,10 @@ pub enum Access {
 }
 
 const K_GRANT: u64 = 4;
+/// A document marked private (decision 27): keyed by the document.
+const K_PRIVATE: u64 = 8;
+/// An app that read a private document: keyed by the app.
+const K_MARKED: u64 = 9;
 const WRITE: u64 = 1;
 const OWN: u64 = 2;
 
@@ -90,6 +94,24 @@ pub(crate) const RECORDS: u64 = 0xff << 56;
 /// Grants live in the person's app-files tree, keyed by app then file.
 fn k_grant(app: App, obj: u64) -> Key {
     Key(RECORDS | app << 8 | K_GRANT, obj)
+}
+
+fn k_private(obj: u64) -> Key {
+    Key(RECORDS | K_PRIVATE, obj)
+}
+
+fn k_marked(app: App) -> Key {
+    Key(RECORDS | K_MARKED, app)
+}
+
+/// An app that read a private document, and needs the person's OK
+/// before it may go online (decision 27).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Marked {
+    pub app: App,
+    /// The first private document it read, and when.
+    pub file: FileId,
+    pub since: u64,
 }
 
 fn decode(app: App, v: &[u8]) -> Option<Grant> {
@@ -178,8 +200,10 @@ impl<D: Disk> Store<D> {
         Ok(gone)
     }
 
-    /// The app closed: what was handed to it until then is taken back.
+    /// The app closed: what was handed to it until then is taken back,
+    /// and its private mark ends (it starts again clean).
     pub fn app_closed(&mut self, p: Person, app: App) -> Result<u64, Error> {
+        self.unmark(p, app)?;
         let mut n = 0;
         for g in self.grants(p, Some(app))? {
             if g.lasts == Lasts::UntilClosed && self.revoke(p, app, g.file)? {
@@ -221,6 +245,125 @@ impl<D: Disk> Store<D> {
         Ok(b.trees[Class::Apps as usize]
             .get(dev, &b.keys, k_grant(app, file.obj()))?
             .and_then(|v| decode(app, &v)))
+    }
+
+    /// Mark a document private, or not (the person, in the file browser).
+    pub fn set_private(&mut self, p: Person, file: FileId, on: bool) -> Result<(), Error> {
+        self.ok()?;
+        if file.class() != Class::Documents {
+            return Err(Error::BadRequest);
+        }
+        self.stat(p, file)?;
+        self.room(2, false)?;
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        let t = &mut b.trees[Class::Apps as usize];
+        if on {
+            t.insert(dev, &b.keys, k_private(file.obj()), words(&[1]))?;
+        } else {
+            t.remove(dev, &b.keys, k_private(file.obj()))?;
+        }
+        b.touched = true;
+        Ok(())
+    }
+
+    pub fn is_private(&mut self, p: Person, file: FileId) -> Result<bool, Error> {
+        if file.class() != Class::Documents {
+            return Ok(false);
+        }
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        Ok(b.trees[Class::Apps as usize]
+            .get(dev, &b.keys, k_private(file.obj()))?
+            .is_some())
+    }
+
+    /// `app` read `file`: if it is private, the app is marked (the first
+    /// time only). Returns whether the app is marked now. Alaya's trusted
+    /// carriers (the desktop, the store, the clipboard) are never marked
+    /// (rule B1): the store server calls this for apps only.
+    pub fn note_private_read(
+        &mut self,
+        p: Person,
+        app: App,
+        file: FileId,
+        now: u64,
+    ) -> Result<bool, Error> {
+        if !self.is_private(p, file)? {
+            return Ok(self.marked(p, app)?.is_some());
+        }
+        if self.marked(p, app)?.is_some() {
+            return Ok(true);
+        }
+        self.room(2, false)?;
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        b.trees[Class::Apps as usize].insert(dev, &b.keys, k_marked(app), words(&[file.0, now]))?;
+        b.touched = true;
+        Ok(true)
+    }
+
+    /// Whether `app` is marked, and by what.
+    pub fn marked(&mut self, p: Person, app: App) -> Result<Option<Marked>, Error> {
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        Ok(b.trees[Class::Apps as usize]
+            .get(dev, &b.keys, k_marked(app))?
+            .map(|v| Marked {
+                app,
+                file: FileId(word(&v, 0)),
+                since: word(&v, 1),
+            }))
+    }
+
+    /// Every marked app.
+    pub fn marks(&mut self, p: Person) -> Result<Vec<Marked>, Error> {
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        Ok(b.trees[Class::Apps as usize]
+            .collect(dev, &b.keys, k_marked(0), k_marked(u64::MAX >> 8))?
+            .into_iter()
+            .filter(|(k, _)| k.0 == RECORDS | K_MARKED)
+            .map(|(k, v)| Marked {
+                app: k.1,
+                file: FileId(word(&v, 0)),
+                since: word(&v, 1),
+            })
+            .collect())
+    }
+
+    /// The mark spreads to an app that takes data from a marked one
+    /// (decision 27): `to` is marked by what marked `from`.
+    pub fn spread_mark(&mut self, p: Person, from: App, to: App, now: u64) -> Result<bool, Error> {
+        let Some(m) = self.marked(p, from)? else {
+            return Ok(false);
+        };
+        if self.marked(p, to)?.is_some() {
+            return Ok(true);
+        }
+        self.room(2, false)?;
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        b.trees[Class::Apps as usize].insert(
+            dev,
+            &b.keys,
+            k_marked(to),
+            words(&[m.file.0, now]),
+        )?;
+        b.touched = true;
+        Ok(true)
+    }
+
+    fn unmark(&mut self, p: Person, app: App) -> Result<(), Error> {
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        if b.trees[Class::Apps as usize]
+            .remove(dev, &b.keys, k_marked(app))?
+            .is_some()
+        {
+            b.touched = true;
+        }
+        Ok(())
     }
 
     /// What `app` may do with `file` at time `now`.

@@ -532,6 +532,34 @@ pub mod files {
     /// then the name (32 bytes) and the line (64 bytes). Not for apps that
     /// see only what they are handed: they get the person's pick instead.
     pub const SEARCH: u64 = 49;
+    /// BACKUP: erase (1: start the stick again even if it holds another
+    /// backup) → run, written, gone, blocks used, bytes. To the backup
+    /// stick (milestone 7, decision 36); Alaya's own programs only.
+    pub const BACKUP: u64 = 50;
+    /// RECOVERY_KEY: → 1 if it was just made; the key's 32 letters and
+    /// digits (39 bytes with dashes) in the transfer pages. The desktop,
+    /// Settings and the first program only.
+    pub const RECOVERY_KEY: u64 = 51;
+    /// RESTORE_BACKUP: folder name length → folders, documents, the
+    /// folder they went into, run. The recovery key as typed (39 bytes)
+    /// at the start of the transfer pages, the folder's name at byte 64.
+    pub const RESTORE_BACKUP: u64 = 52;
+    /// STICK: → there is one (1), its blocks, and the person's last
+    /// backup: run, moment (0 0: none).
+    pub const STICK: u64 = 53;
+    /// STICK_FIND: length (bytes in the transfer pages) → 1 if the stick
+    /// holds them anywhere in the clear (the first program's checks).
+    pub const STICK_FIND: u64 = 54;
+    /// PRIVATE: file, what (0: not private, 1: private, 2: just ask) → is
+    /// it private. Marking is the person's (the file browser); apps that
+    /// see only what they are handed cannot ask (decision 27).
+    pub const PRIVATE: u64 = 55;
+    /// MARKS: → count; (app, the private file it read, since) 24 bytes
+    /// each: the apps that read a private file and need the person's OK
+    /// before going online.
+    pub const MARKS: u64 = 56;
+    /// Back up by itself this often, when something changed.
+    pub const BACKUP_EVERY: u64 = 600;
 
     pub const NAME2: usize = 64;
     pub const LABEL: usize = 16;
@@ -631,6 +659,12 @@ pub mod files {
     pub const G_KEEPER: u64 = 1;
     /// A notification the store signals when it stops dead (DIE_AFTER).
     pub const G_DYING: u64 = 2;
+    /// The backup stick's keeper (store badge), with [`FLAG_STICK`].
+    pub const G_STICK: u64 = 3;
+    /// There is a backup stick.
+    pub const FLAG_STICK: u64 = 2;
+    /// Where the stick keeper's buffer pages are, in the store server.
+    pub const STICK_BUF: u64 = BUF + 0x10_0000;
 
     /// Save by itself this often (milestone 5, choice A).
     /// Caches nobody used for this many days are emptied (choice D).

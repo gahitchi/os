@@ -17,7 +17,7 @@ use alaya_sys::program::{self, Parent, Program, Slots, Spec};
 use alaya_sys::{At, Caps, Kind, Msg, rights};
 
 use crate::m3::{Kit, sleep_until};
-use crate::m4b::{KEEPER_CTL, KEEPER_EP, STORE_BUFS, module};
+use crate::m4b::{KEEPER_CTL, KEEPER_EP, STICK_BUFS, STICK_EP, STORE_BUFS, module};
 use crate::say;
 
 const XFER_AT: u64 = 0x2700_0000_0000;
@@ -154,6 +154,8 @@ struct Env<'a> {
     k: Kit<'a>,
     ep: u64,
     keeper: u64,
+    /// The backup stick's keeper (store badge), or 0.
+    stick: u64,
     dying: u64,
     ut: u64,
     shared: [(u64, u64, u64); 192],
@@ -183,7 +185,10 @@ impl Env<'_> {
         for i in self.slots_base..self.slots_base + STORE_SLOTS {
             let _ = alaya_sys::delete(self.k.at(i));
         }
-        let flags = if format { fs::FLAG_FORMAT } else { 0 };
+        let flags = if format { fs::FLAG_FORMAT } else { 0 }
+            | if self.stick != 0 { fs::FLAG_STICK } else { 0 };
+        let given = [self.ep, self.keeper, self.dying, self.stick];
+        let ngiven = if self.stick != 0 { 4 } else { 3 };
         let p = program::start(
             &mut parent,
             &Spec {
@@ -196,7 +201,7 @@ impl Env<'_> {
                 sc: self.sc,
                 clock_sc: self.clock_sc,
                 fault: 0,
-                given: &[self.ep, self.keeper, self.dying],
+                given: &given[..ngiven],
                 shared: &self.shared[..self.nshared],
                 args: &[flags, blocks],
                 clock_hz: self.info.clock_hz,
@@ -246,6 +251,15 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         k::STORE,
     )
     .unwrap();
+    // The backup stick's keeper, if there is one (milestone 7).
+    let stick = match STICK_EP.load(SeqCst) {
+        0 => 0,
+        e => {
+            let h = k.slot();
+            alaya_sys::mint(k.at(h), k.at(e), rights::ALL, k::STORE).unwrap();
+            h
+        }
+    };
     let sc = k.make(Kind::SchedContext, 8);
     alaya_sys::sc_configure(
         info.sched_control,
@@ -280,6 +294,12 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         shared[n] = (b.load(SeqCst), fs::BUF + i as u64 * 4096, map::WRITE);
         n += 1;
     }
+    if stick != 0 {
+        for (i, b) in STICK_BUFS.iter().enumerate() {
+            shared[n] = (b.load(SeqCst), fs::STICK_BUF + i as u64 * 4096, map::WRITE);
+            n += 1;
+        }
+    }
     for i in 0..32 {
         k.page_at(info.space, BIG_AT + i * 4096, map::WRITE);
     }
@@ -299,6 +319,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         k,
         ep,
         keeper,
+        stick,
         dying,
         ut: store_ut,
         shared,

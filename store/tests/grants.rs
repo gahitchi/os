@@ -141,3 +141,37 @@ fn forgetting_waits_an_hour_and_can_be_cancelled() {
     let r = s.check().unwrap();
     assert!(r.problems.is_empty(), "{:?}", r.problems);
 }
+
+#[test]
+fn reading_a_private_file_marks_the_app_until_it_closes() {
+    let mut s = fresh();
+    let docs = s.root(Class::Documents);
+    let f = s.create(1, DESKTOP, docs, b"diary.txt", false).unwrap();
+    let g = s.create(1, DESKTOP, docs, b"list.txt", false).unwrap();
+    s.set_private(1, f, true).unwrap();
+    assert!(s.is_private(1, f).unwrap() && !s.is_private(1, g).unwrap());
+    // Reading something else marks nothing.
+    assert!(!s.note_private_read(1, EDITOR, g, 20).unwrap());
+    assert!(s.marks(1).unwrap().is_empty());
+    assert!(s.note_private_read(1, EDITOR, f, 30).unwrap());
+    let m = s.marked(1, EDITOR).unwrap().unwrap();
+    assert_eq!((m.file, m.since), (f, 30));
+    // The mark spreads to an app that takes data from it.
+    assert!(s.spread_mark(1, EDITOR, CHART, 40).unwrap());
+    // An app that is not marked spreads nothing.
+    assert!(!s.spread_mark(1, 0x777, 0x778, 40).unwrap());
+    assert_eq!(s.marks(1).unwrap().len(), 2);
+    // It survives a restart, and ends when the app closes.
+    s.commit(50).unwrap();
+    let disk = s.into_disk();
+    let mut s = Store::open(disk, &MACHINE).unwrap();
+    s.unlock(1, &ALICE).unwrap();
+    assert_eq!(s.marks(1).unwrap().len(), 2);
+    s.app_closed(1, EDITOR).unwrap();
+    assert!(s.marked(1, EDITOR).unwrap().is_none());
+    // Not private any more: reading it marks nothing.
+    s.set_private(1, f, false).unwrap();
+    assert!(!s.note_private_read(1, EDITOR, f, 60).unwrap());
+    // Marks are not grants.
+    assert!(s.grants(1, None).unwrap().is_empty());
+}

@@ -361,6 +361,112 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "the editor was not handed that one version, read only"
     );
     pass("search finds names, words and what files used to say; it hands over only what you open");
+
+    // ---- 91. The private-file guard.
+    private_files(x, &me, &them, docs, summary, pass);
+
+    // ---- 92. Backup to the stick, locked, only what changed; forgetting
+    // reaches the stick; getting the documents back with the recovery key.
+    let r = me.call(fs::STICK, &[]);
+    if r[0] != st::OK || r[1] == 0 {
+        pass("backup: no stick attached to this machine, so the backup checks were skipped");
+        return;
+    }
+    // The test starts with an empty stick; a leftover one is started again.
+    let r = me.call(fs::BACKUP, &[1]);
+    assert!(
+        r[0] == st::OK && r[1] == 1 && r[2] > 0,
+        "the first backup did not run: {r:?}"
+    );
+    let all = r[2];
+    let r = me.call(fs::BACKUP, &[0]);
+    assert!(
+        r[0] == st::OK && r[1] == 2 && r[2] == 0 && r[3] == 0,
+        "a backup with nothing changed wrote something: {r:?}"
+    );
+    let diary = me.create(docs, "diary.txt").expect("diary.txt");
+    let words = b"violet marmalade at noon";
+    me.buf()[..words.len()].copy_from_slice(words);
+    assert!(me.call(fs::WRITE, &[diary, 0, words.len() as u64])[0] == st::OK);
+    me.call(fs::SAVE, &[]);
+    let r = me.call(fs::BACKUP, &[0]);
+    assert!(
+        r[0] == st::OK && r[2] == 1,
+        "the backup did not take only what changed: {r:?}"
+    );
+    let on_stick = |needle: &[u8]| {
+        me.buf()[..needle.len()].copy_from_slice(needle);
+        me.call(fs::STICK_FIND, &[needle.len() as u64])[1] == 1
+    };
+    assert!(
+        !on_stick(b"violet marmalade"),
+        "a document is on the stick in the clear"
+    );
+    assert!(
+        !on_stick(b"diary.txt"),
+        "a name is on the stick in the clear"
+    );
+    // Forgotten: the next backup takes its key off the stick.
+    me.put_name("diary.txt");
+    assert!(me.call(fs::FORGET_LATER, &[docs, 9, 1])[0] == st::OK);
+    assert!(
+        sleep_until(SLOW, || me.call(fs::FORGETTING, &[])[1] == 0),
+        "diary.txt was not forgotten"
+    );
+    let r = me.call(fs::BACKUP, &[0]);
+    assert!(
+        r[0] == st::OK && r[3] >= 1,
+        "the backup did not note what is gone: {r:?}"
+    );
+    // Getting them back: a wrong key opens nothing; the right one makes
+    // them again, in a folder of their own.
+    let r = me.call(fs::RECOVERY_KEY, &[]);
+    assert!(r[0] == st::OK, "no recovery key");
+    let mut key = [0u8; 39];
+    key.copy_from_slice(&me.buf()[..39]);
+    let restore = |k: &[u8; 39]| {
+        let b = me.buf();
+        b[..64].fill(0);
+        b[..39].copy_from_slice(k);
+        b[64..78].copy_from_slice(b"From the stick");
+        me.call(fs::RESTORE_BACKUP, &[14])
+    };
+    let mut wrong = key;
+    wrong[0] = if wrong[0] == b'A' { b'B' } else { b'A' };
+    assert!(
+        restore(&wrong)[0] == st::WRONG_KEY,
+        "a wrong recovery key opened the stick"
+    );
+    let r = restore(&key);
+    assert!(
+        r[0] == st::OK && r[1] + r[2] >= all,
+        "the documents did not come back: {r:?} (backed up {all})"
+    );
+    let into = me
+        .lookup(docs, "From the stick")
+        .expect("the folder they came back in");
+    assert!(r[3] == into);
+    let back = me.lookup(into, "plants.txt").expect("plants.txt came back");
+    let mut b = [0u8; 9];
+    assert!(me.read(back, &mut b).is_some() && &b == b"all done\n");
+    assert!(
+        me.lookup(into, "diary.txt").is_none(),
+        "a forgotten document came back from the stick"
+    );
+    // By hand: Settings, B backs up, R shows the recovery key.
+    let settings = x.window_of(role::SETTINGS).expect("Settings' window");
+    ask(ep, dk::RAISE, &[settings]);
+    let before = me.call(fs::STICK, &[])[3];
+    assert!(
+        x.keys("b", || me.call(fs::STICK, &[])[3] == before + 1, SLOW),
+        "B in Settings did not back up"
+    );
+    x.keys("r", || false, 1500);
+    crate::say!("screenshot backup");
+    x.keys("r", || false, 500);
+    pass(
+        "backup: locked on the stick, only what changed, forgetting reaches it, and it comes back with the recovery key",
+    );
 }
 
 /// Backspace `erase` times, then type `name` and Enter.
@@ -375,4 +481,67 @@ fn name_keys<'a>(buf: &'a mut [u8; 256], erase: usize, name: &str) -> &'a str {
     buf[n..n + 7].copy_from_slice(b"{enter}");
     n += 7;
     core::str::from_utf8(&buf[..n]).unwrap_or("")
+}
+
+/// Check 91: the private-file guard (decision 27, rule B1).
+fn private_files(
+    x: &mut Session<'_>,
+    me: &Files,
+    them: &Files,
+    docs: u64,
+    summary: u64,
+    pass: &mut dyn FnMut(&str),
+) {
+    let ep = x.ep;
+    let private = |f: u64| me.call(fs::PRIVATE, &[f, 2])[1] == 1;
+    let marked = |app: u64| {
+        let r = me.call(fs::MARKS, &[]);
+        let b = me.buf();
+        (0..r[1] as usize)
+            .any(|i| u64::from_le_bytes(b[24 * i..24 * i + 8].try_into().unwrap()) == app)
+    };
+    // By hand: the file browser, P on summary.txt.
+    let files = x.window_of(role::FILES).expect("the file browser's window");
+    ask(ep, dk::RAISE, &[files]);
+    let at = me.place_in_docs(docs, b"summary.txt");
+    let mut keys = [0u8; 256];
+    let rows = key_list(&mut keys, at);
+    let rows = &rows[..rows.len() - "{enter}".len()];
+    x.keys(rows, || false, 2500);
+    assert!(
+        x.keys("p", || private(summary), SLOW),
+        "P did not mark summary.txt private"
+    );
+    crate::say!("screenshot private");
+    // Apps cannot mark or unmark.
+    assert!(them.call(fs::PRIVATE, &[summary, 0])[0] != st::OK);
+    assert!(them.call(fs::MARKS, &[])[0] != st::OK);
+    // Alaya's own programs read it without being marked (rule B1).
+    let mut b = [0u8; 8];
+    assert!(me.read(summary, &mut b).is_some());
+    assert!(!marked(fs::INIT_APP), "the first program was marked");
+    // An app handed it, reading it, is marked; until it closes.
+    assert!(me.grant(STRANGER, summary, false, 0, 0) == st::OK);
+    assert!(!marked(STRANGER));
+    assert!(them.call(fs::STAT, &[summary, 0, 0])[0] == st::OK);
+    assert!(
+        !marked(STRANGER),
+        "looking at a private file's size marked an app"
+    );
+    assert!(them.call(fs::READ, &[summary, 0, 8])[0] == st::OK);
+    assert!(
+        marked(STRANGER),
+        "an app read a private file and was not marked"
+    );
+    assert!(me.call(fs::APP_CLOSED, &[STRANGER])[0] == st::OK);
+    assert!(!marked(STRANGER), "the mark outlived the app");
+    me.call(fs::REVOKE, &[STRANGER, summary]);
+    // Not private any more.
+    assert!(
+        x.keys("p", || !private(summary), SLOW),
+        "P did not unmark it"
+    );
+    pass(
+        "private files: an app that reads one is marked until it closes; Alaya's own programs never are",
+    );
 }

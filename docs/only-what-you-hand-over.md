@@ -59,7 +59,7 @@ version only, own files stay own and survive a restart, forgetting takes a
 file back from every app, and forgetting waits, can be cancelled, then
 leaves old versions unreadable.
 
-Inside Alaya (`cargo xtask test`), checks 85 to 90:
+Inside Alaya (`cargo xtask test`), checks 85 to 92:
 
 | Check | What it shows |
 | --- | --- |
@@ -69,6 +69,8 @@ Inside Alaya (`cargo xtask test`), checks 85 to 90:
 | 88 | Settings lists what each app can see and takes it back |
 | 89 | Forget for good: gone at once, kept with K, then no version can be read and no app has it |
 | 90 | Search finds a sentence that is no longer in a file, never a forgotten file; an app cannot search; Alaya key + F, typing and Enter hand the editor that one older version, read only |
+| 91 | Private files: P in the file browser marks one; an app that reads it is marked until it closes; Alaya's own programs never are |
+| 92 | Backup: locked on the stick (no words or names in the clear), only what changed, forgetting reaches the stick, a wrong recovery key opens nothing, the right one brings the documents back; B in Settings backs up |
 
 ## Search that remembers
 
@@ -90,9 +92,43 @@ keeps it under a new name.
 - **Your files only.** Each person's search sees only their own
   documents.
 
-## What is not there yet
+## Backup to a stick
 
-- Backup and the private-file guard are the rest of step 2.
+Settings has a **Backup** part. B backs up now; after that Alaya backs
+up by itself every ten minutes when something changed. In QEMU the
+stick is a second virtual drive (`build/stick.img`), with its own driver
+keeper, so its driver can crash without touching your disk. Real USB
+sticks come in milestone 11.
+
+- **Locked with your recovery key.** The first time, Settings shows a
+  recovery key: 32 letters and digits like `ABCD-EFGH-...`. Write it
+  down. It is the only way to open the stick on another Alaya. R shows it
+  again while you are logged in.
+- **Only what changed.** The machine remembers what the stick got last
+  time; a run writes only documents and folders that changed, and notes
+  what was removed.
+- **Forget reaches the stick.** Each document has its own key on the
+  stick. When you forget a document, the next run leaves its key out and
+  writes both key tables, so its old copies there cannot be read either.
+- **A cut-off run harms nothing.** Two headers and two key tables are
+  used in turn; the newest one that opens wins.
+- **Getting them back.** G in Settings, type the recovery key, Enter.
+  The documents come back as they were at the last run, in a folder
+  called "From the stick" (or straight into your documents when they are
+  empty, as on a fresh Alaya).
+
+## Private files
+
+P in the file browser marks a document **private** (decision 27). An app
+that reads a private document is **marked** until it closes, and
+Settings says so. A marked app will need your OK before it goes online;
+Alaya has no network yet, so for now the mark is recorded and shown. The
+mark spreads to an app that takes data from a marked one, but never to
+Alaya's own carriers (the desktop, the store, the clipboard): otherwise
+everything would be marked after one private file (rule B1). Apps cannot
+mark or unmark anything.
+
+## What is not there yet
 - App files (settings, return points) are not yet kept apart per app.
 - The chart maker still finds its numbers by name (it made them); it
   gets an Open window when it can draw charts of other files.
