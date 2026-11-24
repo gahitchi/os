@@ -35,13 +35,36 @@ Choose the installed app's bundle in the file browser again and press **Enter**:
 
 and shows a **receipt** with each of these lines, ending with "Nothing of this app is left that could act or see your files" only when the store's own check says so (decision 147). The bundle is kept so one undo can bring the app back.
 
+## Updates that cannot take more on their own (milestone 8, step 2)
+
+A later version of an installed app is a bundle with the same maker and name and a higher version. Choose it in the file browser and press **Enter**:
+
+- **It asks for nothing new**: it is taken at once, never held back. It keeps what you allowed before; a line its new promise drops is gone.
+- **It asks for more**: a **difference screen** shows only the new lines, each **off** until you tick it. **Enter** updates; **Escape** is "not now" and you keep the version you have.
+- An **older** version is never installed this way; undo is the way back.
+
+The version before is kept, so **Alaya key + Z** swaps back (and redo swaps again). A new version starts the next time you open it.
+
+### The trial and the Experience Guardian
+
+A new version is **on trial for its next three starts**:
+
+- Alaya notes what it **tried** beyond what you allowed (for now: notifications with that line unticked). The install sheet shows it as what it tried, **never as proof that it is safe** (R12).
+- The **Experience Guardian** times each start, from Alaya starting the program to its window opening. Off trial, it learns how long the app usually takes. On trial, a start **clearly slower** than usual (more than twice the usual time, and a second more) takes the app back to the version before, by itself, with a note saying why; the window of the slow version closes. A version its maker marked a **security fix** (a signed flag in the bundle) is never taken back for being slower.
+
 ## For makers
 
-`cargo xtask` builds the example app **Postcards** (`user/apps/src/bin/postcards.rs`), cuts its program down to what is loaded, signs it with the **example maker key** (public on purpose, in `xtask/src/bundles.rs`; for test apps only) and puts it in the boot image as `example-apps`. A real maker keeps their secret key secret.
+`cargo xtask` builds the example app **Postcards** (`user/apps/src/bin/postcards.rs`), cuts its program down to what is loaded, signs it with the **example maker key** (public on purpose, in `xtask/src/bundles.rs`; for test apps only) and puts it in the boot image as `example-apps`, in five versions: 2 asks for nothing new, 3 also wants the network, 4 is slow to start on purpose, 5 is slow too but marked a security fix. A real maker keeps their secret key secret.
 
-## Checked in every boot test (checks 110 to 113)
+A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like everything else, and a flag Alaya does not know is refused.
+
+## Checked in every boot test (checks 110 to 117)
 
 - 110: a bundle with one byte changed after signing is refused; nothing is installed.
 - 111: installed on the side with the files line unticked, then approved; the app's store handle really is absent.
 - 112: one undo takes the install away; its window closes and it cannot start.
 - 113: installed with files, it writes a postcard; removed, the receipt shows nothing left, the postcard stays.
+- 114: an update asking for nothing new is taken at once and goes on trial; its refused notification is noted as what it tried.
+- 115: an update that also wants the network waits on the difference screen; "not now" keeps version 2; updating leaves the new line off.
+- 116: one undo takes the update back.
+- 117: a clearly slower version 4 goes back to version 2 by itself; a slower security fix (version 5) is kept.

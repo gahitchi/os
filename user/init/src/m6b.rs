@@ -345,6 +345,16 @@ impl<'a> Session<'a> {
                 Ok(x) => Some(x),
                 Err(e) => {
                     say!("installed app {} not started: {e}", r - role::INSTALLED);
+                    // A copy still running ends too: it may not run.
+                    let a = self.apps[i];
+                    if a.ut != 0 {
+                        let k = &mut self.s.k;
+                        let _ = alaya_sys::revoke(k.at(a.ut));
+                        for x in a.slots..a.slots + APP_SLOTS {
+                            let _ = alaya_sys::delete(k.at(x));
+                        }
+                        self.apps[i].thread = 0;
+                    }
                     return;
                 }
             }
@@ -409,6 +419,12 @@ impl<'a> Session<'a> {
         args[dk::ARG_ROLE] = r;
         args[dk::ARG_CHANNEL] = ch;
         args[dk::ARG_FONTS..dk::ARG_FONTS + 4].copy_from_slice(&self.sizes);
+        if let Some(x) = &ready {
+            args[dk::ARG_VERSION] = u64::from(x.version);
+            args[dk::ARG_MAY] = u64::from(x.granted);
+            // The desktop times it, for the Experience Guardian.
+            ask(self.ep, dk::STARTING, &[r]);
+        }
         let app_sc = sc(k, 1000, 1000);
         let clock = sc(k, 50, 10_000);
         let mut parent = Parent {
@@ -438,8 +454,9 @@ impl<'a> Session<'a> {
         if let Some(x) = &ready {
             let n = x.name.iter().position(|&c| c == 0).unwrap_or(32);
             say!(
-                "starting {} (place {}), files {}",
+                "starting {} {} (place {}), files {}",
                 core::str::from_utf8(&x.name[..n]).unwrap_or("?"),
+                x.version,
                 r - role::INSTALLED,
                 if files { "allowed" } else { "not allowed" }
             );
@@ -1044,6 +1061,7 @@ pub(crate) fn run<'a>(
     crate::m7g::run(&mut x, pass);
     crate::m7h::run(&mut x, pass);
     crate::m8a::run(&mut x, pass);
+    crate::m8b::run(&mut x, pass);
     x
 }
 

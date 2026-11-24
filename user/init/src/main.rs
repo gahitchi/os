@@ -35,6 +35,7 @@ mod m7f;
 mod m7g;
 mod m7h;
 mod m8a;
+mod m8b;
 
 alaya_sys::start_code!(main);
 

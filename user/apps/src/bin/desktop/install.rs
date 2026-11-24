@@ -12,13 +12,23 @@
 //! Removing an app ends with a receipt from the store's own records: the
 //! hand-overs it had (taken back, then checked again: none left), the
 //! files it made (yours, kept), its running copy (ended).
+//!
+//! Updates (milestone 8, step 2): a later version of the same app (the
+//! same maker and name) asking for nothing new is taken at once; one that
+//! asks for more waits on a difference screen, with the new lines off
+//! until the person ticks them (R11). The version before is kept, so one
+//! undo swaps back. A new version is on trial for its first starts: Alaya
+//! notes what it tries beyond what the person allowed (shown as what it
+//! tried, never as proof that it is safe, R12), and the Experience
+//! Guardian times its start: clearly slower, and it goes back to the
+//! version before by itself, unless the maker marked it a security fix.
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use alaya_apps::store::label;
-use alaya_bundle::{Bundle, promise};
+use alaya_bundle::{Bundle, flags, promise};
 use alaya_programs::desktop::{self as dk, installed as ins, role};
 use alaya_programs::files::{self as fs, APPS, act};
 use alaya_sys::say;
@@ -30,10 +40,39 @@ use super::{Desk, JobView};
 #[derive(Clone, Default)]
 pub(crate) struct Place {
     pub state: u8,
+    /// What it may: its promise, less what the person unticked.
     pub ticked: u32,
     pub version: u32,
+    pub promise: u32,
     pub id: u64,
     pub name: String,
+    /// Starts left on trial (a new version).
+    pub trial: u8,
+    pub flags: u32,
+    /// Its usual start time, from starts off trial (ms).
+    pub usual_ms: u32,
+    /// The version kept for undo.
+    pub kept: Kept,
+    /// What it tried beyond what it may, during its trial.
+    pub tried: u32,
+    /// The version the Experience Guardian went back from (0: none).
+    pub went_back_from: u32,
+    pub last_ms: u32,
+}
+
+/// The other version of a place, kept for undo.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Kept {
+    pub ticked: u32,
+    pub version: u32,
+    pub promise: u32,
+    pub flags: u32,
+}
+
+/// Clearly slower: more than twice the usual start time, and a second
+/// more (so a busy moment is not taken for a slow version).
+fn clearly_slower(ms: u32, usual: u32) -> bool {
+    usual > 0 && ms > usual.saturating_mul(2).saturating_add(1000)
 }
 
 pub(crate) enum Stage {
@@ -43,6 +82,8 @@ pub(crate) enum Stage {
     Aside(u64),
     /// Already installed in this place: keep it, or remove it.
     Installed(u64),
+    /// A later version asks for more: the new lines, to tick or not.
+    Update(u64),
     /// Refused (why), or a removal's receipt: lines to read.
     Read(Vec<String>),
 }
@@ -52,6 +93,9 @@ pub(crate) struct Install {
     name: String,
     version: u32,
     promise: u32,
+    flags: u32,
+    /// What a later version asks for beyond the one installed.
+    more: u32,
     id: u64,
     maker: String,
     ticked: u32,
@@ -97,9 +141,21 @@ impl Desk {
         let at = ins::at(p, slot);
         let r = &mut b[at..at + ins::RECORD];
         r.fill(0);
+        let mut put = |at: usize, v: u32| r[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        put(4, place.ticked);
+        put(8, place.version);
+        put(12, place.promise);
+        put(60, place.usual_ms);
+        put(64, place.kept.ticked);
+        put(68, place.kept.version);
+        put(72, place.kept.promise);
+        put(76, place.kept.flags);
+        put(80, place.tried);
+        put(84, place.went_back_from);
+        put(88, place.last_ms);
         r[0] = place.state;
-        r[4..8].copy_from_slice(&place.ticked.to_le_bytes());
-        r[8..12].copy_from_slice(&place.version.to_le_bytes());
+        r[56] = place.trial;
+        r[57] = place.flags as u8;
         r[16..24].copy_from_slice(&place.id.to_le_bytes());
         let n = place.name.len().min(32);
         r[24..24 + n].copy_from_slice(&place.name.as_bytes()[..n]);
@@ -120,12 +176,26 @@ impl Desk {
             let at = ins::at(p, slot);
             let r = &b[at..at + ins::RECORD];
             let n = r[24..56].iter().position(|&c| c == 0).unwrap_or(32);
+            let get = |at: usize| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
             self.installed[slot as usize] = Place {
                 state: r[0],
-                ticked: u32::from_le_bytes(r[4..8].try_into().unwrap()),
-                version: u32::from_le_bytes(r[8..12].try_into().unwrap()),
+                ticked: get(4),
+                version: get(8),
+                promise: get(12),
                 id: u64::from_le_bytes(r[16..24].try_into().unwrap()),
                 name: String::from_utf8_lossy(&r[24..24 + n]).into_owned(),
+                trial: r[56],
+                flags: u32::from(r[57]),
+                usual_ms: get(60),
+                kept: Kept {
+                    ticked: get(64),
+                    version: get(68),
+                    promise: get(72),
+                    flags: get(76),
+                },
+                tried: get(80),
+                went_back_from: get(84),
+                last_ms: get(88),
             };
         }
     }
@@ -162,6 +232,8 @@ impl Desk {
             name: String::new(),
             version: 0,
             promise: 0,
+            flags: 0,
+            more: 0,
             id: 0,
             maker: String::new(),
             ticked: 0,
@@ -174,26 +246,40 @@ impl Desk {
         };
         let x = match Bundle::read(&bytes) {
             Ok(b) => {
-                let stage = match self
+                let found = self
                     .installed
                     .iter()
-                    .position(|p| p.id == b.id() && p.state != ins::EMPTY)
-                {
+                    .position(|p| p.id == b.id() && p.state != ins::EMPTY);
+                let stage = match found {
+                    Some(i)
+                        if self.installed[i].state == ins::ON
+                            && b.version > self.installed[i].version =>
+                    {
+                        Stage::Update(i as u64)
+                    }
                     Some(i) if self.installed[i].state == ins::ON => Stage::Installed(i as u64),
                     Some(i) => Stage::Aside(i as u64),
                     None => Stage::Review,
                 };
                 let maker = String::from_utf8_lossy(&b.maker_code()).into_owned();
+                let update = matches!(stage, Stage::Update(_));
                 Install {
                     name: String::from(b.name()),
                     version: b.version,
                     promise: b.promise,
+                    flags: b.flags,
+                    more: found.map_or(0, |i| b.promise & !self.installed[i].promise),
                     id: b.id(),
                     maker,
-                    ticked: b.promise,
+                    // New lines of an update are off until ticked (R11).
+                    ticked: if update { 0 } else { b.promise },
                     chosen: 0,
                     stage,
-                    title: format!("Install {}?", b.name()),
+                    title: format!(
+                        "{} {}?",
+                        if update { "Update" } else { "Install" },
+                        b.name()
+                    ),
                     bytes: Vec::new(),
                 }
             }
@@ -202,13 +288,21 @@ impl Desk {
                 refused(e.words())
             }
         };
-        let x = if matches!(x.stage, Stage::Review) {
+        let x = if matches!(x.stage, Stage::Review | Stage::Update(_)) {
             Install { bytes, ..x }
         } else {
             x
         };
         say!("install: offered {} version {}", x.name, x.version);
-        self.install = Some(x);
+        // Asking for nothing new, it is never held back.
+        if let Stage::Update(slot) = x.stage
+            && x.more == 0
+        {
+            let granted = self.installed[slot as usize].ticked & x.promise;
+            self.update(x, slot, granted);
+        } else {
+            self.install = Some(x);
+        }
         self.damage_all();
         dk::OK
     }
@@ -256,9 +350,41 @@ impl Desk {
                 v.no = "Remove";
                 v.foot = String::from("Enter: approve, and it joins your dock · Escape: remove it");
             }
-            Stage::Installed(_) => {
+            Stage::Update(slot) => {
+                let place = &self.installed[*slot as usize];
+                v.hint = format!(
+                    "{} version {} from the maker {}. Its signature checks out. You have version {}; \
+                     the new version also wants what is below, off unless you tick it.",
+                    x.name, x.version, x.maker, place.version
+                );
+                v.rows = lines(x.more)
+                    .iter()
+                    .map(|(bit, words)| {
+                        format!(
+                            "{}   {words}",
+                            if x.ticked & bit != 0 { "On " } else { "Off" }
+                        )
+                    })
+                    .collect();
+                v.ok = "Update";
+                v.no = "Not now";
+                v.foot = format!(
+                    "Space: tick or untick the line · Enter: update · Escape: not now, keep version {}",
+                    place.version
+                );
+            }
+            Stage::Installed(slot) => {
+                let place = &self.installed[*slot as usize];
                 v.title = format!("{} is installed", x.name);
-                v.rows = alloc::vec![format!("It may: {}", self.may_words(x.ticked & x.promise))];
+                v.rows = alloc::vec![format!("It may: {}", self.may_words(place.ticked))];
+                if x.version < place.version {
+                    v.rows.push(format!(
+                        "This file is version {}, older than yours ({}): Alaya does not go back \
+                         this way. Undo does.",
+                        x.version, place.version
+                    ));
+                }
+                v.rows.extend(trial_lines(place));
                 v.mark = false;
                 v.ok = "Keep";
                 v.no = "Remove";
@@ -288,6 +414,30 @@ impl Desk {
     pub(crate) fn install_key(&mut self, k: Key) {
         let Some(x) = &mut self.install else { return };
         match (&x.stage, k) {
+            (Stage::Update(_), Key::Up) => x.chosen = x.chosen.saturating_sub(1),
+            (Stage::Update(_), Key::Down) => {
+                x.chosen = (x.chosen + 1).min(lines(x.more).len().saturating_sub(1));
+            }
+            (Stage::Update(_), Key::Char(' ')) => {
+                if let Some((bit, _)) = lines(x.more).get(x.chosen) {
+                    x.ticked ^= bit;
+                }
+            }
+            (Stage::Update(slot), Key::Enter) => {
+                let slot = *slot;
+                let x = self.install.take().unwrap();
+                let had = self.installed[slot as usize].ticked;
+                let granted = (had & x.promise) | (x.ticked & x.more);
+                self.update(x, slot, granted);
+            }
+            (Stage::Update(slot), Key::Escape) => {
+                say!(
+                    "install: not now; {} stays at version {}",
+                    x.name,
+                    self.installed[*slot as usize].version
+                );
+                self.install = None;
+            }
             (Stage::Review, Key::Up) => x.chosen = x.chosen.saturating_sub(1),
             (Stage::Review, Key::Down) => {
                 x.chosen = (x.chosen + 1).min(lines(x.promise).len().saturating_sub(1));
@@ -345,8 +495,11 @@ impl Desk {
             state: ins::ASIDE,
             ticked: x.ticked & x.promise,
             version: x.version,
+            promise: x.promise,
+            flags: x.flags,
             id: x.id,
             name: x.name.clone(),
+            ..Place::default()
         };
         if kept.is_err() || self.write_record(p, slot, &place).is_err() {
             say!("install: {} could not be kept", x.name);
@@ -443,11 +596,13 @@ impl Desk {
             return;
         }
         if !undoable {
-            let mut nb = [0u8; 8];
+            let (mut nb, mut nk) = ([0u8; 8], [0u8; 8]);
             let file = ins::bundle_file(p, slot, &mut nb);
+            let kept = ins::kept_file(p, slot, &mut nk);
             let m = &self.machine;
             if let Ok(a) = m.root(APPS) {
                 let _ = m.remove(a, file);
+                let _ = m.remove(a, kept);
                 let _ = m.save();
             }
         } else {
@@ -489,6 +644,8 @@ impl Desk {
             name: name.clone(),
             version: place.version,
             promise: 0,
+            flags: 0,
+            more: 0,
             id: place.id,
             maker: String::new(),
             ticked: 0,
@@ -535,9 +692,286 @@ impl Desk {
                 Stage::Aside(_) => 2,
                 Stage::Installed(_) => 3,
                 Stage::Read(_) => 4,
+                Stage::Update(_) => 5,
             })),
             gone | left << 16,
             taken | made << 32,
         ]
     }
+
+    /// Whether the app of role `owner` may do what promise line `bit`
+    /// covers: Alaya's own apps may; an installed one only when approved,
+    /// its promise says so and the person left the line ticked. A refused
+    /// ask during a trial is noted as what it tried.
+    pub(crate) fn may(&mut self, owner: u64, bit: u32) -> bool {
+        if !role::installed(owner) {
+            return true;
+        }
+        let slot = owner - role::INSTALLED;
+        let place = &self.installed[slot as usize];
+        if place.state == ins::ON && place.ticked & bit != 0 {
+            return true;
+        }
+        say!("{} asked for what it may not ({bit:#x})", place.name);
+        if place.trial > 0
+            && let Some(p) = self.person_id()
+        {
+            let mut place = place.clone();
+            place.tried += 1;
+            let _ = self.write_record(p, slot, &place);
+        }
+        false
+    }
+
+    /// Take version `x` for `slot`, with `granted`; the version before is
+    /// kept for one undo, and the new one is on trial.
+    fn update(&mut self, x: Install, slot: u64, granted: u32) {
+        let Some(p) = self.person_id() else { return };
+        let old = self.installed[slot as usize].clone();
+        let (mut nb, mut nk) = ([0u8; 8], [0u8; 8]);
+        let file = ins::bundle_file(p, slot, &mut nb);
+        let kept = ins::kept_file(p, slot, &mut nk);
+        let m = &self.machine;
+        let done = m.root(APPS).and_then(|a| {
+            let now = m.lookup(a, file).and_then(|f| m.read_all(f))?;
+            m.open(a, kept).and_then(|f| m.write_all(f, &now))?;
+            m.open(a, file).and_then(|f| m.write_all(f, &x.bytes))
+        });
+        let place = Place {
+            ticked: granted & x.promise,
+            version: x.version,
+            promise: x.promise,
+            flags: x.flags,
+            trial: ins::TRIAL_STARTS,
+            kept: Kept {
+                ticked: old.ticked,
+                version: old.version,
+                promise: old.promise,
+                flags: old.flags,
+            },
+            tried: 0,
+            went_back_from: 0,
+            last_ms: 0,
+            ..old.clone()
+        };
+        if done.is_err() || self.write_record(p, slot, &place).is_err() {
+            say!("update: {} could not be kept", x.name);
+            self.install = Some(Install {
+                stage: Stage::Read(alloc::vec![String::from(
+                    "Not updated: the disk did not take it. You keep the version you had."
+                )]),
+                bytes: Vec::new(),
+                ..x
+            });
+            return;
+        }
+        self.record(
+            act::SETTINGS,
+            &self.app_label(label::UPDATE, slot, &place.name),
+        );
+        say!(
+            "update: {} {} to {}, may {:#x}, on trial for {} starts{}",
+            place.name,
+            old.version,
+            place.version,
+            place.ticked,
+            place.trial,
+            if place.flags & flags::SECURITY_FIX != 0 {
+                " (a security fix)"
+            } else {
+                ""
+            }
+        );
+        let mut read = alloc::vec![
+            format!(
+                "Updated from version {} to {}. {}",
+                old.version,
+                place.version,
+                if x.more == 0 {
+                    String::from("It asks for nothing new.")
+                } else {
+                    format!("It may: {}.", self.may_words(place.ticked))
+                }
+            ),
+            format!(
+                "On trial for its next {} starts: Alaya notes what it tries beyond what you \
+                 allowed.",
+                place.trial
+            ),
+        ];
+        read.push(if place.flags & flags::SECURITY_FIX != 0 {
+            String::from("It is a security fix, so it is never held back or taken back.")
+        } else {
+            String::from("If it is clearly slower to start, Alaya goes back to the version before by itself.")
+        });
+        read.push(String::from(
+            "The new version starts the next time you open it. Undo takes you back.",
+        ));
+        self.install = Some(Install {
+            stage: Stage::Read(read),
+            title: format!("{} is updated", x.name),
+            bytes: Vec::new(),
+            ..x
+        });
+    }
+
+    /// Swap a place's two versions (undo, redo, and the Experience
+    /// Guardian going back). The version swapped in is not on trial.
+    fn swap_versions(&mut self, slot: u64) -> bool {
+        let Some(p) = self.person_id() else {
+            return false;
+        };
+        let mut place = self.installed[slot as usize].clone();
+        if place.kept.version == 0 {
+            return false;
+        }
+        let (mut nb, mut nk) = ([0u8; 8], [0u8; 8]);
+        let file = ins::bundle_file(p, slot, &mut nb);
+        let kept = ins::kept_file(p, slot, &mut nk);
+        let m = &self.machine;
+        let done = m.root(APPS).and_then(|a| {
+            let now = m.lookup(a, file).and_then(|f| m.read_all(f))?;
+            let before = m.lookup(a, kept).and_then(|f| m.read_all(f))?;
+            m.open(a, file).and_then(|f| m.write_all(f, &before))?;
+            m.open(a, kept).and_then(|f| m.write_all(f, &now))
+        });
+        if done.is_err() {
+            return false;
+        }
+        let k = place.kept;
+        place.kept = Kept {
+            ticked: place.ticked,
+            version: place.version,
+            promise: place.promise,
+            flags: place.flags,
+        };
+        place.ticked = k.ticked;
+        place.version = k.version;
+        place.promise = k.promise;
+        place.flags = k.flags;
+        place.trial = 0;
+        place.tried = 0;
+        self.write_record(p, slot, &place).is_ok()
+    }
+
+    /// An undo or redo of an update: the two versions swap.
+    pub(crate) fn undo_update(&mut self, l: &[u8]) {
+        let slot = u64::from(l[1]);
+        if slot >= role::INSTALLED_MAX || !self.swap_versions(slot) {
+            return;
+        }
+        let place = &self.installed[slot as usize];
+        say!(
+            "update: {} is at version {} again",
+            place.name,
+            place.version
+        );
+    }
+
+    /// The window of installed place `slot` opened: how long its start
+    /// took, and, on trial, whether it is clearly slower than usual.
+    pub(crate) fn started(&mut self, slot: u64) {
+        let i = slot as usize;
+        let t0 = core::mem::take(&mut self.starting[i]);
+        let Some(p) = self.person_id() else { return };
+        if t0 == 0 || self.installed[i].state != ins::ON {
+            return;
+        }
+        let ms = alaya_sys::rt::now_ms().saturating_sub(t0) as u32;
+        let mut place = self.installed[i].clone();
+        place.last_ms = ms;
+        say!(
+            "{} {} started in {ms} ms (usually {} ms){}",
+            place.name,
+            place.version,
+            place.usual_ms,
+            if place.trial > 0 { ", on trial" } else { "" }
+        );
+        if place.trial == 0 {
+            place.usual_ms = if place.usual_ms == 0 {
+                ms
+            } else {
+                (place.usual_ms * 3 + ms) / 4
+            };
+            let _ = self.write_record(p, slot, &place);
+            return;
+        }
+        place.trial -= 1;
+        let slower = clearly_slower(ms, place.usual_ms);
+        let _ = self.write_record(p, slot, &place);
+        if !slower {
+            return;
+        }
+        if place.flags & flags::SECURITY_FIX != 0 {
+            say!(
+                "{} {} is slower, but a security fix: kept",
+                place.name,
+                place.version
+            );
+            return;
+        }
+        // The Experience Guardian: back to the version before.
+        let from = place.version;
+        self.forget(role::INSTALLED + slot);
+        if !self.swap_versions(slot) {
+            return;
+        }
+        let mut back = self.installed[i].clone();
+        back.went_back_from = from;
+        let _ = self.write_record(p, slot, &back);
+        self.record(
+            act::SETTINGS,
+            &self.app_label(label::UPDATE, slot, &back.name),
+        );
+        say!(
+            "guardian: {} {from} took {ms} ms to start (usually {} ms): back to version {}",
+            back.name,
+            back.usual_ms,
+            back.version
+        );
+        self.say_note(format!(
+            "{} {from} was much slower to start, so Alaya went back to version {}",
+            back.name, back.version
+        ));
+    }
+
+    /// `dk::TRIAL` for the checks.
+    pub(crate) fn trial_words(&self, slot: u64) -> [u64; 6] {
+        let Some(place) = self.installed.get(slot as usize) else {
+            return [dk::BAD_REQUEST, 0, 0, 0, 0, 0];
+        };
+        [
+            dk::OK,
+            u64::from(place.trial)
+                | u64::from(place.tried & 0xff) << 8
+                | u64::from(place.went_back_from) << 16
+                | u64::from(place.flags) << 48,
+            u64::from(place.usual_ms),
+            u64::from(place.last_ms),
+            u64::from(place.kept.version),
+            0,
+        ]
+    }
+}
+
+/// What the install sheet says of a place's trial.
+fn trial_lines(place: &Place) -> Vec<String> {
+    let mut l = Vec::new();
+    if place.trial > 0 {
+        l.push(format!(
+            "Version {} is on trial for {} more starts. It tried {} {} beyond what you allowed \
+             (what it tried, not proof that it is safe).",
+            place.version,
+            place.trial,
+            place.tried,
+            if place.tried == 1 { "thing" } else { "things" }
+        ));
+    }
+    if place.went_back_from != 0 {
+        l.push(format!(
+            "Version {} was much slower to start, so Alaya went back to version {}.",
+            place.went_back_from, place.version
+        ));
+    }
+    l
 }

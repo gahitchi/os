@@ -1095,6 +1095,17 @@ pub mod desktop {
     /// last removal's role | what was left << 16, and what was taken back
     /// | what it made << 32 (the first program only, for checks).
     pub const INSTALLED: u64 = 39;
+    /// STARTING: role → status. The first program is starting an
+    /// installed app now; the desktop times how long until its window
+    /// opens (the Experience Guardian, milestone 8 step 2). The first
+    /// program only.
+    pub const STARTING: u64 = 40;
+    /// TRIAL: place → status, starts left on trial | what it tried beyond
+    /// what it may << 8 | the version the Experience Guardian went back
+    /// from << 16 | flags << 48, the usual start time in ms, the last
+    /// start time in ms, and the version kept for undo (the first program
+    /// only, for checks).
+    pub const TRIAL: u64 = 41;
     pub mod reader_role {
         pub const WINDOW: u64 = 0;
         pub const LABEL: u64 = 1;
@@ -1200,6 +1211,8 @@ pub mod desktop {
     pub const NO_MEMORY: u64 = 2;
     pub const EMPTY: u64 = 3;
     pub const BAD_REQUEST: u64 = 4;
+    /// Its promise does not say so, or the person unticked the line.
+    pub const NOT_ALLOWED: u64 = 5;
 
     /// Event kinds.
     pub mod event {
@@ -1248,7 +1261,16 @@ pub mod desktop {
     /// its name (24 to 56, padded with zeros).
     pub mod installed {
         pub const FILE: &str = "installed";
-        pub const RECORD: usize = 64;
+        /// A place's record: state (byte 0), what it may (4), version
+        /// (8), promise (12), the app's number (16), name (24 to 56),
+        /// starts left on trial (56), flags (57), the usual start time in
+        /// ms (60); the version kept for undo: what it may (64), version
+        /// (68), promise (72), flags (76); what it tried beyond what it
+        /// may during its trial (80); the version the Experience Guardian
+        /// went back from (84); the last start time in ms (88).
+        pub const RECORD: usize = 128;
+        /// How many starts a new version is on trial for.
+        pub const TRIAL_STARTS: u8 = 3;
         /// Nothing in this place.
         pub const EMPTY: u8 = 0;
         /// Installed on the side: kept, not yet approved.
@@ -1265,6 +1287,13 @@ pub mod desktop {
             *out = *b"app-0-0\0";
             out[4] = b'0' + person as u8;
             out[6] = b'0' + slot as u8;
+            core::str::from_utf8(&out[..7]).unwrap()
+        }
+        /// The file holding the version kept for undo (the one before
+        /// an update, or after it, once undone).
+        pub fn kept_file(person: u64, slot: u64, out: &mut [u8; 8]) -> &str {
+            bundle_file(person, slot, out);
+            out[..3].copy_from_slice(b"old");
             core::str::from_utf8(&out[..7]).unwrap()
         }
     }
@@ -1339,6 +1368,10 @@ pub mod desktop {
     pub const APP_G_STORE: u64 = 2;
     pub const ARG_ROLE: usize = 0;
     pub const ARG_CHANNEL: usize = 1;
+    /// An installed app's version, from its bundle, and what it may
+    /// (promise bits).
+    pub const ARG_VERSION: usize = 6;
+    pub const ARG_MAY: usize = 7;
 
     /// Key codes (the numbers virtio input sends) for typed text on a US
     /// keyboard: each character of `spec` as (code, modifiers: 1 Shift,

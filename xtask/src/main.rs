@@ -538,12 +538,7 @@ fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathB
     let postcards = fs::read(user_binary(arch, release, "postcards"))
         .map_err(|e| format!("read postcards: {e}"))?;
     let postcards = bundles::loaded_only(&postcards)?;
-    let examples = bundles::pack(&[bundles::Example {
-        name: "Postcards",
-        version: 1,
-        promise: bundles::POSTCARDS_PROMISE,
-        program: &postcards,
-    }])?;
+    let examples = bundles::pack(&bundles::postcards(&postcards))?;
     fs::write(iso_root.join("boot/example-apps"), examples)
         .map_err(|e| format!("write example-apps: {e}"))?;
     conf.push_str("    module_path: boot():/boot/example-apps\n");

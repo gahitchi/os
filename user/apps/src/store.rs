@@ -1162,6 +1162,10 @@ pub mod label {
     pub const INSTALL: u8 = b'i';
     /// An app was removed: its place, then its name.
     pub const REMOVE: u8 = b'x';
+    /// An app was updated, or taken back to the version before by the
+    /// Experience Guardian: its place, then its name. Undo and redo both
+    /// swap the two versions kept.
+    pub const UPDATE: u8 = b'u';
 }
 
 /// A label for the undo list: what (a [`label`] letter) and the name.
@@ -1202,6 +1206,7 @@ pub fn describe(label: &[u8]) -> String {
         Some(&label::FINISH) => alloc::format!("finish {}", rest(2)),
         Some(&label::INSTALL) => alloc::format!("install {}", rest(2)),
         Some(&label::REMOVE) => alloc::format!("remove {}", rest(2)),
+        Some(&label::UPDATE) => alloc::format!("update {}", rest(2)),
         Some(&label::TASK) => match (label.get(2).copied(), label.get(3).copied()) {
             (_, Some(3)) => alloc::format!("pause {}", rest(4)),
             (Some(3), Some(1)) => alloc::format!("go on with {}", rest(4)),

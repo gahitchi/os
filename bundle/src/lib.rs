@@ -14,7 +14,7 @@
 //! | 108 to 112 | the promise ([`promise`] bits) |
 //! | 112 to 144 | the name, UTF-8, padded with zeros |
 //! | 144 to 148 | the program's length |
-//! | 148 to 152 | zero (kept for later) |
+//! | 148 to 152 | flags ([`flags`] bits) |
 //! | 152 on | the program (an ELF file) |
 //!
 //! Nothing may follow the program, every byte after the signature is
@@ -58,6 +58,14 @@ pub mod promise {
     ];
 }
 
+/// What the maker says about this version.
+pub mod flags {
+    /// A security fix: it is never held back or taken back for being
+    /// slower (the Experience Guardian, `commitments.md` section 4).
+    pub const SECURITY_FIX: u32 = 1;
+    pub const ALL: u32 = 1;
+}
+
 /// Why a bundle was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bad {
@@ -71,7 +79,7 @@ pub enum Bad {
     Length,
     /// It promises something Alaya does not know.
     Promise,
-    /// The reserved word is not zero.
+    /// A flag Alaya does not know.
     Reserved,
     /// The signature does not match the maker's key and the contents.
     Signature,
@@ -100,6 +108,7 @@ pub struct Bundle<'a> {
     pub maker: [u8; 32],
     pub version: u32,
     pub promise: u32,
+    pub flags: u32,
     name: &'a str,
     pub program: &'a [u8],
 }
@@ -131,7 +140,7 @@ impl<'a> Bundle<'a> {
         if promise & !promise::ALL != 0 {
             return Err(Bad::Promise);
         }
-        if u32_at(b, 148) != 0 {
+        if u32_at(b, 148) & !flags::ALL != 0 {
             return Err(Bad::Reserved);
         }
         let raw = &b[112..144];
@@ -149,6 +158,7 @@ impl<'a> Bundle<'a> {
             maker,
             version: u32_at(b, 104),
             promise,
+            flags: u32_at(b, 148),
             name,
             program: &b[HEAD..],
         })
@@ -207,6 +217,22 @@ pub fn make(
     program: &[u8],
     out: &mut [u8],
 ) -> Result<usize, Bad> {
+    make_flagged(secret, name, version, promise, 0, program, out)
+}
+
+/// [`make`], with [`flags`].
+pub fn make_flagged(
+    secret: &[u8; 32],
+    name: &str,
+    version: u32,
+    promise: u32,
+    flags: u32,
+    program: &[u8],
+    out: &mut [u8],
+) -> Result<usize, Bad> {
+    if flags & !flags::ALL != 0 {
+        return Err(Bad::Reserved);
+    }
     if name.is_empty() || name.len() > MAX_NAME || name.as_bytes().contains(&0) {
         return Err(Bad::Name);
     }
@@ -228,6 +254,7 @@ pub fn make(
     out[108..112].copy_from_slice(&promise.to_le_bytes());
     out[112..112 + name.len()].copy_from_slice(name.as_bytes());
     out[144..148].copy_from_slice(&(program.len() as u32).to_le_bytes());
+    out[148..152].copy_from_slice(&flags.to_le_bytes());
     out[HEAD..].copy_from_slice(program);
     let sig = ed25519::sign(secret, &out[104..]);
     out[40..104].copy_from_slice(&sig);
@@ -315,6 +342,32 @@ mod tests {
         assert_eq!(
             Bundle::read(b"not a bundle at all").unwrap_err(),
             Bad::Short
+        );
+    }
+
+    #[test]
+    fn a_security_fix_is_signed_and_unknown_flags_refused() {
+        let mut b = [0u8; 512];
+        let n = make_flagged(
+            &KEY,
+            "Postcards",
+            4,
+            promise::FILES,
+            flags::SECURITY_FIX,
+            PROGRAM,
+            &mut b,
+        )
+        .unwrap();
+        assert_eq!(Bundle::read(&b[..n]).unwrap().flags, flags::SECURITY_FIX);
+        // Marking a version a security fix after signing is refused.
+        let m = good(&mut b);
+        b[148] = flags::SECURITY_FIX as u8;
+        assert_eq!(Bundle::read(&b[..m]).unwrap_err(), Bad::Signature);
+        b[148] = 0x80;
+        assert_eq!(Bundle::read(&b[..m]).unwrap_err(), Bad::Reserved);
+        assert_eq!(
+            make_flagged(&KEY, "Postcards", 4, 0, 2, PROGRAM, &mut [0u8; 512]).unwrap_err(),
+            Bad::Reserved
         );
     }
 

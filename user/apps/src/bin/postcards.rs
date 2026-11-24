@@ -5,7 +5,12 @@
 //!
 //! It writes a short postcard (`postcard.txt`) when it may use files, and
 //! says plainly when it may not: with "Open and save the files you hand
-//! it" unticked, it is given no way to reach the store at all.
+//! it" unticked, it is given no way to reach the store at all. When it
+//! starts it says hello with a notification, if it may.
+//!
+//! Its version is the bundle's (Alaya passes it). For the Experience
+//! Guardian's check (milestone 8, step 2), versions 4 and 5 are slow to
+//! start on purpose: they wait a few seconds before opening their window.
 
 #![no_std]
 #![no_main]
@@ -30,8 +35,10 @@ use alaya_ui::widgets::{Ui, theme};
 alaya_sys::heap!();
 alaya_sys::entry!(main);
 
-/// This build's version; the bundle says the same.
-const VERSION: u32 = 1;
+/// Versions from this one on are slow to start, on purpose.
+const SLOW_FROM: u64 = 4;
+/// How long they wait (ms).
+const SLOW_MS: u64 = 8000;
 const CARD: &str = "postcard.txt";
 const CLOCK_BIT: u64 = 2;
 
@@ -40,19 +47,41 @@ fn main(info: &'static StartInfo) -> ! {
     alaya_sys::heap::init(&mut mem, 4).expect("heap");
     let ntfn = start::FIRST_GIVEN + dk::APP_G_NTFN;
     rt::start_clock(&mut mem, ntfn, CLOCK_BIT, 100, info.priority).expect("clock");
+    let version = info.args[dk::ARG_VERSION];
+    if version >= SLOW_FROM {
+        // A deliberately slow version, for the checks.
+        // (The clock signals once a second.)
+        let t0 = rt::now_ms();
+        while rt::now_ms() - t0 < SLOW_MS {
+            let _ = alaya_sys::wait(ntfn);
+        }
+    }
     let mut fonts = app::fonts(info);
     let store = Store::new(start::FIRST_GIVEN + dk::APP_G_STORE);
     // Without the files line, the store handle is simply not there.
     let docs = store.root(DOCS).ok();
     say!(
-        "postcards {VERSION}: files {}",
+        "postcards {version}: files {}",
         if docs.is_some() {
             "allowed"
         } else {
             "not allowed"
         }
     );
-    let mut win = Window::open(&mut mem, 420, 220, "Postcards").expect("open a window");
+    let Some(mut win) = Window::open(&mut mem, 420, 220, "Postcards") else {
+        // Taken away while starting (undone, or the Experience Guardian
+        // went back to the version before): nothing more to do.
+        say!("postcards {version}: no window; stopping");
+        loop {
+            let _ = alaya_sys::wait(ntfn);
+        }
+    };
+    // Hello, if it may: an unticked line is simply refused.
+    let hello = win.notify(dk::inbox::WAIT, "Postcards is ready");
+    say!(
+        "postcards: hello {}",
+        if hello { "sent" } else { "refused" }
+    );
     let mut note = String::new();
     let mut write = false;
     loop {
@@ -73,7 +102,7 @@ fn main(info: &'static StartInfo) -> ! {
         if core::mem::take(&mut write) {
             note = match docs {
                 Some(d) => {
-                    let text = format!("Greetings from Postcards {VERSION}, installed on Alaya.\n");
+                    let text = format!("Greetings from Postcards {version}, installed on Alaya.\n");
                     let ok = store
                         .open(d, CARD)
                         .and_then(|f| store.write_all(f, text.as_bytes()))
@@ -113,7 +142,7 @@ fn main(info: &'static StartInfo) -> ! {
                 72,
                 Face::Text,
                 13,
-                &format!("Version {VERSION}, installed from a signed bundle."),
+                &format!("Version {version}, installed from a signed bundle."),
                 theme::MUTED,
             );
             ui.key = keys.first().copied();

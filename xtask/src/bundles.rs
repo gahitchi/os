@@ -21,6 +21,7 @@ pub struct Example<'a> {
     pub name: &'a str,
     pub version: u32,
     pub promise: u32,
+    pub flags: u32,
     pub program: &'a [u8],
 }
 
@@ -80,8 +81,10 @@ pub fn pack(apps: &[Example]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     for a in apps {
         let mut b = vec![0u8; alaya_bundle::HEAD + a.program.len()];
-        let n = alaya_bundle::make(&key, a.name, a.version, a.promise, a.program, &mut b)
-            .map_err(|e| format!("bundle {}: {e:?}", a.name))?;
+        let n = alaya_bundle::make_flagged(
+            &key, a.name, a.version, a.promise, a.flags, a.program, &mut b,
+        )
+        .map_err(|e| format!("bundle {}: {e:?}", a.name))?;
         out.extend_from_slice(&(n as u32).to_le_bytes());
         out.extend_from_slice(&b[..n]);
     }
@@ -90,3 +93,30 @@ pub fn pack(apps: &[Example]) -> Result<Vec<u8>, String> {
 
 /// What Postcards promises in its first version.
 pub const POSTCARDS_PROMISE: u32 = promise::FILES | promise::NOTIFY;
+
+/// The versions of Postcards the boot test installs and updates
+/// (milestone 8, steps 1 and 2), in this order in `example-apps`. The
+/// program is the same; it reads its version from the bundle, and
+/// versions 4 and 5 are slow to start on purpose, for the Experience
+/// Guardian's check.
+pub fn postcards(program: &[u8]) -> [Example<'_>; 5] {
+    let p = POSTCARDS_PROMISE;
+    let v = |version, promise, flags| Example {
+        name: "Postcards",
+        version,
+        promise,
+        flags,
+        program,
+    };
+    [
+        v(1, p, 0),
+        // A fix that asks for nothing new.
+        v(2, p, 0),
+        // One that also wants the network.
+        v(3, p | promise::NETWORK, 0),
+        // Slow to start.
+        v(4, p, 0),
+        // Slow too, but a security fix.
+        v(5, p, alaya_bundle::flags::SECURITY_FIX),
+    ]
+}

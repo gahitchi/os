@@ -21,6 +21,7 @@ const LOAD_BYTES: usize = 2 << 20;
 pub(crate) struct Ready {
     /// What it may have: its promise, less what the person unticked.
     pub granted: u32,
+    pub version: u32,
     pub name: [u8; 32],
     /// The bundle, in the load area.
     pub len: usize,
@@ -85,10 +86,14 @@ pub(crate) fn load(m: &Files, person: u64, slot: u64) -> Result<Ready, &'static 
     if rec[16..24] != b.id().to_le_bytes() {
         return Err("the bundle is another app's");
     }
+    if rec[8..12] != b.version.to_le_bytes() {
+        return Err("the bundle is not the version approved");
+    }
     let mut name = [0u8; 32];
     name[..b.name().len()].copy_from_slice(b.name().as_bytes());
     Ok(Ready {
         granted: b.promise & ticked,
+        version: b.version,
         name,
         len: size,
     })

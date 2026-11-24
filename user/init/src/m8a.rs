@@ -16,13 +16,26 @@ const SLOW: u64 = 30_000;
 
 /// The first bundle in the boot image's `example-apps`.
 fn postcards<'a>(x: &Session<'a>) -> &'a [u8] {
+    example(x, 0)
+}
+
+/// Bundle `i` of the boot image's `example-apps` (Postcards, version
+/// `i + 1`; see `xtask/src/bundles.rs`).
+pub(crate) fn example<'a>(x: &Session<'a>, i: usize) -> &'a [u8] {
     let all = module(x.s.k.info, "example-apps");
-    let n = u32::from_le_bytes(all[..4].try_into().unwrap()) as usize;
-    &all[4..4 + n]
+    let mut at = 0;
+    for k in 0.. {
+        let n = u32::from_le_bytes(all[at..at + 4].try_into().unwrap()) as usize;
+        if k == i {
+            return &all[at + 4..at + 4 + n];
+        }
+        at += 4 + n;
+    }
+    unreachable!()
 }
 
 /// Write `data` as the document `name` (made if missing), in pieces.
-fn put(f: &Files, dir: u64, name: &str, data: &[u8], flip: Option<usize>) -> u64 {
+pub(crate) fn put(f: &Files, dir: u64, name: &str, data: &[u8], flip: Option<usize>) -> u64 {
     f.buf()[..name.len()].copy_from_slice(name.as_bytes());
     let r = f.call(fs::CREATE, &[dir, 0, name.len() as u64]);
     let file = if r[0] == st::OK {
@@ -48,7 +61,7 @@ fn put(f: &Files, dir: u64, name: &str, data: &[u8], flip: Option<usize>) -> u64
 }
 
 /// Place 0 as the desktop sees it: (state, what it may, the sheet's stage).
-fn place(ep: u64) -> (u8, u32, u64) {
+pub(crate) fn place(ep: u64) -> (u8, u32, u64) {
     let r = ask(ep, dk::INSTALLED, &[0]);
     assert!(r[0] == dk::OK);
     (r[1] as u8, (r[1] >> 8) as u32, r[3])

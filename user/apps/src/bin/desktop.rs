@@ -277,6 +277,9 @@ struct Desk {
     install: Option<install::Install>,
     /// The last removal, for the checks: role, left, taken back, made.
     removed: Option<(u64, u64, u64, u64)>,
+    /// When the first program started each installed place's app (ms),
+    /// until its window opens: the Experience Guardian's clock.
+    starting: [u64; role::INSTALLED_MAX as usize],
 }
 
 fn font(info: &StartInfo, i: usize) -> &'static [u8] {
@@ -408,6 +411,7 @@ fn main(info: &'static StartInfo) -> ! {
         installed: Default::default(),
         install: None,
         removed: None,
+        starting: [0; role::INSTALLED_MAX as usize],
     };
     d.tick();
     say!(
@@ -1897,6 +1901,7 @@ impl Desk {
                     }
                     (label::INSTALL, _) => self.undo_install(&l, redo),
                     (label::REMOVE, _) => self.undo_install(&l, !redo),
+                    (label::UPDATE, _) => self.undo_update(&l),
                     (label::LOOK, _) => {
                         let code = if redo { l[2] } else { l[1] };
                         if let Ok(apps) = s.root(APPS)
@@ -2802,6 +2807,9 @@ impl Desk {
                 let out = self.wm.add(id, cw, ch);
                 self.apply(out);
                 say!("window {id} opened, {cw} by {ch}");
+                if role::installed(owner) {
+                    self.started(owner - role::INSTALLED);
+                }
                 if let Some((r, e)) = self.hand
                     && r == owner
                 {
@@ -2903,6 +2911,11 @@ impl Desk {
                 ([self.offer_install(w[0]), 0, 0, 0, 0, 0], 0)
             }
             dk::INSTALLED if owner == 0 => (self.installed_words(w[0]), 0),
+            dk::TRIAL if owner == 0 => (self.trial_words(w[0]), 0),
+            dk::STARTING if owner == 0 && role::installed(w[0]) => {
+                self.starting[(w[0] - role::INSTALLED) as usize] = alaya_sys::rt::now_ms();
+                ([dk::OK, 0, 0, 0, 0, 0], 0)
+            }
             dk::TYPING => match find(self, w[0]) {
                 Some(_) => (self.typing_request(w[1]), 0),
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
@@ -2920,6 +2933,11 @@ impl Desk {
             }
             // Any app may tell the person something; how soon it shows is
             // Alaya's choice, never the app's (decision inbox).
+            // An installed app only when its promise says so and the
+            // person left the line ticked; a refused ask is noted.
+            dk::NOTIFY if !self.may(owner, alaya_bundle::promise::NOTIFY) => {
+                ([dk::NOT_ALLOWED, 0, 0, 0, 0, 0], 0)
+            }
             dk::NOTIFY if owner != 0 => (
                 [
                     self.post(owner, w[0] & 0xff, inbox::text_of(w[0] >> 8, &w[1..5])),
