@@ -842,7 +842,7 @@ impl Store {
 
     /// What `app`'s job read and changed on its side copy so far (Alaya's
     /// own programs): (documents read, (document, what) changed).
-    pub fn job_trace(&self, app: u64) -> Result<(Vec<u64>, Vec<(u64, u64)>), Status> {
+    pub fn job_trace(&self, app: u64) -> Result<Trace, Status> {
         let r = self.call(fs::JOB_TRACE, &[app])?;
         let (n, m) = (r[1] as usize, r[2] as usize);
         let b = xfer();
@@ -1133,6 +1133,9 @@ pub struct Difference {
 }
 
 /// What Alaya's checks of a job found.
+/// What a job read, and what it changed with `what` bits.
+pub type Trace = (Vec<u64>, Vec<(u64, u64)>);
+
 #[derive(Clone, Debug, Default)]
 pub struct JobReport {
     pub passed: bool,
