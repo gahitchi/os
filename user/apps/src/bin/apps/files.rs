@@ -182,7 +182,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut delete = false;
     // F pressed once on this file: press again to forget it.
     let mut forget_asked: Option<u64> = None;
-    let mut forget = false;
+    // F presses in this round: two in a row forget, even when both come
+    // at once.
+    let mut forget = 0;
     let mut keep = false;
     let mut waiting: Vec<(u64, u64, String)> = Vec::new();
     loop {
@@ -208,7 +210,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 Key::Char('r') => look = true,
                 Key::Char('w') => ask_story = true,
                 Key::Delete | Key::Char('d') => delete = true,
-                Key::Char('f') => forget = true,
+                Key::Char('f') => forget += 1,
                 Key::Char('k') => keep = true,
                 // Show the difference: what changed in the source since
                 // the chosen result was made.
@@ -320,8 +322,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 look = true;
             }
         }
-        if forget {
-            forget = false;
+        for _ in 0..core::mem::take(&mut forget) {
             if let Some(r) = selected.and_then(|i| rows.get(i))
                 && !r.e.is_dir
             {
