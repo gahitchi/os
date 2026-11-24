@@ -5,6 +5,8 @@
 //! Host tools needed: git, make, a C compiler (to build Limine's small
 //! installer), xorriso, and qemu-system-x86_64.
 
+mod bundles;
+
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -139,7 +141,7 @@ options:
   --cpus <n>        number of virtual cores (default 1)
   --uefi            boot with UEFI firmware (OVMF) instead of BIOS
   --accel <a>       kvm, tcg or auto (default auto: KVM when /dev/kvm is usable)
-  --memory <size>   guest memory, QEMU syntax (default 512M; 1G with UEFI)
+  --memory <size>   guest memory, QEMU syntax (default 1G)
   --display <kind>  QEMU display for run (gtk, sdl, vnc=:0, none); default:
                     QEMU's own window for run, none for tests
   --vnc             run: show the screen over VNC on port 5900 (phones)
@@ -199,7 +201,7 @@ fn main() -> ExitCode {
         timeout: 300,
         image: None,
         accel: "auto".into(),
-        memory: "512M".into(),
+        memory: "1G".into(),
         fault: None,
         fuzz: None,
         long: false,
@@ -208,7 +210,6 @@ fn main() -> ExitCode {
         fresh_stick: false,
     };
     let mut timeout_set = false;
-    let mut memory_set = false;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| {
             args.next()
@@ -255,7 +256,6 @@ fn main() -> ExitCode {
             "--image" => opts.image = Some(PathBuf::from(value("--image"))),
             "--accel" => opts.accel = value("--accel"),
             "--memory" => {
-                memory_set = true;
                 opts.memory = value("--memory")
             }
             "--fault" => {
@@ -277,15 +277,8 @@ fn main() -> ExitCode {
         opts.timeout = secs + 180;
     }
     if opts.arch == Arch::Aarch64 {
-        // ARM machines start from UEFI firmware; there is no BIOS. The
-        // firmware keeps more of the memory for itself than a PC's, and
-        // leaves it in smaller pieces: 1 GiB unless asked otherwise.
+        // ARM machines start from UEFI firmware; there is no BIOS.
         opts.uefi = true;
-    }
-    if opts.uefi && !memory_set {
-        // UEFI firmware (on any machine) leaves memory in smaller pieces,
-        // and the desktop wants a 64 MiB piece of its own.
-        opts.memory = "1G".into();
     }
     if opts.long && !timeout_set {
         opts.timeout = 15 * 60;
@@ -543,6 +536,19 @@ fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathB
         )?;
         conf.push_str(&format!("    module_path: boot():/boot/{name}\n"));
     }
+    // The example apps (milestone 8), signed, in one module.
+    let postcards = fs::read(user_binary(arch, release, "postcards"))
+        .map_err(|e| format!("read postcards: {e}"))?;
+    let postcards = bundles::loaded_only(&postcards)?;
+    let examples = bundles::pack(&[bundles::Example {
+        name: "Postcards",
+        version: 1,
+        promise: bundles::POSTCARDS_PROMISE,
+        program: &postcards,
+    }])?;
+    fs::write(iso_root.join("boot/example-apps"), examples)
+        .map_err(|e| format!("write example-apps: {e}"))?;
+    conf.push_str("    module_path: boot():/boot/example-apps\n");
     // Alaya's letters (decision 105), in the order the desktop expects.
     for name in FONTS {
         copy(

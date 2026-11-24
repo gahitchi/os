@@ -116,13 +116,7 @@ impl Desk {
                 .map(|(i, g)| {
                     (
                         g.id,
-                        scene::group_chip(
-                            self.width,
-                            self.height,
-                            super::dock_items(self.look).count(),
-                            n,
-                            i,
-                        ),
+                        scene::group_chip(self.width, self.height, self.dock().len(), n, i),
                     )
                 })
                 .collect()

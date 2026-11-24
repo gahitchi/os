@@ -197,7 +197,7 @@ qemu_args() {
     # checks use (milestone 4).
     local disk
     disk=$(disk_image)
-    printf '%s\n' -machine q35 -m 512M -smp "$CPUS" -no-reboot -vga none \
+    printf '%s\n' -machine q35 -m 1G -smp "$CPUS" -no-reboot -vga none \
         -display none -monitor none \
         -device intel-iommu,aw-bits=48,intremap=off \
         -drive "file=$disk,if=none,id=disk0,format=raw" \

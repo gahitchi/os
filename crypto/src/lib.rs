@@ -17,6 +17,8 @@
 
 #![no_std]
 
+pub mod ed25519;
+
 /// The AES S-box.
 const SBOX: [u8; 256] = {
     let mut s = [0u8; 256];

@@ -17,6 +17,7 @@ use alaya_sys::abi::{BOOT_INFO_MAGIC, BootInfo, boot_flags, call, op};
 use alaya_sys::{At, Error, Kind, rights};
 
 mod fuzz;
+mod installed;
 mod m3;
 mod m4;
 mod m4b;
@@ -33,6 +34,7 @@ mod m7e;
 mod m7f;
 mod m7g;
 mod m7h;
+mod m8a;
 
 alaya_sys::start_code!(main);
 

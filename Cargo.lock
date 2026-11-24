@@ -10,10 +10,18 @@ version = "0.0.1"
 name = "alaya-apps"
 version = "0.0.1"
 dependencies = [
+ "alaya-bundle",
  "alaya-crypto",
  "alaya-programs",
  "alaya-sys",
  "alaya-ui",
+]
+
+[[package]]
+name = "alaya-bundle"
+version = "0.0.1"
+dependencies = [
+ "alaya-crypto",
 ]
 
 [[package]]
@@ -31,6 +39,7 @@ version = "0.0.1"
 name = "alaya-init"
 version = "0.0.1"
 dependencies = [
+ "alaya-bundle",
  "alaya-crypto",
  "alaya-programs",
  "alaya-sys",
@@ -79,3 +88,7 @@ version = "0.0.1"
 [[package]]
 name = "xtask"
 version = "0.0.1"
+dependencies = [
+ "alaya-bundle",
+ "alaya-crypto",
+]

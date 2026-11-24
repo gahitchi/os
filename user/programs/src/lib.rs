@@ -773,7 +773,7 @@ pub mod files {
     /// Transfer channels and their size. The first program's checks use
     /// channels 0 to 3 (milestone 5); after them, channel 0 is the first
     /// program's, 1 the desktop's and 2 on each app's ([`app_channel`]).
-    pub const CHANNELS: u64 = 10;
+    pub const CHANNELS: u64 = 13;
     pub const XFER_PAGES: u64 = 16;
     pub const XFER_BYTES: usize = (XFER_PAGES * 4096) as usize;
     /// Where the transfer pages are, in the store server.
@@ -1084,6 +1084,17 @@ pub mod desktop {
     /// apps, then the last 32 bytes of them (the first program only, for
     /// checks).
     pub const TYPED: u64 = 37;
+    /// OFFER_INSTALL: a file of the person's (milestone 8) → status. The
+    /// desktop reads it, checks it is a signed app bundle and shows its
+    /// install sheet; only the person can go on from there. The file
+    /// browser (Enter on the file) and the first program may ask.
+    pub const OFFER_INSTALL: u64 = 38;
+    /// INSTALLED: place → status, state | what it may << 8 | version <<
+    /// 32, the app's number, the install sheet's stage (0 none, 1 the
+    /// promise, 2 on the side, 3 installed, 4 a message or receipt), the
+    /// last removal's role | what was left << 16, and what was taken back
+    /// | what it made << 32 (the first program only, for checks).
+    pub const INSTALLED: u64 = 39;
     pub mod reader_role {
         pub const WINDOW: u64 = 0;
         pub const LABEL: u64 = 1;
@@ -1105,7 +1116,8 @@ pub mod desktop {
     /// Session notification bits the desktop signals: stop (freeze) the
     /// app with role r, `1 << (PAUSE_SHIFT + r)`, or start it again,
     /// `1 << (GO_ON_SHIFT + r)` (a paused task, rule B3).
-    pub const PAUSE_SHIFT: u64 = 40;
+    /// (Sixteen bits each: roles up to [`role::LAST`].)
+    pub const PAUSE_SHIFT: u64 = 16;
     pub const GO_ON_SHIFT: u64 = 48;
     pub mod job_event {
         /// The person approved the rules: work in the folder.
@@ -1172,6 +1184,15 @@ pub mod desktop {
         /// every way around a job's rules. Never in the dock.
         pub const HOSTILE: u64 = 7;
         pub const COUNT: u64 = 7;
+        /// Installed apps (milestone 8): one role per place, from
+        /// `INSTALLED` to [`LAST`], for the person logged in.
+        pub const INSTALLED: u64 = 8;
+        pub const INSTALLED_MAX: u64 = 4;
+        pub const LAST: u64 = INSTALLED + INSTALLED_MAX - 1;
+        /// Whether role `r` is an installed app's place.
+        pub const fn installed(r: u64) -> bool {
+            r >= INSTALLED && r <= LAST
+        }
     }
 
     pub const OK: u64 = 0;
@@ -1215,6 +1236,37 @@ pub mod desktop {
         pub const RIGHT: u64 = 2;
         pub const FULL: u64 = 3;
         pub const TILED: u64 = 4;
+    }
+
+    /// Installed apps (milestone 8): what the desktop keeps in the
+    /// machine's app files, where no app can reach. The file [`FILE`]
+    /// holds one record of [`RECORD`] bytes per person and place; each
+    /// app's bundle is in its own file ([`bundle_file`]).
+    ///
+    /// A record: state (byte 0), what the person left ticked (bytes 4 to
+    /// 8), the version (8 to 12), the app's lasting number (16 to 24) and
+    /// its name (24 to 56, padded with zeros).
+    pub mod installed {
+        pub const FILE: &str = "installed";
+        pub const RECORD: usize = 64;
+        /// Nothing in this place.
+        pub const EMPTY: u8 = 0;
+        /// Installed on the side: kept, not yet approved.
+        pub const ASIDE: u8 = 1;
+        /// Approved: in the dock, and it may run.
+        pub const ON: u8 = 2;
+        /// Where the record of `person`'s place `slot` starts.
+        pub const fn at(person: u64, slot: u64) -> usize {
+            (((person - 1) * super::role::INSTALLED_MAX + slot) as usize) * RECORD
+        }
+        pub const BYTES: usize = at(super::super::files::MAX_PEOPLE + 1, 0);
+        /// The name of the file holding a place's bundle.
+        pub fn bundle_file(person: u64, slot: u64, out: &mut [u8; 8]) -> &str {
+            *out = *b"app-0-0\0";
+            out[4] = b'0' + person as u8;
+            out[6] = b'0' + slot as u8;
+            core::str::from_utf8(&out[..7]).unwrap()
+        }
     }
 
     /// Bit on an app's notification: events are waiting.
@@ -1264,6 +1316,8 @@ pub mod desktop {
     pub const G_SESSION: u64 = 3;
     pub const G_STORE_MACHINE: u64 = 4;
     pub const G_STORE_PERSON: u64 = 5;
+    /// An untyped block the window pictures are made from (milestone 8).
+    pub const G_PICTURES: u64 = G_STORE_PERSON + super::files::MAX_PEOPLE;
 
     /// Args: screen pages, input pages, then the four font sizes (text,
     /// strong, mono, fallback), the fingerprint of the login parts (4

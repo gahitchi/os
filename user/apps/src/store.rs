@@ -1158,6 +1158,10 @@ pub mod label {
     pub const TASK: u8 = b't';
     /// A group was finished: the group, then its name.
     pub const FINISH: u8 = b'f';
+    /// An app was installed (milestone 8): its place, then its name.
+    pub const INSTALL: u8 = b'i';
+    /// An app was removed: its place, then its name.
+    pub const REMOVE: u8 = b'x';
 }
 
 /// A label for the undo list: what (a [`label`] letter) and the name.
@@ -1196,6 +1200,8 @@ pub fn describe(label: &[u8]) -> String {
         }
         Some(&label::IN_GROUP) => alloc::format!("take {} out of a group", rest(7)),
         Some(&label::FINISH) => alloc::format!("finish {}", rest(2)),
+        Some(&label::INSTALL) => alloc::format!("install {}", rest(2)),
+        Some(&label::REMOVE) => alloc::format!("remove {}", rest(2)),
         Some(&label::TASK) => match (label.get(2).copied(), label.get(3).copied()) {
             (_, Some(3)) => alloc::format!("pause {}", rest(4)),
             (Some(3), Some(1)) => alloc::format!("go on with {}", rest(4)),

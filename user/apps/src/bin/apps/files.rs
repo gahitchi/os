@@ -258,6 +258,25 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                         );
                     }
                 }
+                // An app bundle (milestone 8): Alaya's install sheet, where
+                // only the person can go on.
+                Key::Enter => {
+                    if let Some(r) = selected.and_then(|i| rows.get(i))
+                        && r.e.name.ends_with(".alaya")
+                    {
+                        let ok = alaya_sys::ipc_call(
+                            start::FIRST_GIVEN + dk::APP_G_DESKTOP,
+                            &Msg::new(dk::OFFER_INSTALL, &[r.e.file]),
+                            Caps::default(),
+                        )
+                        .is_ok_and(|m| m.words[0] == dk::OK);
+                        say!(
+                            "install {}: {}",
+                            r.e.name,
+                            if ok { "offered" } else { "cannot" }
+                        );
+                    }
+                }
                 Key::Char('p') => {
                     if let Some(r) = selected.and_then(|i| rows.get(i))
                         && !r.e.is_dir

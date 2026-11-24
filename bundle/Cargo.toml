@@ -1,0 +1,13 @@
+[package]
+name = "alaya-bundle"
+description = "Alaya's app bundles: one signed file with an app's name, maker, version, promise and program"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+alaya-crypto = { path = "../crypto" }

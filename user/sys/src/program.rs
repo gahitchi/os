@@ -13,6 +13,14 @@ use crate::abi::{
 use crate::elf::Elf;
 use crate::{At, Error, Kind};
 
+/// A [`Spec::given`] entry that leaves its slot empty: the program gets
+/// nothing there (an installed app without a line of its promise).
+pub const NOTHING: u64 = u64::MAX;
+
+/// A [`Spec::given`] entry `h | GIVE` moves `h` to the program instead of
+/// copying it (an untyped block, which cannot be copied).
+pub const GIVE: u64 = 1 << 62;
+
 /// Consecutive free slots of the parent's own table.
 #[derive(Clone, Copy, Debug)]
 pub struct Slots {
@@ -174,6 +182,21 @@ pub fn start(parent: &mut Parent, spec: &Spec) -> Result<Program, Error> {
         crate::copy(child(start::CLOCK_SC), s.at(spec.clock_sc), rights::ALL)?;
     }
     for (i, &h) in spec.given.iter().enumerate() {
+        if h == NOTHING {
+            // Left empty on purpose: the program has no such handle.
+            continue;
+        }
+        if h & GIVE != 0 {
+            // Handed over for good (an untyped cannot be copied).
+            crate::move_cap(
+                child(start::FIRST_GIVEN + i as u64),
+                At {
+                    table: me,
+                    index: h & !GIVE,
+                },
+            )?;
+            continue;
+        }
         crate::copy(
             child(start::FIRST_GIVEN + i as u64),
             At {

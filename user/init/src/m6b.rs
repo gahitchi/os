@@ -68,8 +68,14 @@ pub(crate) struct Session<'a> {
     pub(crate) ep: u64,
     session_ntfn: u64,
     sizes: [u64; 4],
-    apps: [App; role::COUNT as usize + 1],
+    apps: [App; role::LAST as usize + 1],
     pub(crate) person: u64,
+    /// The machine's own files (installed apps' records), once asked for.
+    machine: Option<Files>,
+    /// Whether the area bundles are read into is mapped.
+    load_mapped: bool,
+    /// Whether the last installed app started had a store handle.
+    pub(crate) store_given: Option<bool>,
     /// Apps the desktop asked to start, seen while waiting.
     asked: core::cell::Cell<u64>,
     gpu: usize,
@@ -119,6 +125,23 @@ impl Files {
 
     pub(crate) fn root(&self, class: u64) -> u64 {
         self.call(fs::ROOT, &[class])[1]
+    }
+
+    /// Up to `out.len()` bytes (at most one transfer) from `off`.
+    pub(crate) fn read_at(&self, f: u64, off: u64, out: &mut [u8]) -> Option<usize> {
+        let n = out.len().min(fs::XFER_BYTES);
+        let r = self.call(fs::READ, &[f, off, n as u64]);
+        if r[0] != st::OK {
+            return None;
+        }
+        let got = (r[1] as usize).min(n);
+        out[..got].copy_from_slice(&self.buf()[..got]);
+        Some(got)
+    }
+
+    pub(crate) fn size(&self, f: u64) -> Option<u64> {
+        let r = self.call(fs::STAT, &[f]);
+        (r[0] == st::OK).then_some(r[1])
     }
 
     /// Where `name` is among the documents (not folders) in `dir`, in
@@ -286,7 +309,7 @@ impl<'a> Session<'a> {
     pub(crate) fn start_asked(&mut self) -> u64 {
         let bits = self.asked_bits();
         self.asked.set(0);
-        for r in 1..=role::COUNT {
+        for r in 1..=role::LAST {
             if bits & (1 << r) != 0 {
                 self.start_app(r);
             }
@@ -316,6 +339,19 @@ impl<'a> Session<'a> {
     pub fn start_app(&mut self, r: u64) {
         let i = r as usize;
         let info = self.s.k.info;
+        // An installed app: its record and bundle, checked again.
+        let ready = if role::installed(r) {
+            match self.installed_ready(r - role::INSTALLED) {
+                Ok(x) => Some(x),
+                Err(e) => {
+                    say!("installed app {} not started: {e}", r - role::INSTALLED);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let files = ready.as_ref().is_none_or(|x| x.files());
         if self.apps[i].ut == 0 {
             let big = info.untyped[..info.untyped_count as usize]
                 .iter()
@@ -364,7 +400,8 @@ impl<'a> Session<'a> {
             shared.push(p);
         }
         let ch = fs::app_channel(r);
-        for p in 0..fs::XFER_PAGES {
+        // Without the files line, no way to the store at all.
+        for p in 0..fs::XFER_PAGES * u64::from(files) {
             let h = XFER_PAGES[(ch * fs::XFER_PAGES + p) as usize].load(SeqCst);
             shared.push((h, dk::XFER + p * 4096, map::WRITE));
         }
@@ -390,13 +427,28 @@ impl<'a> Session<'a> {
             role::BACK => "back",
             role::HELPER => "helper",
             role::HOSTILE => "hostile",
+            _ if ready.is_some() => "installed",
             _ => "settings",
         };
+        let image = match &ready {
+            Some(x) => x.program(),
+            None => module(info, "apps"),
+        };
+        let store = if files { a.store } else { program::NOTHING };
+        if let Some(x) = &ready {
+            let n = x.name.iter().position(|&c| c == 0).unwrap_or(32);
+            say!(
+                "starting {} (place {}), files {}",
+                core::str::from_utf8(&x.name[..n]).unwrap_or("?"),
+                r - role::INSTALLED,
+                if files { "allowed" } else { "not allowed" }
+            );
+        }
         let started = program::start(
             &mut parent,
             &Spec {
                 name,
-                image: module(info, "apps"),
+                image,
                 untyped: a.ut,
                 table_bits: 10,
                 own_bits: 23,
@@ -404,7 +456,7 @@ impl<'a> Session<'a> {
                 sc: app_sc,
                 clock_sc: clock,
                 fault: a.fault,
-                given: &[a.desktop, a.ntfn, a.store],
+                given: &[a.desktop, a.ntfn, store],
                 shared: shared.as_slice(),
                 args: &args,
                 clock_hz: info.clock_hz,
@@ -412,8 +464,36 @@ impl<'a> Session<'a> {
             },
         )
         .expect("start an app");
+        if ready.is_some() {
+            // Its store slot really is empty when files were unticked.
+            let given = alaya_sys::inspect(alaya_sys::At {
+                table: started.table,
+                index: alaya_sys::abi::start::FIRST_GIVEN + dk::APP_G_STORE,
+            })
+            .is_ok_and(|i| !i.is(Kind::Empty));
+            say!(
+                "installed app {}: store handle {}",
+                r - role::INSTALLED,
+                if given { "given" } else { "absent" }
+            );
+            self.store_given = Some(given);
+        }
         self.apps[i].starts += 1;
         self.apps[i].thread = started.thread;
+    }
+
+    /// The installed app in `slot`, read and checked for the person.
+    fn installed_ready(&mut self, slot: u64) -> Result<crate::installed::Ready, &'static str> {
+        if self.person == 0 {
+            return Err("nobody is logged in");
+        }
+        let space = self.s.k.info.space;
+        crate::installed::map_area(&mut self.s.k, space, &mut self.load_mapped);
+        if self.machine.is_none() {
+            self.machine = Some(self.files_of(fs::MACHINE_PERSON));
+        }
+        let m = self.machine.as_ref().unwrap();
+        crate::installed::load(m, self.person, slot)
     }
 
     /// A paused task's app is frozen, not closed (rule B3): its thread
@@ -437,11 +517,11 @@ impl<'a> Session<'a> {
     /// pause bits now, and leave every other bit for later.
     pub(crate) fn pause_now(&mut self) {
         let bits = self.asked_bits();
-        for r in 1..=role::COUNT {
+        for r in 1..=role::LAST {
             self.pause_bits(bits, r);
         }
         self.asked
-            .set(bits & !(0xff << dk::PAUSE_SHIFT) & !(0xff << dk::GO_ON_SHIFT));
+            .set(bits & !(0xffff << dk::PAUSE_SHIFT) & !(0xffff << dk::GO_ON_SHIFT));
     }
 
     /// Role `r`'s app is frozen (its thread stopped).
@@ -480,7 +560,7 @@ impl<'a> Session<'a> {
                 if self.person == 0 {
                     continue;
                 }
-                for r in 1..=role::COUNT {
+                for r in 1..=role::LAST {
                     if m.badge & (1 << r) != 0 {
                         self.start_app(r);
                     }
@@ -496,7 +576,7 @@ impl<'a> Session<'a> {
                     say!("a driver stopped; starting it again");
                     self.s.start(b as usize - 1);
                 }
-                b if b > APP_FAULT && b <= APP_FAULT + role::COUNT => {
+                b if b > APP_FAULT && b <= APP_FAULT + role::LAST => {
                     say!("app {} stopped; starting it again", b - APP_FAULT);
                     self.start_app(b - APP_FAULT);
                 }
@@ -520,6 +600,9 @@ pub(crate) fn run<'a>(
         .unwrap()
         .handle;
     let desk_ut = carve(&mut s.k, big, 26, "64 MiB for the desktop");
+    // Window pictures get a block of their own: each window place keeps
+    // 4 MiB, and with installed apps (milestone 8) 32 MiB ran out.
+    let pictures_ut = carve(&mut s.k, big, 26, "64 MiB for window pictures");
 
     // The fonts, copied once into pages every app shares read only.
     let names = [
@@ -579,11 +662,12 @@ pub(crate) fn run<'a>(
     let ep = s.k.make(Kind::Endpoint, 0);
     let session_ntfn = s.k.make(Kind::Notification, 0);
     let store_ep = STORE_EP.load(SeqCst);
-    let mut given = [0u64; dk::G_STORE_PERSON as usize + fs::MAX_PEOPLE as usize];
+    let mut given = [0u64; dk::G_PICTURES as usize + 1];
     given[dk::G_EP as usize] = ep;
     given[dk::G_SCREEN as usize] = g.ntfn;
     given[dk::G_SEAT as usize] = s.client;
     given[dk::G_SESSION as usize] = session_ntfn;
+    given[dk::G_PICTURES as usize] = pictures_ut | program::GIVE;
     for (i, person) in core::iter::once(fs::MACHINE_PERSON)
         .chain(1..=fs::MAX_PEOPLE)
         .enumerate()
@@ -658,7 +742,10 @@ pub(crate) fn run<'a>(
         ep,
         session_ntfn,
         sizes,
-        apps: [App::default(); role::COUNT as usize + 1],
+        apps: [App::default(); role::LAST as usize + 1],
+        machine: None,
+        load_mapped: false,
+        store_given: None,
         person: 0,
         asked: core::cell::Cell::new(0),
         gpu,
@@ -956,6 +1043,7 @@ pub(crate) fn run<'a>(
     crate::m7f::run(&mut x, pass);
     crate::m7g::run(&mut x, pass);
     crate::m7h::run(&mut x, pass);
+    crate::m8a::run(&mut x, pass);
     x
 }
 

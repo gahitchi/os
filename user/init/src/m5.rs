@@ -158,7 +158,7 @@ struct Env<'a> {
     stick: u64,
     dying: u64,
     ut: u64,
-    shared: [(u64, u64, u64); 256],
+    shared: [(u64, u64, u64); 320],
     nshared: usize,
     prog: Option<Program>,
     sc: u64,
@@ -195,7 +195,7 @@ impl Env<'_> {
                 name: "store",
                 image: module(self.info, "store"),
                 untyped: self.ut,
-                table_bits: 9,
+                table_bits: 10,
                 own_bits: 23,
                 priority: STORE_PRIORITY,
                 sc: self.sc,
@@ -282,7 +282,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     .unwrap();
     // The transfer pages (shared with the store) and the keeper's buffer
     // pages (shared by the keeper and the store).
-    let mut shared = [(0u64, 0u64, 0u64); 256];
+    let mut shared = [(0u64, 0u64, 0u64); 320];
     let mut n = 0;
     for i in 0..fs::CHANNELS * fs::XFER_PAGES {
         let h = k.page_at(info.space, XFER_AT + i * 4096, map::WRITE);

@@ -49,6 +49,8 @@ use alaya_ui::wm::{Out, Place, Screen, Wm};
 mod groups;
 #[path = "desktop/inbox.rs"]
 mod inbox;
+#[path = "desktop/install.rs"]
+mod install;
 #[path = "desktop/reader.rs"]
 mod reader;
 #[path = "desktop/typing.rs"]
@@ -269,6 +271,12 @@ struct Desk {
     rules: Vec<u64>,
     /// One-time hints already shown (a bit each), kept with the app files.
     hints: u64,
+    /// The person's installed apps, by place (milestone 8).
+    installed: [install::Place; role::INSTALLED_MAX as usize],
+    /// The install sheet is up.
+    install: Option<install::Install>,
+    /// The last removal, for the checks: role, left, taken back, made.
+    removed: Option<(u64, u64, u64, u64)>,
 }
 
 fn font(info: &StartInfo, i: usize) -> &'static [u8] {
@@ -397,6 +405,9 @@ fn main(info: &'static StartInfo) -> ! {
         now_shown: 0,
         rules: Vec::new(),
         hints: 0,
+        installed: Default::default(),
+        install: None,
+        removed: None,
     };
     d.tick();
     say!(
@@ -751,11 +762,13 @@ impl Desk {
                 group: None,
             },
         };
-        let dock: Vec<DockItem> = dock_items(self.look)
+        let dock_list = self.dock();
+        let dock: Vec<DockItem> = dock_list
+            .iter()
             .map(|(name, color, r)| DockItem {
                 name,
-                color,
-                running: wins.iter().any(|x| x.owner == r),
+                color: *color,
+                running: wins.iter().any(|x| x.owner == *r),
             })
             .collect();
         let groups: Vec<GroupChip> = if self.look.groups() {
@@ -817,6 +830,7 @@ impl Desk {
             .unwrap_or_default();
         let search_refs: Vec<&str> = search_rows.iter().map(|r| r.as_str()).collect();
         let job_view = match (&self.gscreen, self.inbox_at) {
+            _ if self.install.is_some() => self.install.as_ref().map(|x| self.install_view(x)),
             (_, Some(at)) => Some(self.inbox_view(at)),
             (Some(g), _) => Some(self.group_view(g)),
             _ => self.job.as_ref().map(|j| self.job_view(j)),
@@ -833,6 +847,9 @@ impl Desk {
                     hint: &v.hint,
                     rows: &job_refs,
                     chosen: match (&self.gscreen, self.inbox_at) {
+                        _ if self.install.is_some() => {
+                            self.install.as_ref().map_or(0, |x| x.chosen)
+                        }
                         (_, Some(at)) => at,
                         (Some(g), _) => g.chosen,
                         _ => self.job.as_ref().map_or(0, |j| j.chosen),
@@ -1060,6 +1077,14 @@ impl Desk {
                 && let Some(k) = us_key(code, self.shift)
             {
                 self.search_key(k);
+            }
+            return;
+        }
+        if self.install.is_some() {
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.install_key(k);
             }
             return;
         }
@@ -1522,6 +1547,7 @@ impl Desk {
         self.load_groups();
         self.load_scales();
         self.load_typing();
+        self.load_installed();
         let seeing = s
             .root(APPS)
             .and_then(|a| s.lookup(a, "seeing"))
@@ -1564,6 +1590,22 @@ impl Desk {
             {
                 q.chosen = i;
                 self.damage_all();
+            }
+            return true;
+        }
+        if let Some(inst) = &self.install {
+            let (ok, no) = scene::picker_buttons(self.width, self.height);
+            let first = scene::picker_first(inst.chosen);
+            let removes = matches!(inst.stage, install::Stage::Installed(_));
+            if ok.contains(x, y) {
+                self.install_key(Key::Enter);
+            } else if no.contains(x, y) {
+                self.install_key(if removes { Key::Delete } else { Key::Escape });
+            } else if let Some(i) = scene::picker_row_at(self.width, self.height, x, y, first) {
+                if let Some(inst) = &mut self.install {
+                    inst.chosen = i;
+                }
+                self.install_key(Key::Char(' '));
             }
             return true;
         }
@@ -1624,10 +1666,10 @@ impl Desk {
             self.show_app(dk::role::BACK, "What happened?");
             return true;
         }
-        let n = dock_items(self.look).count();
-        for (i, (name, _, r)) in dock_items(self.look).enumerate() {
-            if scene::dock_item(self.width, self.height, n, i).contains(x, y) {
-                self.show_app(r, name);
+        let items = self.dock();
+        for (i, (name, _, r)) in items.iter().enumerate() {
+            if scene::dock_item(self.width, self.height, items.len(), i).contains(x, y) {
+                self.show_app(*r, name);
                 return true;
             }
         }
@@ -1853,6 +1895,8 @@ impl Desk {
                             self.push(id, [event::CLOSE, 0, 0, 0, 0]);
                         }
                     }
+                    (label::INSTALL, _) => self.undo_install(&l, redo),
+                    (label::REMOVE, _) => self.undo_install(&l, !redo),
                     (label::LOOK, _) => {
                         let code = if redo { l[2] } else { l[1] };
                         if let Ok(apps) = s.root(APPS)
@@ -2723,9 +2767,17 @@ impl Desk {
                     };
                 } else {
                     for (i, p) in pages.iter_mut().enumerate() {
-                        let Ok(h) = self.mem.make(Kind::Page, 21) else {
+                        // From the pictures' own block, else the desktop's.
+                        let pics = start::FIRST_GIVEN + dk::G_PICTURES;
+                        let Ok(h) = self.mem.slot() else {
                             return ([dk::NO_MEMORY, 0, 0, 0, 0, 0], 0);
                         };
+                        if alaya_sys::retype(pics, Kind::Page, 21, 1, self.mem.at(h)).is_err()
+                            && alaya_sys::retype(self.mem.ut, Kind::Page, 21, 1, self.mem.at(h))
+                                .is_err()
+                        {
+                            return ([dk::NO_MEMORY, 0, 0, 0, 0, 0], 0);
+                        }
                         alaya_sys::page_map(h, start::SPACE, va + i as u64 * (2 << 20), map::WRITE)
                             .expect("map a picture page");
                         *p = h;
@@ -2787,7 +2839,7 @@ impl Desk {
                         let r = win.title_bar();
                         self.damage(r);
                     }
-                    let n = dock_items(self.look).count();
+                    let n = self.dock().len();
                     self.damage(scene::dock_rect(self.width, self.height, n));
                     ([dk::OK, 0, 0, 0, 0, 0], 0)
                 }
@@ -2847,6 +2899,10 @@ impl Desk {
             },
             dk::TYPING if owner == 0 => (self.typing_request(w[1]), 0),
             dk::TYPED if owner == 0 => (self.typed(), 0),
+            dk::OFFER_INSTALL if owner == 0 || owner == role::FILES => {
+                ([self.offer_install(w[0]), 0, 0, 0, 0, 0], 0)
+            }
+            dk::INSTALLED if owner == 0 => (self.installed_words(w[0]), 0),
             dk::TYPING => match find(self, w[0]) {
                 Some(_) => (self.typing_request(w[1]), 0),
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
@@ -2966,7 +3022,7 @@ impl Desk {
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
             },
             dk::PLACES => {
-                let n = dock_items(self.look).count();
+                let n = self.dock().len();
                 let (yes, no) = scene::question_buttons(self.width, self.height);
                 let r = match w[0] {
                     k if k >= dk::places::KEY => self.typing_place(k),
@@ -3065,13 +3121,25 @@ const DOCK: [(&str, u32, u64); 4] = [
     ("Settings", 0x5b_6b_6c, role::SETTINGS),
 ];
 
-/// What the dock holds in each look.
+/// What the dock holds of Alaya's own apps in each look.
 fn dock_items(look: Look) -> impl Iterator<Item = (&'static str, u32, u64)> {
     DOCK.iter().copied().filter(move |d| match look {
         Look::Everyday => d.2 != role::CHART,
         Look::Play => d.2 == role::FILES || d.2 == role::SETTINGS,
         Look::Everything | Look::Create | Look::Build => true,
     })
+}
+
+impl Desk {
+    /// The dock: Alaya's own apps for the look, then the apps the person
+    /// installed and approved (milestone 8).
+    pub(crate) fn dock(&self) -> Vec<(String, u32, u64)> {
+        let mut v: Vec<(String, u32, u64)> = dock_items(self.look)
+            .map(|(n, c, r)| (String::from(n), c, r))
+            .collect();
+        v.extend(self.installed_dock());
+        v
+    }
 }
 
 /// What the login screen says about the login parts (decision 74).

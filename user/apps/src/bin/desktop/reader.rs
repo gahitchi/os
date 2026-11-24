@@ -27,7 +27,7 @@ use alaya_ui::Rect;
 use alaya_ui::scene;
 use alaya_ui::widgets::{Key, Role, decode_tree, say_focused};
 
-use super::{Desk, capital, dock_items};
+use super::{Desk, capital};
 
 /// The caption bar's height.
 pub(crate) const CAPTION_H: i32 = 30;
@@ -117,7 +117,7 @@ impl Desk {
                 .map_or(0, |g| g.len() as u64)
         };
         self.reader.files = files;
-        let who = capital(fs::app_label(app));
+        let who = capital(self.installed_name(owner).unwrap_or(fs::app_label(app)));
         let sees = match files {
             u64::MAX => format!("{who} is part of Alaya and can see all your files."),
             0 => format!("{who} can see none of your files."),
@@ -182,8 +182,9 @@ impl Desk {
                 what: "button on the strip",
             });
         }
-        let n = dock_items(self.look).count();
-        for (i, (name, _, _)) in dock_items(self.look).enumerate() {
+        let items = self.dock();
+        let n = items.len();
+        for (i, (name, _, _)) in items.iter().enumerate() {
             v.push(Stop {
                 rect: scene::dock_item(self.width, self.height, n, i),
                 name: capital(name),
