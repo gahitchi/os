@@ -44,7 +44,7 @@ impl Files {
         self.call(fs::MADE_FROM, &[result, 1])[0]
     }
 
-    fn create(&self, dir: u64, name: &str) -> Option<u64> {
+    pub(crate) fn create(&self, dir: u64, name: &str) -> Option<u64> {
         self.buf()[..name.len()].copy_from_slice(name.as_bytes());
         let r = self.call(fs::CREATE, &[dir, 0, name.len() as u64]);
         (r[0] == st::OK).then_some(r[1])
@@ -100,9 +100,19 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         return_point_of(&me, &mut b)
             .is_some_and(|(_, _, _, n)| &b[48..48 + n.min(64)] == b"numbers.txt")
     };
+    // Ctrl+O asks Alaya for the Open window (milestone 7, step 2): the
+    // editor gets only the document picked there.
+    let picking = || ask(ep, dk::STATE, &[])[5] >> 62 & 1 != 0;
     assert!(
-        x.keys("{ctrl+o}", open, 30_000),
-        "Ctrl+O did not open numbers.txt"
+        x.keys("{ctrl+o}", picking, 30_000),
+        "Ctrl+O did not show Alaya's Open window"
+    );
+    let at = me.place_in_docs(docs, b"numbers.txt");
+    let mut keys = [0u8; 256];
+    let pick = crate::m6b::key_list(&mut keys, at.min(30));
+    assert!(
+        x.keys(pick, open, 30_000),
+        "picking numbers.txt in the Open window did not open it"
     );
     // "Mon 3" becomes "Mon 9", saved.
     let stale = || me.mark(chart) == (NEEDS_A_LOOK, 1, numbers);

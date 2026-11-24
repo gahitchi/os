@@ -532,6 +532,7 @@ fn picture_of_the_desktop() {
         trusted: None,
         buttons: true,
         question: None,
+        picker: None,
     };
     scene::draw(&mut cv, &mut f, &wm, &views, &desk, Rect::new(0, 0, w, h));
     let mut out = std::format!("P6\n{w} {h}\n255\n").into_bytes();

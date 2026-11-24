@@ -28,6 +28,7 @@ extern crate alloc;
 pub use alaya_crypto as crypto;
 pub mod disk;
 pub mod format;
+pub mod grants;
 pub mod history;
 pub mod made;
 pub mod side;

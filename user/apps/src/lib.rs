@@ -49,6 +49,12 @@ pub enum Event {
     Resized(i32, i32),
     Close,
     Focus(bool),
+    /// The Open or Save window closed: the document handed over (None:
+    /// the person cancelled), and whether it was a save.
+    Picked {
+        file: Option<u64>,
+        save: bool,
+    },
 }
 
 pub struct Window {
@@ -166,6 +172,13 @@ impl Window {
         call(self.ep, dk::CLOSE, &[self.id]);
     }
 
+    /// Ask Alaya for the Open window (or the Save window): the person
+    /// picks, and the app gets that document and nothing else, as a
+    /// [`Event::Picked`]. `write`: the app wants to change it.
+    pub fn pick(&self, save: bool, write: bool) -> bool {
+        call(self.ep, dk::PICK, &[self.id, save as u64, write as u64, 0])[0] == dk::OK
+    }
+
     /// The next event, if one is waiting. Keeps size and pointer state.
     pub fn next_event(&mut self) -> Option<Event> {
         loop {
@@ -211,6 +224,10 @@ impl Window {
                 }
                 event::CLOSE => Event::Close,
                 event::FOCUS => Event::Focus(r[2] != 0),
+                event::PICKED => Event::Picked {
+                    file: (r[2] != 0).then_some(r[2]),
+                    save: r[3] != 0,
+                },
                 _ => continue,
             };
             return Some(e);

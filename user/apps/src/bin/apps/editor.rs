@@ -2,8 +2,11 @@
 //! The text editor: the text files in the person's documents, one at a
 //! time (`Notes.txt` first).
 //!
-//! Ctrl+S saves the file; Ctrl+O opens the next text file (once the one
-//! open is saved). Besides that, after every change the editor
+//! Ctrl+S saves the file; Ctrl+O asks Alaya for the Open window, and
+//! Ctrl+N for the Save window, to keep a copy under a new name. The
+//! editor sees only the documents the person hands it there, and the ones
+//! it made itself (milestone 7, step 2). Besides that, after every change
+//! the editor
 //! writes down where you are (its return point, `continuity.md`): the
 //! text as it is now, saved or not, the cursor and the first line shown.
 //! The store makes that safe within five seconds (decision 100), so if the
@@ -78,18 +81,14 @@ fn decode(b: &[u8]) -> Option<(String, TextEdit, bool)> {
     Some((name, e, w(3)? != 0))
 }
 
-/// The text file after `name` in the documents (in name order, round).
-fn next_text(store: &Store, docs: u64, name: &str) -> Option<String> {
-    let mut names: Vec<String> = store
+/// The name of a document handed to the editor: it sees only those.
+fn name_of(store: &Store, docs: u64, f: u64) -> Option<String> {
+    store
         .list(docs)
         .ok()?
         .into_iter()
-        .filter(|e| !e.is_dir && e.name.ends_with(".txt"))
+        .find(|e| e.file == f)
         .map(|e| e.name)
-        .collect();
-    names.sort();
-    let i = names.iter().position(|n| n == name).map_or(0, |i| i + 1);
-    names.get(i % names.len().max(1)).cloned()
 }
 
 pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
@@ -101,7 +100,11 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut name = back
         .as_ref()
         .map_or(String::from(FIRST), |(n, _, _)| n.clone());
-    let mut file = store.open(docs, &name).expect("the text file");
+    // The document it had open, if it still may; else its own first one.
+    let mut file = store.lookup(docs, &name).ok().or_else(|| {
+        name = String::from(FIRST);
+        store.open(docs, FIRST).ok()
+    });
     let (mut edit, mut dirty) = match back {
         Some((_, e, d)) => {
             let (l, c) = e.position();
@@ -115,7 +118,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             (e, d)
         }
         None => {
-            let saved = store.read_all(file).unwrap_or_default();
+            let saved = file
+                .and_then(|f| store.read_all(f).ok())
+                .unwrap_or_default();
             match core::str::from_utf8(&saved) {
                 Ok(t) if !t.is_empty() => (TextEdit::new(t), false),
                 _ => (TextEdit::new("Welcome to Alaya.\nType here."), true),
@@ -145,9 +150,15 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     }
                     moved |= edit.cursor != before;
                 }
+                Event::Shortcut('s') if file.is_none() => {
+                    if win.pick(true, true) {
+                        note = String::from("Choose a name in the Save window.");
+                    }
+                }
                 Event::Shortcut('s') => {
-                    let ok =
-                        store.write_all(file, edit.text.as_bytes()).is_ok() && store.save().is_ok();
+                    let ok = file.is_some_and(|f| {
+                        store.write_all(f, edit.text.as_bytes()).is_ok() && store.save().is_ok()
+                    });
                     note = String::from(if ok { "Saved." } else { "Could not save." });
                     if ok {
                         dirty = false;
@@ -159,16 +170,48 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     note = String::from("Save first (Ctrl+S), then Ctrl+O.");
                 }
                 Event::Shortcut('o') => {
-                    if let Some(n) = next_text(&store, docs, &name)
-                        && let Ok(f) = store.lookup(docs, &n)
-                        && let Ok(b) = store.read_all(f)
-                    {
+                    if win.pick(false, true) {
+                        note = String::from("Pick a document in the Open window.");
+                    }
+                }
+                Event::Shortcut('n') => {
+                    if win.pick(true, true) {
+                        note = String::from("Choose a name in the Save window.");
+                    }
+                }
+                Event::Picked { file: None, .. } => {
+                    note = String::from("Nothing was handed over.");
+                    changed = true;
+                }
+                Event::Picked {
+                    file: Some(f),
+                    save: false,
+                } => {
+                    if let Ok(b) = store.read_all(*f) {
                         edit = TextEdit::new(&String::from_utf8_lossy(&b));
-                        file = f;
-                        name = n;
+                        file = Some(*f);
+                        name = name_of(&store, docs, *f).unwrap_or_default();
                         note.clear();
                         changed = true;
+                        dirty = false;
                         say!("opened {}", name);
+                    }
+                }
+                Event::Picked {
+                    file: Some(f),
+                    save: true,
+                } => {
+                    let ok =
+                        store.write_all(*f, edit.text.as_bytes()).is_ok() && store.save().is_ok();
+                    if ok {
+                        file = Some(*f);
+                        name = name_of(&store, docs, *f).unwrap_or_default();
+                        dirty = false;
+                        changed = true;
+                        note = String::from("Saved.");
+                        say!("saved {} ({} bytes)", name, edit.text.len());
+                    } else {
+                        note = String::from("Could not save.");
                     }
                 }
                 Event::Close => {

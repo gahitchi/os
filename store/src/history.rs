@@ -216,6 +216,102 @@ impl<D: Disk> Store<D> {
             }
         }
         self.remove(p, app, dir, name)?;
+        self.destroy_key(p, app, f)
+    }
+
+    /// Forget a document after a grace time (decision 62): it leaves its
+    /// folder at once, and at `at` (seconds) its key is destroyed, unless
+    /// it was brought back meanwhile ([`Store::keep_forgotten`], or the
+    /// one undo). Returns the file.
+    pub fn forget_later(
+        &mut self,
+        p: Person,
+        app: App,
+        dir: FileId,
+        name: &[u8],
+        at: u64,
+    ) -> Result<FileId, Error> {
+        self.ok()?;
+        if dir.class() != Class::Documents || side::is_side(p) {
+            return Err(Error::BadRequest);
+        }
+        let f = self.lookup(p, dir, name)?;
+        if self.stat(p, f)?.is_dir {
+            return Err(Error::IsADirectory);
+        }
+        let cn = self.cn;
+        self.remove(p, app, dir, name)?;
+        self.room(2, false)?;
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        b.trees[Class::Apps as usize].insert(
+            dev,
+            &b.keys,
+            k_forget(f.obj()),
+            words(&[at, dir.0, app, cn, f.0]),
+        )?;
+        b.touched = true;
+        Ok(f)
+    }
+
+    /// Documents waiting to be forgotten: (file, when, the commit before).
+    pub fn forgetting(&mut self, p: Person) -> Result<Vec<(FileId, u64, u64)>, Error> {
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+        Ok(b.trees[Class::Apps as usize]
+            .collect(dev, &b.keys, k_forget(0), k_forget(u64::MAX))?
+            .into_iter()
+            .map(|(_, v)| (FileId(word(&v, 4)), word(&v, 0), word(&v, 3)))
+            .collect())
+    }
+
+    /// Keep a document that was waiting to be forgotten: it goes back
+    /// where it was, as it was.
+    pub fn keep_forgotten(&mut self, p: Person, app: App, f: FileId) -> Result<Restored, Error> {
+        let Some((_, _, cn)) = self.forgetting(p)?.into_iter().find(|x| x.0 == f) else {
+            return Err(Error::NotFound);
+        };
+        let r = if self.name_of(p, f, None)?.is_some() {
+            Restored::Done(alloc::vec![f])
+        } else {
+            self.restore(p, app, &[f], cn)?
+        };
+        if matches!(r, Restored::Done(_)) {
+            let Store { dev, branches, .. } = self;
+            let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+            b.trees[Class::Apps as usize].remove(dev, &b.keys, k_forget(f.obj()))?;
+            b.touched = true;
+        }
+        Ok(r)
+    }
+
+    /// Forget for good what waited long enough and was not brought back.
+    /// Returns how many were forgotten.
+    pub fn forget_due(&mut self, p: Person, now: u64) -> Result<u64, Error> {
+        let mut n = 0;
+        for (f, at, _) in self.forgetting(p)? {
+            if at > now {
+                continue;
+            }
+            let app = {
+                let Store { dev, branches, .. } = self;
+                let b = branches.get_mut(&p).ok_or(Error::Locked)?;
+                let v = b.trees[Class::Apps as usize].remove(dev, &b.keys, k_forget(f.obj()))?;
+                b.touched = true;
+                v.map_or(0, |v| word(&v, 2))
+            };
+            // Brought back meanwhile: nothing to forget.
+            if self.name_of(p, f, None)?.is_some() {
+                continue;
+            }
+            self.destroy_key(p, app, f)?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    fn destroy_key(&mut self, p: Person, app: App, f: FileId) -> Result<(), Error> {
+        self.revoke_everywhere(p, f)?;
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&p).ok_or(Error::Locked)?;
         b.ktab.remove(dev, &b.keys, k_fkey(f.obj()))?;
@@ -975,4 +1071,10 @@ impl<D: Disk> Store<D> {
         st.used_by = used.into_iter().collect();
         Ok(st)
     }
+}
+
+/// A document waiting to be forgotten, in the person's app-files tree.
+const K_FORGET: u64 = 5;
+fn k_forget(obj: u64) -> Key {
+    Key(crate::grants::RECORDS | K_FORGET, obj)
 }

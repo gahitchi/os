@@ -118,6 +118,56 @@ pub struct Story {
     pub used_by: Vec<u64>,
 }
 
+/// How long a hand-over lasts (as `alaya_store::grants::Lasts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lasts {
+    Live,
+    Pinned(u64),
+    Until(u64),
+    UntilClosed,
+}
+
+impl Lasts {
+    pub fn code(self) -> (u64, u64) {
+        match self {
+            Lasts::Live => (0, 0),
+            Lasts::Pinned(cn) => (1, cn),
+            Lasts::Until(t) => (2, t),
+            Lasts::UntilClosed => (3, 0),
+        }
+    }
+
+    pub fn from_code(kind: u64, arg: u64) -> Option<Lasts> {
+        Some(match kind {
+            0 => Lasts::Live,
+            1 => Lasts::Pinned(arg),
+            2 => Lasts::Until(arg),
+            3 => Lasts::UntilClosed,
+            _ => return None,
+        })
+    }
+
+    /// In plain words.
+    pub fn words(self) -> &'static str {
+        match self {
+            Lasts::Live => "until you take it back (in Settings)",
+            Lasts::Pinned(_) => "just this version, read only",
+            Lasts::Until(_) => "for one hour",
+            Lasts::UntilClosed => "until the app closes",
+        }
+    }
+}
+
+/// One hand-over, as GRANTS lists it.
+#[derive(Clone, Copy, Debug)]
+pub struct GrantRow {
+    pub app: u64,
+    pub file: u64,
+    pub write: bool,
+    pub own: bool,
+    pub lasts: Lasts,
+}
+
 /// One entry of a directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -536,6 +586,70 @@ impl Store {
             changes,
             used_by,
         })
+    }
+
+    /// Hand a document to an app (the desktop only).
+    pub fn grant(&self, app: u64, f: u64, write: bool, lasts: Lasts) -> Result<(), Status> {
+        let (kind, arg) = lasts.code();
+        self.call(fs::GRANT, &[app, f, write as u64, kind, arg])
+            .map(|_| ())
+    }
+
+    /// Take a document back from an app.
+    pub fn revoke(&self, app: u64, f: u64) -> Result<bool, Status> {
+        Ok(self.call(fs::REVOKE, &[app, f])?[1] != 0)
+    }
+
+    /// What has been handed to one app (0: to every app).
+    pub fn grants(&self, app: u64) -> Result<Vec<GrantRow>, Status> {
+        let n = self.call(fs::GRANTS, &[app])?[1] as usize;
+        let b = xfer();
+        let w = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        Ok((0..n)
+            .filter_map(|i| {
+                let k = 4 * i;
+                Some(GrantRow {
+                    app: w(k),
+                    file: w(k + 1),
+                    write: w(k + 2) >> 8 & 1 != 0,
+                    own: w(k + 2) >> 9 & 1 != 0,
+                    lasts: Lasts::from_code(w(k + 2) & 0xff, w(k + 3))?,
+                })
+            })
+            .collect())
+    }
+
+    /// Forget a document after `secs`: it leaves its folder now, and its
+    /// key is destroyed then unless it is kept meanwhile.
+    pub fn forget_later(&self, dir: u64, name: &str, secs: u64) -> Result<u64, Status> {
+        xfer()[..name.len()].copy_from_slice(name.as_bytes());
+        Ok(self.call(fs::FORGET_LATER, &[dir, name.len() as u64, secs])?[1])
+    }
+
+    /// Documents waiting to be forgotten: (file, seconds left, its name).
+    pub fn forgetting(&self) -> Result<Vec<(u64, u64, String)>, Status> {
+        let n = self.call(fs::FORGETTING, &[])?[1] as usize;
+        let rows: Vec<[u64; 4]> = {
+            let b = xfer();
+            let w = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+            (0..n)
+                .map(|i| [w(4 * i), w(4 * i + 1), w(4 * i + 2), w(4 * i + 3)])
+                .collect()
+        };
+        Ok(rows
+            .into_iter()
+            .map(|r| (r[0], r[2], self.name_of(r[0], r[3]).unwrap_or_default()))
+            .collect())
+    }
+
+    /// Keep a document that was waiting to be forgotten.
+    pub fn keep_forgotten(&self, f: u64) -> Result<(), Status> {
+        self.call(fs::KEEP_FORGOTTEN, &[f]).map(|_| ())
+    }
+
+    /// An app's last window closed (the desktop only).
+    pub fn app_closed(&self, app: u64) -> Result<u64, Status> {
+        Ok(self.call(fs::APP_CLOSED, &[app])?[1])
     }
 
     /// Make everything so far safe on the disk now (it is anyway within

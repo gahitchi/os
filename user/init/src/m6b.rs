@@ -67,7 +67,7 @@ pub(crate) struct Session<'a> {
     session_ntfn: u64,
     sizes: [u64; 4],
     apps: [App; role::COUNT as usize + 1],
-    person: u64,
+    pub(crate) person: u64,
     /// Apps the desktop asked to start, seen while waiting.
     asked: core::cell::Cell<u64>,
     gpu: usize,
@@ -118,6 +118,49 @@ impl Files {
     pub(crate) fn root(&self, class: u64) -> u64 {
         self.call(fs::ROOT, &[class])[1]
     }
+
+    /// Where `name` is among the documents (not folders) in `dir`, in
+    /// name order: its row in Alaya's Open window.
+    pub(crate) fn place_in_docs(&self, dir: u64, name: &[u8]) -> usize {
+        let r = self.call(fs::LIST, &[dir]);
+        if r[0] != st::OK {
+            return 0;
+        }
+        let mut names = [[0u8; 32]; 64];
+        let mut lens = [0usize; 64];
+        let mut files = [0u64; 64];
+        let n = (r[1] as usize).min(64);
+        for i in 0..n {
+            let o = 48 * i;
+            let b = self.buf();
+            let w = |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+            files[i] = w(0);
+            lens[i] = (w(1) as usize).min(32);
+            names[i][..lens[i]].copy_from_slice(&b[o + 16..o + 16 + lens[i]]);
+        }
+        (0..n)
+            .filter(|&i| {
+                let st = self.call(fs::STAT, &[files[i]]);
+                st[0] == st::OK && st[3] == 0 && names[i][..lens[i]] < *name
+            })
+            .count()
+    }
+}
+
+/// "{home}", `downs` times "{down}", then "{enter}": a row of Alaya's
+/// Open window, picked.
+pub(crate) fn key_list(buf: &mut [u8; 256], downs: usize) -> &str {
+    let mut n = 0;
+    let mut add = |s: &[u8]| {
+        buf[n..n + s.len()].copy_from_slice(s);
+        n += s.len();
+    };
+    add(b"{home}");
+    for _ in 0..downs {
+        add(b"{down}");
+    }
+    add(b"{enter}");
+    core::str::from_utf8(&buf[..n]).unwrap_or("")
 }
 
 /// The editor's return point as the store has it: cursor and the text's
@@ -866,6 +909,7 @@ pub(crate) fn run<'a>(
     let _ = (x.pointer, x.keyboard);
     crate::m6c::run(&mut x, pass);
     crate::m7::run(&mut x, pass);
+    crate::m7b::run(&mut x, pass);
     x
 }
 
@@ -884,12 +928,17 @@ impl Session<'_> {
 
     /// The same, as person `p` (the checks of milestone 7 make another).
     pub(crate) fn files_of(&mut self, p: u64) -> Files {
+        self.files_as(p, fs::INIT_APP)
+    }
+
+    /// The same, as app `app` (milestone 7's checks play a stranger app).
+    pub(crate) fn files_as(&mut self, p: u64, app: u64) -> Files {
         let h = self.s.k.slot();
         alaya_sys::mint(
             self.s.k.at(h),
             self.s.k.at(STORE_EP.load(SeqCst)),
             rights::ALL,
-            fs::badge(p, fs::INIT_APP, 0),
+            fs::badge(p, app, 0),
         )
         .unwrap();
         Files { ep: h }

@@ -8,7 +8,8 @@
 //! Up and down choose a file; A says the chosen result shows a fixed
 //! moment ("as of a date"), or not any more. Delete (or D) deletes it, as
 //! one action on the undo list (milestone 7); W, or the button, tells its
-//! story: where it came from and what was made from it.
+//! story: where it came from and what was made from it. F, pressed twice,
+//! forgets it for good after an hour (decision 62); until then K keeps it.
 
 use alloc::format;
 use alloc::string::String;
@@ -16,7 +17,7 @@ use alloc::vec::Vec;
 
 use alaya_apps::store::{Entry, Kind, Mark, Store, Why, app_name, label, make_label};
 use alaya_apps::{self as app, Event, Window};
-use alaya_programs::files::{DOCS, act, what};
+use alaya_programs::files::{DOCS, FORGET_GRACE, act, what};
 use alaya_sys::abi::StartInfo;
 use alaya_sys::rt::{self, Mem};
 use alaya_sys::say;
@@ -137,6 +138,11 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut told: Option<(u64, String)> = None;
     let mut ask_story = false;
     let mut delete = false;
+    // F pressed once on this file: press again to forget it.
+    let mut forget_asked: Option<u64> = None;
+    let mut forget = false;
+    let mut keep = false;
+    let mut waiting: Vec<(u64, u64, String)> = Vec::new();
     loop {
         let mut keys = Vec::new();
         while let Some(e) = win.next_event() {
@@ -157,6 +163,8 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 Key::Char('r') => look = true,
                 Key::Char('w') => ask_story = true,
                 Key::Delete | Key::Char('d') => delete = true,
+                Key::Char('f') => forget = true,
+                Key::Char('k') => keep = true,
                 Key::Char('a') => {
                     if let Some(r) = selected.and_then(|i| rows.get(i))
                         && r.mark.kind != Kind::NoMark
@@ -202,6 +210,43 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 look = true;
             }
         }
+        if forget {
+            forget = false;
+            if let Some(r) = selected.and_then(|i| rows.get(i))
+                && !r.e.is_dir
+            {
+                if forget_asked == Some(r.e.file) {
+                    forget_asked = None;
+                    let name = r.e.name.clone();
+                    match store.forget_later(docs, &name, FORGET_GRACE) {
+                        Ok(_) => say!(
+                            "forgetting {name}: its key is destroyed in an hour unless you keep it (K)"
+                        ),
+                        Err(e) => say!("could not forget {name}: {e}"),
+                    }
+                    look = true;
+                } else {
+                    forget_asked = Some(r.e.file);
+                    told = Some((
+                        r.e.file,
+                        format!(
+                            "Press F again to forget {} for good: no version of it can be read again, by anyone. You have an hour to change your mind.",
+                            r.e.name
+                        ),
+                    ));
+                }
+            }
+        }
+        if keep {
+            keep = false;
+            if let Some((f, _, name)) = waiting.first().cloned() {
+                match store.keep_forgotten(f) {
+                    Ok(()) => say!("kept {name}: it is back where it was"),
+                    Err(e) => say!("could not keep {name}: {e}"),
+                }
+                look = true;
+            }
+        }
         if ask_story {
             ask_story = false;
             if let Some(r) = selected.and_then(|i| rows.get(i)) {
@@ -213,6 +258,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         }
         if look {
             last_look = rt::now_ms();
+            waiting = store.forgetting().unwrap_or_default();
             // The chosen file stays chosen when others come and go.
             let chosen = selected.and_then(|i| rows.get(i)).map(|r| r.e.file);
             if let Ok(mut l) = store.list(docs) {
@@ -258,6 +304,13 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             }
         }
         let hint = match selected.and_then(|i| rows.get(i)) {
+            _ if !waiting.is_empty() && told.is_none() => {
+                let (_, left, name) = &waiting[0];
+                format!(
+                    "{name} will be forgotten for good in {} min. K keeps it.",
+                    left.div_ceil(60)
+                )
+            }
             _ if rows.is_empty() => {
                 String::from("No documents yet. Save something in the text editor.")
             }

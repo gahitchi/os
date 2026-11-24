@@ -18,6 +18,7 @@ use alaya_programs::files::{self as fs, st};
 use alaya_programs::{keeper as k, status};
 use alaya_store::disk::{Disk, IoError};
 use alaya_store::format::Block;
+use alaya_store::grants::{Access, Lasts};
 use alaya_store::history::{Restored, Undo};
 use alaya_store::made::Source;
 use alaya_store::{Class, Error, FileId, Options, Store};
@@ -236,6 +237,17 @@ fn main(info: &'static StartInfo) -> ! {
                     // Thin history (decision 33), saved with the next save.
                     let _ = serve.store.thin(now());
                 }
+                // Documents whose hour is up are forgotten for good
+                // (decision 62), and that is saved at once.
+                if m.badge & TICK_BIT != 0 {
+                    let mut forgot = 0;
+                    for p in serve.store.people().unwrap_or_default() {
+                        forgot += serve.store.forget_due(p, now()).unwrap_or(0);
+                    }
+                    if forgot > 0 && serve.store.commit(now()).is_ok() {
+                        say!("forgot {forgot} documents for good: their keys are gone");
+                    }
+                }
                 if m.badge & TICK_BIT != 0
                     && serve.store.has_changes()
                     && rt::now_ms() - last_save >= fs::AUTOSAVE_MS
@@ -340,7 +352,11 @@ impl Server<'_> {
         let app = (m.badge >> 8) & 0xff_ffff_ffff;
         let ch = m.badge & 0xff;
         let w = m.words;
-        let r = self.op(m.label(), person, app, ch, &w, now);
+        let r = match self.guard(m.label(), person, app, ch, &w, now) {
+            Ok(Some(words)) => Ok(words),
+            Ok(None) => self.op(m.label(), person, app, ch, &w, now),
+            Err(e) => Err(e),
+        };
         match r {
             Ok(words) => {
                 let mut out = [0u64; 6];
@@ -348,6 +364,112 @@ impl Server<'_> {
                 Msg::new(0, &out[..1 + words.len()])
             }
             Err(e) => Msg::new(0, &[code(e)]),
+        }
+    }
+
+    /// Grants (milestone 7, step 2): an app that is not one of Alaya's
+    /// own carriers sees, of the person's documents, only what it was
+    /// handed and what it made itself. Returns the answer when it answers
+    /// the request itself, None to let it through, an error to refuse.
+    fn guard(
+        &mut self,
+        label: u64,
+        p: u64,
+        app: u64,
+        ch: u64,
+        w: &[u64; 6],
+        now: u64,
+    ) -> Result<Option<Vec<u64>>, Error> {
+        if !restricted(app) {
+            return Ok(None);
+        }
+        let s = &mut *self.store;
+        let docs = |f: u64| FileId(f).class() == Class::Documents;
+        let need = |s: &mut Store<KeeperDisk>, f: u64, write: bool| need(s, p, app, f, write, now);
+        match label {
+            fs::ROOT | fs::SAVE | fs::STATS | fs::ACTION_BEGIN | fs::RECORD_ACTION => Ok(None),
+            fs::WRITE | fs::TRUNCATE | fs::AS_OF => need(s, w[0], true).map(|_| None),
+            fs::MARK => need(s, w[0], false).map(|_| None),
+            fs::MADE_FROM => {
+                need(s, w[0], true)?;
+                let n = (w[1] as usize).min(alaya_store::made::MADE_MAX);
+                for i in 0..n {
+                    need(s, word_at(xfer(ch), 3 * i), false)?;
+                }
+                Ok(None)
+            }
+            fs::READ | fs::STAT => match need(s, w[0], false)? {
+                Access::Pinned(cn) => {
+                    let past = s.past(p, Class::Documents, cn)?;
+                    let f = FileId(w[0]);
+                    if label == fs::STAT {
+                        let st = s.past_stat(&past, f)?;
+                        Ok(Some(alloc::vec![
+                            st.size,
+                            st.version,
+                            st.is_dir as u64,
+                            st.edits
+                        ]))
+                    } else {
+                        let n = (w[2] as usize).min(fs::XFER_BYTES);
+                        let got = s.past_read(&past, f, w[1], &mut xfer(ch)[..n])?;
+                        Ok(Some(alloc::vec![got as u64]))
+                    }
+                }
+                _ => Ok(None),
+            },
+            fs::CREATE => {
+                if !docs(w[0]) {
+                    return Ok(None);
+                }
+                // Only in the documents' top folder or a folder handed
+                // over; what it makes is its own.
+                if w[0] != s.root(Class::Documents).0 {
+                    need(s, w[0], true)?;
+                }
+                let name = Self::name(ch, w[2])?;
+                let f = s.create(p, app, FileId(w[0]), &name, w[1] != 0)?;
+                s.own_file(p, app, f)?;
+                Ok(Some(alloc::vec![f.0]))
+            }
+            fs::LOOKUP => {
+                if !docs(w[0]) {
+                    return Ok(None);
+                }
+                let name = Self::name(ch, w[1])?;
+                let f = s.lookup(p, FileId(w[0]), &name)?;
+                need(s, f.0, false)?;
+                Ok(Some(alloc::vec![f.0]))
+            }
+            fs::LIST => {
+                if !docs(w[0]) {
+                    return Ok(None);
+                }
+                let mut l = s.list(p, FileId(w[0]))?;
+                let mut keep = Vec::with_capacity(l.len());
+                for (name, f) in l.drain(..) {
+                    if s.access(p, app, f, now)? != Access::No {
+                        keep.push((name, f));
+                    }
+                }
+                Ok(Some(put_list(ch, &keep)))
+            }
+            fs::REMOVE | fs::RENAME => {
+                let (dir, at) = (w[0], len_name(w, label));
+                if !docs(dir) {
+                    return Ok(None);
+                }
+                let name = Self::name(ch, at)?;
+                let f = s.lookup(p, FileId(dir), &name)?;
+                need(s, f.0, true)?;
+                if label == fs::RENAME && !docs(w[1]) {
+                    return Err(Error::BadRequest);
+                }
+                Ok(None)
+            }
+            // History, the timeline, undo, stories, grants and the tests'
+            // own requests are for Alaya's carriers only.
+            _ => Err(Error::BadRequest),
         }
     }
 
@@ -454,15 +576,7 @@ impl Server<'_> {
             }
             fs::LIST => {
                 let l = s.list(p, FileId(w[0]))?;
-                let buf = xfer(ch);
-                let n = l.len().min(fs::XFER_BYTES / 48);
-                for (i, (name, f)) in l.iter().take(n).enumerate() {
-                    let o = 48 * i;
-                    put_words(buf, o, &[f.0, name.len() as u64]);
-                    buf[o + 16..o + 48].fill(0);
-                    buf[o + 16..o + 16 + name.len()].copy_from_slice(name);
-                }
-                alloc::vec![n as u64]
+                put_list(ch, &l)
             }
             fs::CHECK => {
                 if s.has_changes() {
@@ -704,6 +818,62 @@ impl Server<'_> {
                 let (by, cn, time) = st.made_by.unwrap_or((0, 0, 0));
                 alloc::vec![by, cn, time, st.changes.len() as u64, used as u64]
             }
+            fs::GRANT => {
+                if app != fs::DESKTOP_APP && app != fs::INIT_APP {
+                    return Err(Error::BadRequest);
+                }
+                let lasts = Lasts::from_code(w[3], w[4]).ok_or(Error::BadRequest)?;
+                s.grant(p, w[0], FileId(w[1]), w[2] != 0, lasts)?;
+                alloc::vec![]
+            }
+            fs::REVOKE => alloc::vec![s.revoke(p, w[0], FileId(w[1]))? as u64],
+            fs::GRANTS => {
+                let l = s.grants(p, (w[0] != 0).then_some(w[0]))?;
+                let n = l.len().min(fs::XFER_BYTES / fs::GRANT_BYTES);
+                let buf = xfer(ch);
+                for (i, g) in l.iter().take(n).enumerate() {
+                    let (kind, arg) = g.lasts.code();
+                    put_words(
+                        buf,
+                        fs::GRANT_BYTES * i,
+                        &[
+                            g.app,
+                            g.file.0,
+                            kind | (g.write as u64) << 8 | (g.own as u64) << 9,
+                            arg,
+                        ],
+                    );
+                }
+                alloc::vec![n as u64]
+            }
+            fs::APP_CLOSED => {
+                if app != fs::DESKTOP_APP && app != fs::INIT_APP {
+                    return Err(Error::BadRequest);
+                }
+                alloc::vec![s.app_closed(p, w[0])?]
+            }
+            fs::FORGET_LATER => {
+                let name = Self::name(ch, w[1])?;
+                let f = s.forget_later(p, app, FileId(w[0]), &name, now + w[2])?;
+                s.commit(now)?;
+                alloc::vec![f.0]
+            }
+            fs::FORGETTING => {
+                let l = s.forgetting(p)?;
+                let n = l.len().min(fs::XFER_BYTES / 32);
+                let buf = xfer(ch);
+                for (i, (f, at, cn)) in l.iter().take(n).enumerate() {
+                    put_words(buf, 32 * i, &[f.0, *at, at.saturating_sub(now), *cn]);
+                }
+                alloc::vec![n as u64]
+            }
+            fs::KEEP_FORGOTTEN => match s.keep_forgotten(p, app, FileId(w[0]))? {
+                Restored::Done(_) => {
+                    s.commit(now)?;
+                    alloc::vec![]
+                }
+                Restored::Blocked(_) => return Err(Error::Exists),
+            },
             fs::FAKE_HISTORY => {
                 let made = s.fake_history(p, app, w[0], w[1].max(1), now)?;
                 alloc::vec![made]
@@ -714,5 +884,58 @@ impl Server<'_> {
             }
             _ => return Err(Error::BadRequest),
         })
+    }
+}
+
+/// Apps that see only what they are handed: every app (numbers from
+/// `fs::app_id(0)` up) but Alaya's own carriers among them (the file
+/// browser, Settings and "What happened?"). Numbers below are Alaya's own
+/// programs: the desktop, the first program and its store checks.
+fn restricted(app: u64) -> bool {
+    use alaya_programs::desktop::role;
+    app >= fs::app_id(0)
+        && ![
+            fs::app_id(role::FILES),
+            fs::app_id(role::SETTINGS),
+            fs::app_id(role::BACK),
+        ]
+        .contains(&app)
+}
+
+/// The length word of the name a REMOVE or RENAME names.
+fn len_name(w: &[u64; 6], label: u64) -> u64 {
+    if label == fs::RENAME { w[2] } else { w[1] }
+}
+
+/// A folder's entries in the transfer page: 48 bytes each.
+fn put_list(ch: u64, l: &[(Vec<u8>, FileId)]) -> Vec<u64> {
+    let buf = xfer(ch);
+    let n = l.len().min(fs::XFER_BYTES / 48);
+    for (i, (name, f)) in l.iter().take(n).enumerate() {
+        let o = 48 * i;
+        put_words(buf, o, &[f.0, name.len() as u64]);
+        buf[o + 16..o + 48].fill(0);
+        buf[o + 16..o + 16 + name.len()].copy_from_slice(name);
+    }
+    alloc::vec![n as u64]
+}
+
+/// What `app` may do with document `f`, or a refusal that says no more
+/// than "not found". Files that are not documents pass.
+fn need(
+    s: &mut Store<KeeperDisk>,
+    p: u64,
+    app: u64,
+    f: u64,
+    write: bool,
+    now: u64,
+) -> Result<Access, Error> {
+    if FileId(f).class() != Class::Documents {
+        return Ok(Access::Current(true));
+    }
+    match s.access(p, app, FileId(f), now)? {
+        Access::No => Err(Error::NotFound),
+        Access::Pinned(_) if write => Err(Error::BadRequest),
+        a => Ok(a),
     }
 }

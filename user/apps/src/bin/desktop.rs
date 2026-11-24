@@ -28,7 +28,7 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_apps::store::{self as st, Store, Undone, label};
+use alaya_apps::store::{self as st, Entry, Lasts, Store, Undone, label};
 use alaya_crypto::{pin_key, sha256};
 use alaya_programs::desktop::{self as dk, event, parts, place, role, stage};
 use alaya_programs::files::{self as fs, APPS, DOCS, act};
@@ -40,7 +40,7 @@ use alaya_sys::{Caps, Kind, Msg, MsgInfo, rights, say};
 use alaya_ui::Rect;
 use alaya_ui::canvas::Canvas;
 use alaya_ui::login::{self, Login, Look, NewPerson, Person, Setup};
-use alaya_ui::scene::{self, Desktop, DockItem, GroupChip, Question, WindowView};
+use alaya_ui::scene::{self, Desktop, DockItem, GroupChip, Picker, Question, WindowView};
 use alaya_ui::text::Fonts;
 use alaya_ui::widgets::{Key, us_key};
 use alaya_ui::wm::{Out, Place, Wm};
@@ -76,6 +76,34 @@ struct Ask {
     what: Asked,
     title: String,
     body: String,
+}
+
+/// The Open or Save window an app asked for (dk::PICK): Alaya draws it,
+/// and the app gets only what the person picks, for as long as the
+/// person says (milestone 7, step 2).
+struct Pick {
+    win: u32,
+    role: u64,
+    save: bool,
+    write: bool,
+    files: Vec<Entry>,
+    chosen: usize,
+    name: String,
+    /// Index into [`Pick::choices`].
+    lasts: usize,
+}
+
+impl Pick {
+    /// How long the app may keep it: the choices, in order. First: until
+    /// the person takes it back (Settings shows it), so an app opens
+    /// again where it was; Tab picks less.
+    fn choices(&self) -> Vec<Lasts> {
+        let mut c = alloc::vec![Lasts::Live, Lasts::UntilClosed, Lasts::Until(0)];
+        if !self.save && !self.write {
+            c.push(Lasts::Pinned(0));
+        }
+        c
+    }
 }
 
 /// How long a note stays in the strip.
@@ -138,6 +166,8 @@ struct Desk {
     note_until: u64,
     /// An undo waiting for an answer.
     ask: Option<Ask>,
+    /// An Open or Save window is up.
+    pick: Option<Pick>,
     /// The loose group each app's window is in (by role), to put it back.
     groups_of: Vec<(u64, u32)>,
 }
@@ -247,6 +277,7 @@ fn main(info: &'static StartInfo) -> ! {
         note: String::new(),
         note_until: 0,
         ask: None,
+        pick: None,
         groups_of: Vec::new(),
     };
     d.tick();
@@ -430,6 +461,32 @@ impl Desk {
             yes: "Undo anyway",
             no: "Keep as it is",
         });
+        let pick_rows: Vec<String> = self
+            .pick
+            .as_ref()
+            .map(|p| {
+                p.files
+                    .iter()
+                    .map(|e| alloc::format!("{}   ·   {} bytes", e.name, e.size))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let pick_refs: Vec<&str> = pick_rows.iter().map(|r| r.as_str()).collect();
+        let pick_title = self.pick.as_ref().map(|p| {
+            alloc::format!(
+                "{} wants to {} a document",
+                capital(st::app_name(fs::app_id(p.role))),
+                if p.save { "save" } else { "open" }
+            )
+        });
+        let picker = self.pick.as_ref().map(|p| Picker {
+            title: pick_title.as_deref().unwrap_or(""),
+            rows: &pick_refs,
+            chosen: p.chosen,
+            name: p.save.then_some(p.name.as_str()),
+            lasts: p.choices()[p.lasts].words(),
+            ok: if p.save { "Save here" } else { "Hand it over" },
+        });
         let desk = Desktop {
             clock: &self.clock,
             status,
@@ -440,6 +497,7 @@ impl Desk {
             trusted,
             buttons: true,
             question: question.as_ref(),
+            picker: picker.as_ref(),
         };
         scene::draw(&mut cv, &mut self.fonts, &self.wm, &views, &desk, clip);
         let old = cv.set_clip(clip);
@@ -548,6 +606,15 @@ impl Desk {
                 && let Some(k) = us_key(code, self.shift)
             {
                 self.form_key(k);
+            }
+            return;
+        }
+        if self.pick.is_some() {
+            // The Open or Save window takes every key while it is up.
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.pick_key(k);
             }
             return;
         }
@@ -893,6 +960,24 @@ impl Desk {
 
     /// A click on the dock or a group label; true if it was one.
     fn shell_click(&mut self, x: i32, y: i32) -> bool {
+        if let Some(p) = &mut self.pick {
+            let (ok, no) = scene::picker_buttons(self.width, self.height);
+            let first = scene::picker_first(p.chosen);
+            if ok.contains(x, y) {
+                self.pick_done(true);
+            } else if no.contains(x, y) {
+                self.pick_done(false);
+            } else if let Some(i) = scene::picker_row_at(self.width, self.height, x, y, first)
+                && i < p.files.len()
+            {
+                p.chosen = i;
+                if p.save {
+                    p.name = p.files[i].name.clone();
+                }
+                self.damage_all();
+            }
+            return true;
+        }
         if self.ask.is_some() {
             // Only the question's buttons answer while it is asked.
             let (yes, no) = scene::question_buttons(self.width, self.height);
@@ -1186,6 +1271,136 @@ impl Desk {
         }
     }
 
+    /// An app asks for the Open or Save window (dk::PICK).
+    fn pick_start(&mut self, owner: u64, w: &[u64; 6]) -> u64 {
+        let Some(s) = self.mine() else {
+            return dk::BAD_REQUEST;
+        };
+        let Some(win) = self
+            .wins
+            .iter()
+            .find(|x| u64::from(x.id) == w[0] && x.owner == owner)
+            .map(|x| x.id)
+        else {
+            return dk::NO_WINDOW;
+        };
+        if self.pick.is_some() || self.ask.is_some() || owner == 0 {
+            return dk::BAD_REQUEST;
+        }
+        let docs = s.root(DOCS).unwrap_or(0);
+        let mut files: Vec<Entry> = s
+            .list(docs)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| !e.is_dir)
+            .collect();
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        let save = w[1] != 0;
+        let mut p = Pick {
+            win,
+            role: owner,
+            save,
+            write: save || w[2] != 0,
+            files,
+            chosen: 0,
+            name: String::from(if save { "Untitled.txt" } else { "" }),
+            lasts: 0,
+        };
+        // The app may suggest how long; the person can change it.
+        if let Some(i) = p
+            .choices()
+            .iter()
+            .position(|c| c.code().0 == w[3] && w[3] != 0)
+        {
+            p.lasts = i;
+        }
+        say!(
+            "{} window for {} ({} documents)",
+            if save { "save" } else { "open" },
+            st::app_name(fs::app_id(owner)),
+            p.files.len()
+        );
+        self.pick = Some(p);
+        self.damage_all();
+        dk::OK
+    }
+
+    fn pick_key(&mut self, k: Key) {
+        let Some(p) = &mut self.pick else { return };
+        match k {
+            Key::Enter => return self.pick_done(true),
+            Key::Escape => return self.pick_done(false),
+            Key::Tab => p.lasts = (p.lasts + 1) % p.choices().len(),
+            Key::Up => p.chosen = p.chosen.saturating_sub(1),
+            Key::Down => p.chosen = (p.chosen + 1).min(p.files.len().saturating_sub(1)),
+            Key::Home => p.chosen = 0,
+            Key::End => p.chosen = p.files.len().saturating_sub(1),
+            Key::Backspace if p.save => {
+                p.name.pop();
+            }
+            Key::Char(c) if p.save && p.name.len() < 40 && c != '/' => p.name.push(c),
+            _ => {}
+        }
+        self.damage_all();
+    }
+
+    /// Hand over what was picked (or nothing), and tell the app.
+    fn pick_done(&mut self, ok: bool) {
+        let Some(p) = self.pick.take() else { return };
+        self.damage_all();
+        let app = fs::app_id(p.role);
+        let picked = if !ok {
+            None
+        } else {
+            self.mine().and_then(|s| {
+                let lasts = match p.choices()[p.lasts] {
+                    Lasts::Until(_) => Lasts::Until(rt::now_ms() / 1000 + 3600),
+                    Lasts::Pinned(_) => Lasts::Pinned(p.files.get(p.chosen)?.version),
+                    l => l,
+                };
+                let f = if p.save {
+                    let docs = s.root(DOCS).ok()?;
+                    let name = p.name.trim();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    // Saving over a document of the same name is the
+                    // person's choice here: it keeps its history.
+                    s.open(docs, name).ok()?
+                } else {
+                    p.files.get(p.chosen)?.file
+                };
+                match s.grant(app, f, p.write, lasts) {
+                    Ok(()) => {
+                        say!(
+                            "handed {} to {}, {}{}",
+                            s.name_of(f, 0).unwrap_or_default(),
+                            st::app_name(app),
+                            lasts.words(),
+                            if p.write { ", may change it" } else { "" }
+                        );
+                        Some(f)
+                    }
+                    Err(e) => {
+                        say!("could not hand it over: {e}");
+                        None
+                    }
+                }
+            })
+        };
+        let (kind, _) = p.choices()[p.lasts].code();
+        self.push(
+            p.win,
+            [
+                event::PICKED,
+                picked.unwrap_or(0),
+                p.save as u64,
+                p.write as u64,
+                kind,
+            ],
+        );
+    }
+
     fn forget(&mut self, owner: u64) {
         let ids: Vec<u32> = self
             .wins
@@ -1203,6 +1418,21 @@ impl Desk {
             return;
         };
         let x = self.wins.remove(i);
+        if self.pick.as_ref().is_some_and(|p| p.win == x.id) {
+            self.pick = None;
+        }
+        // The app's last window: what it had until it closed goes back.
+        if x.owner != 0
+            && !self.wins.iter().any(|w| w.owner == x.owner)
+            && let Some(s) = self.mine()
+            && let Ok(n) = s.app_closed(fs::app_id(x.owner))
+            && n > 0
+        {
+            say!(
+                "{} closed: {n} hand-overs taken back",
+                st::app_name(fs::app_id(x.owner))
+            );
+        }
         let out = self.wm.remove(x.id);
         self.apply(out);
         // Take the pages back from the app (every copy it was lent); the
@@ -1279,6 +1509,7 @@ impl Desk {
                 say!("window {id} opened, {cw} by {ch}");
                 ([dk::OK, u64::from(id), 0, 0, 0, 0], 0)
             }
+            dk::PICK => ([self.pick_start(owner, &w), 0, 0, 0, 0, 0], 0),
             dk::PAGE => match find(self, w[0]) {
                 Some(i) if w[1] < dk::PAGES => {
                     // Lend a copy of the page; the desktop keeps its own.
@@ -1449,7 +1680,9 @@ impl Desk {
                     u64::from(self.wm.focused().unwrap_or(0)),
                     u64::from(self.wm.tiling),
                     self.frames,
-                    u64::from(self.ask.is_some()) | (self.note.len() as u64) << 1,
+                    u64::from(self.ask.is_some())
+                        | (self.note.len().min(1 << 20) as u64) << 1
+                        | u64::from(self.pick.is_some()) << 62,
                 ],
                 0,
             ),
@@ -1511,4 +1744,13 @@ fn notice(parts: u64) -> String {
              update, do not type your PIN."
         }
     })
+}
+
+/// "the text editor" → "The text editor".
+fn capital(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
 }

@@ -50,6 +50,162 @@ pub struct Desktop<'a> {
     pub buttons: bool,
     /// A question only Alaya asks (drawn over the windows).
     pub question: Option<&'a Question<'a>>,
+    /// The Open or Save window Alaya draws for an app (milestone 7,
+    /// step 2): what you pick is all the app gets.
+    pub picker: Option<&'a Picker<'a>>,
+}
+
+/// The Open or Save window. The app asked; Alaya, not the app, shows
+/// the person's documents and hands over only the one picked, for as
+/// long as the person says.
+pub struct Picker<'a> {
+    /// "The text editor wants to open a document".
+    pub title: &'a str,
+    pub rows: &'a [&'a str],
+    pub chosen: usize,
+    /// Save: the new document's name as typed (None: Open).
+    pub name: Option<&'a str>,
+    /// How long the app keeps it, as the person chose (Tab changes it).
+    pub lasts: &'a str,
+    pub ok: &'a str,
+}
+
+/// Where the picker is drawn on a screen `w` by `h`, and its buttons
+/// (hand over, cancel).
+pub fn picker_rect(w: i32, h: i32) -> Rect {
+    Rect::new((w - 520) / 2, (h - 400) / 2, 520, 400)
+}
+
+pub fn picker_buttons(w: i32, h: i32) -> (Rect, Rect) {
+    let r = picker_rect(w, h);
+    (
+        Rect::new(r.right() - 330, r.bottom() - 52, 150, 32),
+        Rect::new(r.right() - 168, r.bottom() - 52, 150, 32),
+    )
+}
+
+/// The rows shown at once, and the first one shown when `chosen` is.
+pub const PICKER_ROWS: usize = 8;
+pub fn picker_first(chosen: usize) -> usize {
+    chosen.saturating_sub(PICKER_ROWS - 1)
+}
+
+/// The row under a point, if any.
+pub fn picker_row_at(w: i32, h: i32, x: i32, y: i32, first: usize) -> Option<usize> {
+    let r = picker_rect(w, h);
+    let top = r.y + 84;
+    if x < r.x + 16 || x >= r.right() - 16 || y < top || y >= top + 26 * PICKER_ROWS as i32 {
+        return None;
+    }
+    Some(first + ((y - top) / 26) as usize)
+}
+
+fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32) {
+    let r = picker_rect(sw, sh);
+    cv.shadow(r, 12, 16);
+    cv.round_rect(r, 12, theme::WIN);
+    cv.round_frame(r, 12, theme::LINE);
+    let (asc, _) = fonts.metrics(Face::Strong, 16);
+    fonts.draw(
+        cv,
+        Face::Strong,
+        16,
+        r.x + 22,
+        r.y + 20 + asc,
+        p.title,
+        theme::INK,
+    );
+    let (a2, _) = fonts.metrics(Face::Text, 12);
+    fonts.draw(
+        cv,
+        Face::Text,
+        12,
+        r.x + 22,
+        r.y + 50 + a2,
+        "Only what you pick is handed over. Tab: how long it keeps it.",
+        theme::MUTED,
+    );
+    let top = r.y + 84;
+    let first = picker_first(p.chosen);
+    let (a3, l3) = fonts.metrics(Face::Text, 13);
+    if p.rows.is_empty() {
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            r.x + 26,
+            top + 6 + a3,
+            "No documents yet.",
+            theme::MUTED,
+        );
+    }
+    for (i, row) in p.rows.iter().enumerate().skip(first).take(PICKER_ROWS) {
+        let y = top + (i - first) as i32 * 26;
+        let line = Rect::new(r.x + 16, y, r.w - 32, 24);
+        if i == p.chosen && p.name.is_none() {
+            cv.round_rect(line, 6, theme::ACCENT);
+        }
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            line.x + 10,
+            line.y + (line.h - l3) / 2 + a3,
+            row,
+            if i == p.chosen && p.name.is_none() {
+                theme::ACCENT_INK
+            } else {
+                theme::INK
+            },
+        );
+    }
+    let mut y = top + 26 * PICKER_ROWS as i32 + 8;
+    if let Some(name) = p.name {
+        let field = Rect::new(r.x + 16, y, r.w - 32, 28);
+        cv.round_rect(field, 6, theme::CHROME);
+        cv.round_frame(field, 6, theme::ACCENT);
+        let shown = alloc::format!("Name: {name}|");
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            field.x + 10,
+            field.y + (28 - l3) / 2 + a3,
+            &shown,
+            theme::INK,
+        );
+        y += 34;
+    }
+    let lasts = alloc::format!("Keeps it: {}", p.lasts);
+    fonts.draw(cv, Face::Strong, 12, r.x + 22, y + a2, &lasts, theme::PAST);
+    let (ok, no) = picker_buttons(sw, sh);
+    for (b, name, primary) in [(ok, p.ok, true), (no, "Cancel", false)] {
+        cv.round_rect(
+            b,
+            7,
+            if primary {
+                theme::ACCENT
+            } else {
+                theme::CHROME
+            },
+        );
+        cv.round_frame(b, 7, if primary { theme::ACCENT } else { theme::LINE });
+        let tw = fonts.width(Face::Strong, 13, name);
+        let (a4, l4) = fonts.metrics(Face::Strong, 13);
+        fonts.draw(
+            cv,
+            Face::Strong,
+            13,
+            b.x + (b.w - tw) / 2,
+            b.y + (b.h - l4) / 2 + a4,
+            name,
+            if primary {
+                theme::ACCENT_INK
+            } else {
+                theme::INK
+            },
+        );
+    }
 }
 
 /// A question Alaya asks before it does something (rule B6: something
@@ -439,6 +595,9 @@ pub fn draw<'a>(
             desk.status,
             theme::MUTED,
         );
+    }
+    if let Some(p) = desk.picker.filter(|_| !desk.locked) {
+        draw_picker(cv, fonts, p, sw, sh);
     }
     if let Some(q) = desk.question.filter(|_| !desk.locked) {
         draw_question(cv, fonts, q, sw, sh);

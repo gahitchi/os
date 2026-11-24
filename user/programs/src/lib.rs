@@ -499,6 +499,32 @@ pub mod files {
     /// FAKE_HISTORY: days, hours between moments → moments made (tests
     /// only: a year of history, made fast, as if it had been lived).
     pub const FAKE_HISTORY: u64 = 41;
+    /// GRANT: app, file, write, how long (kind), its argument → status.
+    /// Hand a document to an app (the desktop only: the Open and Save
+    /// windows, milestone 7 step 2). Kinds as `alaya_store::grants::Lasts`:
+    /// 0 live, 1 pinned to a commit, 2 until a time (seconds), 3 until the
+    /// app closes.
+    pub const GRANT: u64 = 42;
+    /// REVOKE: app, file → 1 if it had it.
+    pub const REVOKE: u64 = 43;
+    /// GRANTS: app (0: every app) → count; [`GRANT_BYTES`] each in the
+    /// transfer page (app, file, kind | write << 8 | own << 9, argument).
+    pub const GRANTS: u64 = 44;
+    /// APP_CLOSED: app → grants taken back (the desktop, when an app's
+    /// last window closes).
+    pub const APP_CLOSED: u64 = 45;
+    /// FORGET_LATER: folder, name length, seconds from now → file. The
+    /// document leaves its folder at once; its key is destroyed then,
+    /// unless it was kept meanwhile (decision 62: an hour to change your
+    /// mind).
+    pub const FORGET_LATER: u64 = 46;
+    /// FORGETTING: → count; (file, when, seconds left, the commit before)
+    /// each, 32 bytes.
+    pub const FORGETTING: u64 = 47;
+    /// KEEP_FORGOTTEN: file → status. It goes back where it was.
+    pub const KEEP_FORGOTTEN: u64 = 48;
+    /// The grace time before a document is forgotten for good.
+    pub const FORGET_GRACE: u64 = 3600;
 
     pub const NAME2: usize = 64;
     pub const LABEL: usize = 16;
@@ -507,6 +533,7 @@ pub mod files {
     pub const NAMED_BYTES: usize = 56;
     pub const PAST_ENTRY_BYTES: usize = 64;
     pub const STORY_BYTES: usize = 32;
+    pub const GRANT_BYTES: usize = 32;
     pub const ACTION_MS: u64 = 2000;
 
     /// Kinds of action (`alaya_store::history::act`).
@@ -745,8 +772,9 @@ pub mod desktop {
     /// TILING: on (1) or off (0). Test and keyboard use.
     pub const TILING: u64 = 8;
     /// STATE: → windows, focused window, tiling, frames drawn, whether a
-    /// question is asked (1) and what the strip says now (its length;
-    /// milestone 7).
+    /// question is asked (1) and what the strip says now (its length,
+    /// << 1; milestone 7), and whether the Open or Save window is up
+    /// (1 << 62).
     pub const STATE: u64 = 9;
     /// WINDOW: window → status, x, y, width, height, place.
     pub const WINDOW: u64 = 10;
@@ -780,6 +808,11 @@ pub mod desktop {
     /// the same thing since, and puts windows and the look back. Only
     /// "What happened?" (and the first program) may ask.
     pub const UNDO: u64 = 21;
+    /// PICK: window, save (1) or open (0), write, how long it suggests
+    /// (a `Lasts` kind; 0: let the person choose) → status. Alaya shows
+    /// the Open or Save window; the answer comes later as a PICKED event
+    /// (milestone 7, step 2).
+    pub const PICK: u64 = 22;
     pub mod undo_by {
         /// The last action (as Alaya key + Z).
         pub const LAST: u64 = 0;
@@ -845,6 +878,9 @@ pub mod desktop {
         pub const CLOSE: u64 = 4;
         /// The window got (1) or lost (0) the keyboard.
         pub const FOCUS: u64 = 5;
+        /// The Open or Save window closed: the file handed over (0:
+        /// nothing), save, write, how long (a `Lasts` kind).
+        pub const PICKED: u64 = 6;
     }
 
     /// Places, as WINDOW reports them.

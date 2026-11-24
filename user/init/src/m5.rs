@@ -321,7 +321,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     };
     let alice = app(&mut env, 1, 100, 0);
     let alice_b = app(&mut env, 1, 200, 1);
-    let alice_c = app(&mut env, 1, 300, 2);
+    let alice_c = app(&mut env, 1, 250, 2);
     let bob = app(&mut env, 2, 100, 3);
 
     if info.flags & alaya_sys::abi::boot_flags::STORE_SOAK != 0 {
@@ -390,11 +390,11 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     assert!(rd[1] >= 1);
     let found = (0..rd[1] as usize).any(|i| {
         let b = alice.buf();
-        words(b, 3 * i) == 300 && words(b, 3 * i + 1) == budget && words(b, 3 * i + 2) == c2
+        words(b, 3 * i) == 250 && words(b, 3 * i + 1) == budget && words(b, 3 * i + 2) == c2
     });
     assert!(
         found,
-        "the read of version {c2} by app 300 was not recorded"
+        "the read of version {c2} by app 250 was not recorded"
     );
     pass("history keeps every version; each commit records which app changed and read what");
 
