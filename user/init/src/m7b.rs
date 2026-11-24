@@ -247,8 +247,9 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     let waiting = || me.call(fs::FORGETTING, &[])[1];
     let files = x.window_of(role::FILES).expect("the file browser's window");
     ask(ep, dk::RAISE, &[files]);
-    // Choose it. The browser looks again every two seconds: wait for that
-    // first, or the rows move before secret.txt is in its list.
+    // Choose it. The browser looks again when it comes to the front (and
+    // every two seconds): wait for that first, or the rows move before
+    // secret.txt is in its list.
     sleep_until(2500, || false);
     let at = me.place_in_docs(docs, b"secret.txt");
     let mut keys = [0u8; 256];

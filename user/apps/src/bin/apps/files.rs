@@ -191,6 +191,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             match e {
                 Event::Key(k) => keys.push(k),
                 Event::Close => crate::closed(&win),
+                // Brought to the front: look again at once, so the rows
+                // are today's before any key moves among them.
+                Event::Focus(true) => last_look = 0,
                 _ => {}
             }
         }
