@@ -237,6 +237,7 @@ fn main(info: &'static StartInfo) -> ! {
         store: &mut store,
         hold_until: 0,
         stick,
+        stick_used: 0,
         jobs: None,
         replay: Vec::new(),
         clips: Vec::new(),
@@ -359,6 +360,8 @@ struct Server<'a> {
     hold_until: u64,
     /// The backup stick (milestone 7), if there is one.
     stick: Option<KeeperDisk>,
+    /// Blocks the last backup left in use on the stick (0: not known).
+    stick_used: u64,
     /// The jobs running now (milestone 7, step 3), by person and app;
     /// None when they must be looked up again.
     jobs: Option<Vec<Job>>,
@@ -1242,6 +1245,7 @@ impl Server<'_> {
                     fs::BACKUP => {
                         let r = s.backup(p, stick, w[0] != 0)?;
                         s.commit(now)?;
+                        self.stick_used = r.used;
                         say!(
                             "backup run {}: {} changed, {} gone, {} KiB",
                             r.run,
@@ -1267,7 +1271,13 @@ impl Server<'_> {
                         }
                         let n = (w[0] as usize).min(64);
                         let needle = xfer(ch)[..n].to_vec();
-                        alloc::vec![alaya_store::backup::raw_find(stick, &needle)? as u64]
+                        // Only the part backups wrote: a whole stick read
+                        // block by block takes minutes on a slow machine.
+                        let upto = match self.stick_used {
+                            0 => u64::MAX,
+                            n => n,
+                        };
+                        alloc::vec![alaya_store::backup::raw_find(stick, &needle, upto)? as u64]
                     }
                 }
             }

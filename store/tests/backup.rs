@@ -163,7 +163,7 @@ fn a_forgotten_file_is_unreadable_on_the_stick_too() {
     assert_eq!(done.documents, 1);
     let tdocs = t.root(Class::Documents);
     assert!(t.lookup(1, tdocs, b"secret.txt").is_err());
-    assert!(!alaya_store::backup::raw_find(&mut stick, b"the secret plan").unwrap());
+    assert!(!alaya_store::backup::raw_find(&mut stick, b"the secret plan", u64::MAX).unwrap());
     // Another machine's person cannot back up over it without erasing.
     let mut other = fresh(&OTHER_MACHINE);
     assert_eq!(other.backup(1, &mut stick, false), Err(Error::WrongKey));

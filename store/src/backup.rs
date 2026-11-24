@@ -408,13 +408,13 @@ fn note_of(version: u64, edits: u64, parent: u64, name: &[u8], stick: u64) -> Va
 
 /// Look for `needle` anywhere on `stick`, as raw bytes (tests: nothing
 /// of a document may be there in the clear).
-pub fn raw_find<S: Disk>(stick: &mut S, needle: &[u8]) -> Result<bool, Error> {
+pub fn raw_find<S: Disk>(stick: &mut S, needle: &[u8], upto: u64) -> Result<bool, Error> {
     if needle.is_empty() || needle.len() > 64 {
         return Err(Error::BadRequest);
     }
     let mut b = [0u8; BLOCK];
     let mut carry: Vec<u8> = Vec::new();
-    for a in 0..stick.blocks() {
+    for a in 0..stick.blocks().min(upto) {
         stick.read(a, &mut b).map_err(io)?;
         carry.extend_from_slice(&b);
         if carry.windows(needle.len()).any(|w| w == needle) {
