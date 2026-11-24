@@ -83,7 +83,7 @@ fn main(info: &'static StartInfo) -> ! {
         if hello { "sent" } else { "refused" }
     );
     // From version 3 on, it would like to keep running with no window.
-    if version >= 3 && version < SLOW_FROM {
+    if (3..SLOW_FROM).contains(&version) {
         let bg = win.background();
         say!(
             "postcards: background {}",
