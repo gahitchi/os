@@ -247,22 +247,26 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     let waiting = || me.call(fs::FORGETTING, &[])[1];
     let files = x.window_of(role::FILES).expect("the file browser's window");
     ask(ep, dk::RAISE, &[files]);
-    // Choose it (the browser looks again every two seconds).
+    // Choose it. The browser looks again every two seconds: wait for that
+    // first, or the rows move before secret.txt is in its list.
+    sleep_until(2500, || false);
     let at = me.place_in_docs(docs, b"secret.txt");
     let mut keys = [0u8; 256];
     let rows = key_list(&mut keys, at);
     let rows = &rows[..rows.len() - "{enter}".len()];
     x.keys(rows, || false, 2500);
-    x.keys("f", || false, 1500);
-    crate::say!("screenshot forget");
+    // Both presses at once, waiting for what they do: a lone first press
+    // that is typed again (when the host's keys come late) would count as
+    // the second, and forget the wrong file.
     assert!(
         x.keys(
-            "f",
+            "ff",
             || waiting() == 1 && me.lookup(docs, "secret.txt").is_none(),
             SLOW
         ),
         "F twice did not start forgetting secret.txt"
     );
+    crate::say!("screenshot forget");
     assert!(
         x.keys(
             "k",
