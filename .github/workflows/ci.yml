@@ -74,15 +74,20 @@ jobs:
         run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2 --uefi --timeout 900
 
       # KVM with the host CPU, as on a PC: x2APIC and the TSC-deadline timer.
-      - name: Boot, KVM, BIOS, 1, 2 and 8 cores (TSC-deadline timer)
+      # At most as many cores as the runner has: with more, the host
+      # takes cores away from Alaya while they hold the kernel lock and
+      # every other core waits (a 2-minute boot took 40 minutes on 8 cores
+      # over a 4-core runner). The 8-core logic is still checked in TCG
+      # above, where no core is taken away.
+      - name: Boot, KVM, BIOS, 1, 2 and all the runner's cores (TSC-deadline timer)
         run: |
           set -o pipefail
-          for n in 1 2 8; do
+          for n in 1 2 $(( $(nproc) < 8 ? $(nproc) : 8 )); do
             cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 3000 | tee boot.log
             grep -q "timer is the TSC-deadline timer" boot.log
           done
-      - name: Boot, KVM, UEFI, 8 cores, 4 GiB (1 GiB pages)
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G --timeout 3000
+      - name: Boot, KVM, UEFI, all the runner's cores, 4 GiB (1 GiB pages)
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $(( $(nproc) < 8 ? $(nproc) : 8 )) --uefi --memory 4G --timeout 3000
 
       # Crash on purpose and check the fault reports.
       - name: Fault reports
