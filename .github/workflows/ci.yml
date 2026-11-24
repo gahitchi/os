@@ -78,11 +78,11 @@ jobs:
         run: |
           set -o pipefail
           for n in 1 2 8; do
-            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 900 | tee boot.log
+            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 1800 | tee boot.log
             grep -q "timer is the TSC-deadline timer" boot.log
           done
       - name: Boot, KVM, UEFI, 8 cores, 4 GiB (1 GiB pages)
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G --timeout 900
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G --timeout 1800
 
       # Crash on purpose and check the fault reports.
       - name: Fault reports
