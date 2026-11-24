@@ -255,9 +255,7 @@ fn main() -> ExitCode {
             "--vnc" => opts.display = Some("vnc=:0".into()),
             "--image" => opts.image = Some(PathBuf::from(value("--image"))),
             "--accel" => opts.accel = value("--accel"),
-            "--memory" => {
-                opts.memory = value("--memory")
-            }
+            "--memory" => opts.memory = value("--memory"),
             "--fault" => {
                 let kind = value("--fault");
                 if !FAULTS.iter().any(|(k, _)| *k == kind) {
