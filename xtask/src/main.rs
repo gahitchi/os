@@ -1360,14 +1360,26 @@ fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
                 "backspace" => "backspace".to_string(),
                 "escape" => "esc".to_string(),
                 n if n.starts_with("super+") => {
-                    let k = n[6..].chars().next().ok_or("super+ what?")?;
-                    let (code, _) = qcode(k).ok_or(format!("no key for {k}"))?;
+                    let k = &n[6..];
+                    let code = match k {
+                        "up" | "down" | "left" | "right" | "tab" | "delete" => k.to_string(),
+                        _ => {
+                            let c = k.chars().next().ok_or("super+ what?")?;
+                            qcode(c).ok_or(format!("no key for {c}"))?.0
+                        }
+                    };
                     press(q, &["meta_l", &code])?;
                     continue;
                 }
                 n if n.starts_with("ctrl+") => {
-                    let k = n[5..].chars().next().ok_or("ctrl+ what?")?;
-                    let (code, _) = qcode(k).ok_or(format!("no key for {k}"))?;
+                    let k = &n[5..];
+                    let code = match k {
+                        "up" | "down" | "left" | "right" | "tab" | "delete" => k.to_string(),
+                        _ => {
+                            let c = k.chars().next().ok_or("ctrl+ what?")?;
+                            qcode(c).ok_or(format!("no key for {c}"))?.0
+                        }
+                    };
                     press(q, &["ctrl", &code])?;
                     continue;
                 }

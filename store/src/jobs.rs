@@ -258,7 +258,7 @@ impl<D: Disk> Store<D> {
     }
 
     /// Whether `f` is `folder` or somewhere inside it, in branch `b`.
-    fn inside(&mut self, b: Person, f: FileId, folder: FileId) -> Result<bool, Error> {
+    pub(crate) fn inside(&mut self, b: Person, f: FileId, folder: FileId) -> Result<bool, Error> {
         let mut up = f.obj();
         for _ in 0..256 {
             if up == folder.obj() {

@@ -58,6 +58,8 @@ struct App {
     store: u64,
     fault: u64,
     starts: u64,
+    /// Its main thread, to freeze it while its task is paused.
+    thread: u64,
 }
 
 /// Everything the first program keeps running after its checks.
@@ -390,7 +392,7 @@ impl<'a> Session<'a> {
             role::HOSTILE => "hostile",
             _ => "settings",
         };
-        program::start(
+        let started = program::start(
             &mut parent,
             &Spec {
                 name,
@@ -411,6 +413,41 @@ impl<'a> Session<'a> {
         )
         .expect("start an app");
         self.apps[i].starts += 1;
+        self.apps[i].thread = started.thread;
+    }
+
+    /// A paused task's app is frozen, not closed (rule B3): its thread
+    /// stops where it is, and starts again when the task goes on.
+    pub(crate) fn pause_bits(&mut self, bits: u64, r: u64) {
+        let t = self.apps[r as usize].thread;
+        if t == 0 {
+            return;
+        }
+        if bits & (1 << (dk::PAUSE_SHIFT + r)) != 0 {
+            while alaya_sys::thread_stop(t).is_err() {}
+            say!("app {r} is frozen with its task");
+        }
+        if bits & (1 << (dk::GO_ON_SHIFT + r)) != 0 {
+            let _ = alaya_sys::thread_start(t);
+            say!("app {r} goes on");
+        }
+    }
+
+    /// The checks run before [`Session::serve`]: act on the desktop's
+    /// pause bits now, and leave every other bit for later.
+    pub(crate) fn pause_now(&mut self) {
+        let bits = self.asked_bits();
+        for r in 1..=role::COUNT {
+            self.pause_bits(bits, r);
+        }
+        self.asked
+            .set(bits & !(0xff << dk::PAUSE_SHIFT) & !(0xff << dk::GO_ON_SHIFT));
+    }
+
+    /// Role `r`'s app is frozen (its thread stopped).
+    pub(crate) fn frozen(&self, r: u64) -> bool {
+        let t = self.apps[r as usize].thread;
+        t != 0 && alaya_sys::thread_read(t).is_ok_and(|s| s[3] == alaya_sys::abi::state::STOPPED)
     }
 
     pub(crate) fn wait_window(&self, r: u64) -> u64 {
@@ -447,6 +484,7 @@ impl<'a> Session<'a> {
                     if m.badge & (1 << r) != 0 {
                         self.start_app(r);
                     }
+                    self.pause_bits(m.badge, r);
                 }
                 continue;
             }
@@ -913,6 +951,8 @@ pub(crate) fn run<'a>(
     crate::m7::run(&mut x, pass);
     crate::m7b::run(&mut x, pass);
     crate::m7c::run(&mut x, pass);
+    crate::m7d::run(&mut x, pass);
+    crate::m7e::run(&mut x, pass);
     x
 }
 

@@ -65,6 +65,8 @@ pub enum Event {
     },
     /// Make this result again from its sources as they are now.
     MakeAgain(u64),
+    /// Show this moment (a commit) on the timeline.
+    Moment(u64),
 }
 
 pub struct Window {
@@ -138,6 +140,23 @@ impl Window {
             win.height = s[2] as i32;
         }
         Some(win)
+    }
+
+    /// Tell the person something (32 bytes at most). `kind` is only a
+    /// wish (`dk::inbox`): Alaya decides how soon it shows.
+    pub fn notify(&self, kind: u64, text: &str) -> bool {
+        let mut b = [0u8; 32];
+        let mut n = text.len().min(32);
+        while !text.is_char_boundary(n) {
+            n -= 1;
+        }
+        b[..n].copy_from_slice(&text.as_bytes()[..n]);
+        let w = |k: usize| u64::from_le_bytes(b[k * 8..k * 8 + 8].try_into().unwrap());
+        call(
+            self.ep,
+            dk::NOTIFY,
+            &[kind | (n as u64) << 8, w(0), w(1), w(2), w(3)],
+        )[0] == dk::OK
     }
 
     pub fn set_title(&self, title: &str) {
@@ -251,6 +270,7 @@ impl Window {
                     arg: r[3],
                 },
                 event::MAKE_AGAIN => Event::MakeAgain(r[2]),
+                event::MOMENT => Event::Moment(r[2]),
                 _ => continue,
             };
             return Some(e);

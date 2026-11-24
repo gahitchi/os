@@ -128,22 +128,15 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 "What you use Alaya for. Changes the dock at once.",
                 theme::MUTED,
             );
-            let mut y = 72;
-            for l in [Look::Basics, Look::Everything] {
-                let (hit, r) = ui.button(16, y, l.name(), l == look);
+            let mut x = 16;
+            for l in Look::ALL {
+                let (hit, r) = ui.button(x, 72, l.name(), l == look);
                 if hit {
                     chosen = Some(l);
                 }
-                ui.text(
-                    r.right() + 12,
-                    y + 7,
-                    Face::Text,
-                    12,
-                    l.about(),
-                    theme::MUTED,
-                );
-                y += 44;
+                x = r.right() + 8;
             }
+            ui.text(16, 120, Face::Text, 12, look.about(), theme::MUTED);
             ui.text(16, 168, Face::Strong, 15, "What apps can see", theme::INK);
             ui.text(
                 16,

@@ -486,7 +486,7 @@ fn picture_of_the_desktop() {
         } else {
             None
         },
-        stuck: false,
+        stuck: None,
         group: (id == 2).then_some(("Work", 0x23_68_6b)),
     };
     let dock = [

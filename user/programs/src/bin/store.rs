@@ -1434,6 +1434,118 @@ impl Server<'_> {
                 }
                 None => alloc::vec![0, 0, 0, 0],
             },
+            fs::GROUPS => {
+                let l = s.groups(p)?;
+                let buf = xfer(ch);
+                let n = l.len().min(fs::XFER_BYTES / fs::GROUP_BYTES);
+                for (i, g) in l.iter().take(n).enumerate() {
+                    let o = fs::GROUP_BYTES * i;
+                    let flags = if g.task { fs::GROUP_TASK } else { 0 }
+                        | if g.paused { fs::GROUP_PAUSED } else { 0 };
+                    put_words(
+                        buf,
+                        o,
+                        &[u64::from(g.id), flags, u64::from(g.color), g.made, g.left],
+                    );
+                    buf[o + 40..o + 56].fill(0);
+                    buf[o + 40..o + 40 + g.name.len()].copy_from_slice(&g.name);
+                }
+                alloc::vec![n as u64]
+            }
+            fs::GROUP_NEW => {
+                let name = Self::name(ch, w[1])?;
+                let id = s.group_new(p, &name, w[0] as u32, now)?;
+                s.commit(now)?;
+                alloc::vec![u64::from(id)]
+            }
+            fs::GROUP_SET => {
+                let name = Self::name(ch, w[4])?;
+                let g = alaya_store::groups::Group {
+                    id: w[0] as u32,
+                    name,
+                    color: w[2] as u32,
+                    task: w[1] & fs::GROUP_TASK != 0,
+                    paused: w[1] & fs::GROUP_PAUSED != 0,
+                    made: 0,
+                    left: w[3],
+                };
+                s.group_set(p, &g)?;
+                s.commit(now)?;
+                alloc::vec![]
+            }
+            fs::GROUP_REMOVE => {
+                s.group_remove(p, w[0] as u32)?;
+                s.commit(now)?;
+                alloc::vec![]
+            }
+            fs::GROUP_ADD => {
+                let added = s.group_add(p, w[0] as u32, FileId(w[1]))?;
+                s.commit(now)?;
+                alloc::vec![added as u64]
+            }
+            fs::GROUP_TAKE => {
+                let was = s.group_take(p, w[0] as u32, FileId(w[1]))?;
+                s.commit(now)?;
+                alloc::vec![was as u64]
+            }
+            fs::GROUP_FILES => {
+                let l = s.group_files(p, w[0] as u32)?;
+                let buf = xfer(ch);
+                let n = l.len().min(fs::XFER_BYTES / 8);
+                for (i, f) in l.iter().take(n).enumerate() {
+                    put_words(buf, 8 * i, &[f.0]);
+                }
+                alloc::vec![n as u64]
+            }
+            fs::OPEN_IN_TASK => {
+                s.open_in_task(p, w[0], (w[1] != 0).then_some(w[1] as u32))?;
+                s.commit(now)?;
+                alloc::vec![]
+            }
+            fs::GROUP_LEAVE => {
+                s.group_leave(p, w[0] as u32, now, w[1])?;
+                s.commit(now)?;
+                alloc::vec![]
+            }
+            fs::GROUP_NOTE => {
+                let n = w[1] as usize;
+                if n > fs::NOTE_MAX {
+                    return Err(Error::BadRequest);
+                }
+                let note = xfer(ch)[..n].to_vec();
+                s.group_note(p, w[0] as u32, &note)?;
+                s.commit(now)?;
+                alloc::vec![]
+            }
+            fs::RETURN_POINT => match s.return_point(p, w[0] as u32)? {
+                Some(r) => {
+                    xfer(ch)[..r.note.len()].copy_from_slice(&r.note);
+                    alloc::vec![r.left.max(1), r.left_cn, r.roles, r.note.len() as u64]
+                }
+                None => alloc::vec![0, 0, 0, 0],
+            },
+            fs::SINCE_LEFT => {
+                let l = s.since_left(p, w[0] as u32)?;
+                let buf = xfer(ch);
+                for (i, x) in l.iter().enumerate() {
+                    put_words(
+                        buf,
+                        fs::SINCE_BYTES * i,
+                        &[
+                            x.kind as u64,
+                            x.file.0,
+                            x.cn,
+                            x.time,
+                            x.app,
+                            x.what,
+                            x.source.map_or(0, |f| f.0),
+                            u64::from(x.count),
+                        ],
+                    );
+                }
+                alloc::vec![l.len() as u64]
+            }
+            fs::TASK_OF => alloc::vec![s.task_of(p, w[0])?.map_or(0, u64::from)],
             fs::STICK => {
                 let last = s.last_backup(p)?.map_or((0, 0), |(_, run, m)| (run, m));
                 match &self.stick {

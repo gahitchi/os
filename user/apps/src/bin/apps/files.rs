@@ -237,6 +237,22 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                         look = true;
                     }
                 }
+                // Put it in a group (milestone 7a): Alaya asks which.
+                Key::Char('g') => {
+                    if let Some(r) = selected.and_then(|i| rows.get(i)) {
+                        let ok = alaya_sys::ipc_call(
+                            start::FIRST_GIVEN + dk::APP_G_DESKTOP,
+                            &Msg::new(dk::GROUP_FILE, &[r.e.file]),
+                            Caps::default(),
+                        )
+                        .is_ok_and(|m| m.words[0] == dk::OK);
+                        say!(
+                            "put {} in a group: {}",
+                            r.e.name,
+                            if ok { "asked" } else { "cannot" }
+                        );
+                    }
+                }
                 Key::Char('p') => {
                     if let Some(r) = selected.and_then(|i| rows.get(i))
                         && !r.e.is_dir
@@ -415,8 +431,8 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 _ => r.about.clone(),
             },
             None => String::from(
-                "Up and down choose a file. A marks a result \"as of a date\". \
-                 Delete deletes it; Alaya key + Z brings it back.",
+                "Up and down choose a file. A marks a result \"as of a date\"; \
+                 G puts it in a group. Delete deletes it; Alaya key + Z brings it back.",
             ),
         };
         let lines = fonts.wrap(Face::Text, 12, &hint, win.width - 28);

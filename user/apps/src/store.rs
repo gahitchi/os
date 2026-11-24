@@ -895,6 +895,134 @@ impl Store {
         }))
     }
 
+    /// The person's groups and tasks (Alaya's own programs).
+    pub fn groups(&self) -> Result<Vec<GroupRow>, Status> {
+        let r = self.call(fs::GROUPS, &[])?;
+        let b = xfer();
+        Ok((0..r[1] as usize)
+            .map(|i| {
+                let o = fs::GROUP_BYTES * i;
+                let w =
+                    |j: usize| u64::from_le_bytes(b[o + 8 * j..o + 8 * j + 8].try_into().unwrap());
+                let name = &b[o + 40..o + 56];
+                let n = name.iter().position(|&c| c == 0).unwrap_or(16);
+                GroupRow {
+                    id: w(0) as u32,
+                    task: w(1) & fs::GROUP_TASK != 0,
+                    paused: w(1) & fs::GROUP_PAUSED != 0,
+                    color: w(2) as u32,
+                    made: w(3),
+                    left: w(4),
+                    name: String::from_utf8_lossy(&name[..n]).into_owned(),
+                }
+            })
+            .collect())
+    }
+
+    /// Make a new loose group: its number.
+    pub fn group_new(&self, name: &str, color: u32) -> Result<u32, Status> {
+        let n = name.len().min(32);
+        xfer()[..n].copy_from_slice(&name.as_bytes()[..n]);
+        Ok(self.call(fs::GROUP_NEW, &[u64::from(color), n as u64])?[1] as u32)
+    }
+
+    /// Change a group's name, colour, task and pause flags, or when it
+    /// was left.
+    pub fn group_set(&self, g: &GroupRow) -> Result<(), Status> {
+        let n = g.name.len().min(32);
+        xfer()[..n].copy_from_slice(&g.name.as_bytes()[..n]);
+        let flags =
+            if g.task { fs::GROUP_TASK } else { 0 } | if g.paused { fs::GROUP_PAUSED } else { 0 };
+        self.call(
+            fs::GROUP_SET,
+            &[u64::from(g.id), flags, u64::from(g.color), g.left, n as u64],
+        )
+        .map(|_| ())
+    }
+
+    pub fn group_remove(&self, id: u32) -> Result<(), Status> {
+        self.call(fs::GROUP_REMOVE, &[u64::from(id)]).map(|_| ())
+    }
+
+    /// Put a file in a group: true when it was not in it.
+    pub fn group_add(&self, id: u32, f: u64) -> Result<bool, Status> {
+        Ok(self.call(fs::GROUP_ADD, &[u64::from(id), f])?[1] != 0)
+    }
+
+    /// Take a file out of a group: true when it was in it.
+    pub fn group_take(&self, id: u32, f: u64) -> Result<bool, Status> {
+        Ok(self.call(fs::GROUP_TAKE, &[u64::from(id), f])?[1] != 0)
+    }
+
+    /// What is in a group.
+    pub fn group_files(&self, id: u32) -> Result<Vec<u64>, Status> {
+        let r = self.call(fs::GROUP_FILES, &[u64::from(id)])?;
+        let b = xfer();
+        Ok((0..r[1] as usize)
+            .map(|i| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap()))
+            .collect())
+    }
+
+    /// Open `app` in a protected task (or in none).
+    pub fn open_in_task(&self, app: u64, task: Option<u32>) -> Result<(), Status> {
+        self.call(fs::OPEN_IN_TASK, &[app, task.map_or(0, u64::from)])
+            .map(|_| ())
+    }
+
+    /// The task `app` is in, if any.
+    pub fn task_of(&self, app: u64) -> Result<Option<u32>, Status> {
+        let t = self.call(fs::TASK_OF, &[app])?[1];
+        Ok((t != 0).then_some(t as u32))
+    }
+
+    /// The person left group `id` now, with these apps (bit r) open in it.
+    pub fn group_leave(&self, id: u32, roles: u64) -> Result<(), Status> {
+        self.call(fs::GROUP_LEAVE, &[u64::from(id), roles])
+            .map(|_| ())
+    }
+
+    /// The person's own note for group `id` (empty clears it).
+    pub fn group_note(&self, id: u32, note: &str) -> Result<(), Status> {
+        let n = note.len().min(fs::NOTE_MAX);
+        xfer()[..n].copy_from_slice(&note.as_bytes()[..n]);
+        self.call(fs::GROUP_NOTE, &[u64::from(id), n as u64])
+            .map(|_| ())
+    }
+
+    /// Where the person left group `id`: (when, moment, roles, note).
+    pub fn return_point(&self, id: u32) -> Result<Option<(u64, u64, u64, String)>, Status> {
+        let r = self.call(fs::RETURN_POINT, &[u64::from(id)])?;
+        if r[1] == 0 {
+            return Ok(None);
+        }
+        let n = (r[4] as usize).min(fs::NOTE_MAX);
+        let note = String::from_utf8_lossy(&xfer()[..n]).into_owned();
+        Ok(Some((r[1], r[2], r[3], note)))
+    }
+
+    /// "Since you left" for group `id`, each line with its receipt.
+    pub fn since_left(&self, id: u32) -> Result<Vec<SinceRow>, Status> {
+        let r = self.call(fs::SINCE_LEFT, &[u64::from(id)])?;
+        let b = xfer();
+        Ok((0..r[1] as usize)
+            .map(|i| {
+                let o = fs::SINCE_BYTES * i;
+                let w =
+                    |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+                SinceRow {
+                    kind: w(0),
+                    file: w(1),
+                    cn: w(2),
+                    time: w(3),
+                    app: w(4),
+                    what: w(5),
+                    source: w(6),
+                    count: w(7),
+                }
+            })
+            .collect())
+    }
+
     /// An app's last window closed (the desktop only).
     pub fn app_closed(&self, app: u64) -> Result<u64, Status> {
         Ok(self.call(fs::APP_CLOSED, &[app])?[1])
@@ -905,6 +1033,32 @@ impl Store {
     pub fn save(&self) -> Result<u64, Status> {
         Ok(self.call(fs::SAVE, &[])?[1])
     }
+}
+
+/// One line of "since you left" and its receipt (see `fs::SINCE_LEFT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SinceRow {
+    /// 1: the ledger says it changed; 2: it needs a look.
+    pub kind: u64,
+    pub file: u64,
+    pub cn: u64,
+    pub time: u64,
+    pub app: u64,
+    pub what: u64,
+    pub source: u64,
+    pub count: u64,
+}
+
+/// One group or task, as the desktop sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupRow {
+    pub id: u32,
+    pub name: String,
+    pub color: u32,
+    pub task: bool,
+    pub paused: bool,
+    pub made: u64,
+    pub left: u64,
 }
 
 /// What changed in a source since a result was made from it.
@@ -961,6 +1115,12 @@ pub mod label {
     /// A window into a group: then its role, the group it was in, the
     /// group it went to.
     pub const GROUP: u8 = b'G';
+    /// A file into a group or out of it: the group, 1 in / 0 out, the
+    /// file's number (4 bytes), then its name.
+    pub const IN_GROUP: u8 = b'g';
+    /// A group became a task, or paused: the group, the flags before and
+    /// after (1 task, 2 paused), then its name.
+    pub const TASK: u8 = b't';
 }
 
 /// A label for the undo list: what (a [`label`] letter) and the name.
@@ -979,13 +1139,31 @@ pub fn make_label(what: u8, name: &str) -> String {
 /// What an action was, in a few plain words ("delete notes.txt").
 pub fn describe(label: &[u8]) -> String {
     let n = label.iter().position(|&b| b == 0).unwrap_or(label.len());
-    let rest = |from: usize| String::from_utf8_lossy(&label[from.min(n)..n]).into_owned();
+    // The name after a header (which may hold zero bytes: numbers).
+    let rest = |from: usize| {
+        let from = from.min(label.len());
+        let end = label[from..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(label.len(), |i| from + i);
+        String::from_utf8_lossy(&label[from..end]).into_owned()
+    };
     match label.first() {
         Some(&label::DELETED) => alloc::format!("delete {}", rest(1)),
         Some(&label::RENAMED) => alloc::format!("rename to {}", rest(1)),
         Some(&label::LOOK) => String::from("change the look"),
         Some(&label::WINDOW) => alloc::format!("close {}", rest(2)),
         Some(&label::GROUP) => alloc::format!("move {} into a group", rest(4)),
+        Some(&label::IN_GROUP) if label.get(2) == Some(&1) => {
+            alloc::format!("put {} in a group", rest(7))
+        }
+        Some(&label::IN_GROUP) => alloc::format!("take {} out of a group", rest(7)),
+        Some(&label::TASK) => match (label.get(2).copied(), label.get(3).copied()) {
+            (_, Some(3)) => alloc::format!("pause {}", rest(4)),
+            (Some(3), Some(1)) => alloc::format!("go on with {}", rest(4)),
+            (_, Some(1)) => alloc::format!("make {} a task", rest(4)),
+            _ => alloc::format!("make {} a loose group", rest(4)),
+        },
         _ if n == 0 => String::from("a change"),
         _ => rest(0),
     }

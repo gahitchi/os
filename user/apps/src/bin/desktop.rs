@@ -45,6 +45,12 @@ use alaya_ui::text::Fonts;
 use alaya_ui::widgets::{Key, us_key};
 use alaya_ui::wm::{Out, Place, Wm};
 
+#[path = "desktop/groups.rs"]
+mod groups;
+#[path = "desktop/inbox.rs"]
+mod inbox;
+use groups::GroupScreen;
+
 alaya_sys::heap!();
 alaya_sys::entry!(main);
 
@@ -226,6 +232,23 @@ struct Desk {
     hand: Option<(u64, [u64; 5])>,
     /// The loose group each app's window is in (by role), to put it back.
     groups_of: Vec<(u64, u32)>,
+    /// The person's groups and tasks (milestone 7a).
+    groups: Vec<st::GroupRow>,
+    /// The group screen is up.
+    gscreen: Option<GroupScreen>,
+    /// A file waiting to go into the group being named.
+    gchoose_after: u64,
+    /// The group the person is working in (milestone 7a, step 2).
+    current_group: Option<u32>,
+    /// The decision inbox (milestone 7a, step 3), the row chosen while it
+    /// is up, how many "now" things showed at once, and the person's
+    /// rules (apps always let through).
+    inbox: Vec<inbox::Item>,
+    inbox_at: Option<usize>,
+    now_shown: u64,
+    rules: Vec<u64>,
+    /// One-time hints already shown (a bit each), kept with the app files.
+    hints: u64,
 }
 
 fn font(info: &StartInfo, i: usize) -> &'static [u8] {
@@ -299,7 +322,7 @@ fn main(info: &'static StartInfo) -> ! {
         stage,
         people,
         session: None,
-        look: Look::Basics,
+        look: Look::Everyday,
         opened: Vec::new(),
         wrong_pins: 0,
         parts,
@@ -338,6 +361,15 @@ fn main(info: &'static StartInfo) -> ! {
         job: None,
         hand: None,
         groups_of: Vec::new(),
+        groups: Vec::new(),
+        gscreen: None,
+        gchoose_after: 0,
+        current_group: None,
+        inbox: Vec::new(),
+        inbox_at: None,
+        now_shown: 0,
+        rules: Vec::new(),
+        hints: 0,
     };
     d.tick();
     say!(
@@ -451,6 +483,13 @@ impl Desk {
         self.dirty = Rect::default();
         let (w, h) = (self.width, self.height);
         let mut cv = Canvas::new(screen_px(w, h), w, h, w).expect("screen");
+        let labels: Vec<(u32, String, u32)> = self
+            .groups
+            .iter()
+            .filter_map(|g| self.group_label(g.id).map(|(n, c)| (g.id, n, c)))
+            .collect();
+        let paused_roles: Vec<u64> = (1..=role::COUNT).filter(|&r| self.paused_role(r)).collect();
+        let paused = |r: u64| paused_roles.contains(&r);
         let wins = &self.wins;
         let wm = &self.wm;
         let views = |id: u32| match wins.iter().find(|x| x.id == id) {
@@ -468,17 +507,19 @@ impl Desk {
                     x.content.1,
                     dk::STRIDE as i32,
                 )),
-                stuck: false,
+                stuck: paused(x.owner).then_some(
+                    "Paused with its task: it uses nothing. Alaya key + G, then P, goes on.",
+                ),
                 group: wm
                     .get(id)
                     .and_then(|w| w.group)
-                    .and_then(|g| GROUPS.get(g as usize - 1))
-                    .map(|&(n, c)| (n, c)),
+                    .and_then(|g| labels.iter().find(|l| l.0 == g))
+                    .map(|l| (l.1.as_str(), l.2)),
             },
             None => WindowView {
                 title: "",
                 pixels: None,
-                stuck: false,
+                stuck: None,
                 group: None,
             },
         };
@@ -489,29 +530,28 @@ impl Desk {
                 running: wins.iter().any(|x| x.owner == r),
             })
             .collect();
-        let groups: Vec<GroupChip> = match self.look {
-            Look::Basics => Vec::new(),
-            Look::Everything => GROUPS
+        let groups: Vec<GroupChip> = if self.look.groups() {
+            labels
                 .iter()
-                .enumerate()
-                .map(|(i, &(name, color))| GroupChip {
+                .take(groups::CHIPS)
+                .map(|(id, name, color)| GroupChip {
                     name,
-                    color,
-                    count: wm
-                        .wins
-                        .iter()
-                        .filter(|w| w.group == Some(i as u32 + 1))
-                        .count(),
+                    color: *color,
+                    count: wm.wins.iter().filter(|w| w.group == Some(*id)).count(),
                 })
-                .collect(),
+                .collect()
+        } else {
+            Vec::new()
         };
         let locked = !matches!(self.stage, Stage::Open(_));
         let trusted = match &self.stage {
             Stage::Login(l) => l.picture(),
             _ => None,
         };
+        let held = self.held_words();
         let status = match self.stage {
             Stage::Setup(_) => "First setup",
+            _ if self.note.is_empty() => held.as_deref().unwrap_or(""),
             _ => &self.note,
         };
         let question = self.ask.as_ref().map(|a| Question {
@@ -548,7 +588,11 @@ impl Desk {
             .map(|q| q.found.iter().map(found_row).collect())
             .unwrap_or_default();
         let search_refs: Vec<&str> = search_rows.iter().map(|r| r.as_str()).collect();
-        let job_view = self.job.as_ref().map(|j| self.job_view(j));
+        let job_view = match (&self.gscreen, self.inbox_at) {
+            (_, Some(at)) => Some(self.inbox_view(at)),
+            (Some(g), _) => Some(self.group_view(g)),
+            _ => self.job.as_ref().map(|j| self.job_view(j)),
+        };
         let job_refs: Vec<&str> = job_view
             .as_ref()
             .map(|v| v.rows.iter().map(|r| r.as_str()).collect())
@@ -560,11 +604,15 @@ impl Desk {
                     title: &v.title,
                     hint: &v.hint,
                     rows: &job_refs,
-                    chosen: self.job.as_ref().map_or(0, |j| j.chosen),
+                    chosen: match (&self.gscreen, self.inbox_at) {
+                        (_, Some(at)) => at,
+                        (Some(g), _) => g.chosen,
+                        _ => self.job.as_ref().map_or(0, |j| j.chosen),
+                    },
                     mark: v.mark,
-                    field: None,
+                    field: v.field.as_ref().map(|(l, f)| (*l, f.as_str())),
                     foot: &v.foot,
-                    empty: "No folders in your documents yet: make one in the file browser.",
+                    empty: v.empty,
                     ok: v.ok,
                     no: v.no,
                 })
@@ -694,6 +742,15 @@ impl Desk {
                     }
                     return;
                 }
+                if down
+                    && b == 2
+                    && self.gscreen.is_none()
+                    && let Some(g) = self.chip_at(x, y)
+                {
+                    // A right click on a group's label: its screen.
+                    self.group_open(g);
+                    return;
+                }
                 if down && b == 1 && self.shell_click(x, y) {
                     return;
                 }
@@ -738,6 +795,22 @@ impl Desk {
             }
             return;
         }
+        if self.inbox_at.is_some() {
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.inbox_key(k);
+            }
+            return;
+        }
+        if self.gscreen.is_some() {
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.group_key(k);
+            }
+            return;
+        }
         if self.job.is_some() {
             if value != 0
                 && let Some(k) = us_key(code, self.shift)
@@ -757,6 +830,16 @@ impl Desk {
         if self.super_key && value == 1 && code == 33 {
             // Alaya key + F: search.
             self.search_start();
+            return;
+        }
+        if self.super_key && value == 1 && code == 23 {
+            // Alaya key + I: the inbox, everything waiting.
+            self.inbox_open();
+            return;
+        }
+        if self.super_key && value == 1 && code == 34 {
+            // Alaya key + G: the group screen (milestone 7a).
+            self.group_open(0);
             return;
         }
         if self.super_key && value == 1 && code == 44 {
@@ -797,6 +880,16 @@ impl Desk {
     }
 
     fn push(&mut self, id: u32, e: [u64; 5]) {
+        // A paused task's apps are frozen: keys and the pointer wait.
+        if (e[0] == event::KEY || e[0] == event::POINTER)
+            && self
+                .wins
+                .iter()
+                .find(|w| w.id == id)
+                .is_some_and(|w| self.paused_role(w.owner))
+        {
+            return;
+        }
         if let Some(w) = self.wins.iter_mut().find(|w| w.id == id) {
             // A window that never collects its events keeps only the
             // newest ones.
@@ -845,7 +938,9 @@ impl Desk {
                     self.push(id, [event::CLOSE, 0, 0, 0, 0]);
                 }
                 Out::Grouped(id, g) => {
-                    let name = GROUPS.get(g as usize - 1).map_or("?", |x| x.0);
+                    let name = self
+                        .group_row(g)
+                        .map_or(String::from("?"), |x| x.name.clone());
                     say!("window {id} is in the group {name}");
                     if let Some(w) = self.wins.iter().find(|w| w.id == id) {
                         let role = w.owner;
@@ -858,6 +953,7 @@ impl Desk {
                         l.extend(w.title.bytes().take(fs::LABEL - 4));
                         self.set_group_of(role, g);
                         self.record(act::GROUP, &l);
+                        self.wall_for(role, g);
                     }
                     self.damage_all();
                 }
@@ -1034,6 +1130,7 @@ impl Desk {
         self.session = Some(index);
         self.stage = Stage::Open(index);
         self.read_look();
+        self.load_rules();
         if first {
             let _ = alaya_sys::signal(self.session_ntfn, dk::LOGGED_IN_BIT);
         }
@@ -1041,6 +1138,10 @@ impl Desk {
     }
 
     fn lock(&mut self) {
+        // Locking leaves the group the person was in (a return point).
+        if let Some(g) = self.current_group.take() {
+            self.group_leave_now(g);
+        }
         // Let go of whatever the mouse held.
         let (x, y) = self.wm.pointer;
         let out = self.wm.button(1, false);
@@ -1071,24 +1172,7 @@ impl Desk {
             self.look = look;
             say!("the look is {}", look.name());
         }
-        self.wm.groups = match look {
-            Look::Basics => Vec::new(),
-            Look::Everything => (0..GROUPS.len())
-                .map(|g| {
-                    (
-                        g as u32 + 1,
-                        scene::group_chip(
-                            self.width,
-                            self.height,
-                            dock_items(look).count(),
-                            GROUPS.len(),
-                            g,
-                        ),
-                    )
-                })
-                .collect(),
-        };
-        self.damage_all();
+        self.load_groups();
     }
 
     /// A click on the dock or a group label; true if it was one.
@@ -1124,6 +1208,23 @@ impl Desk {
                 q.chosen = i;
                 self.damage_all();
             }
+            return true;
+        }
+        if let Some(at) = self.inbox_at {
+            let (ok, no) = scene::picker_buttons(self.width, self.height);
+            let first = scene::picker_first(at);
+            if ok.contains(x, y) {
+                self.inbox_key(Key::Enter);
+            } else if no.contains(x, y) {
+                self.inbox_key(Key::Escape);
+            } else if let Some(i) = scene::picker_row_at(self.width, self.height, x, y, first) {
+                self.inbox_at = Some(i.min(self.inbox.len().saturating_sub(1)));
+                self.damage_all();
+            }
+            return true;
+        }
+        if self.gscreen.is_some() {
+            self.group_click(x, y);
             return true;
         }
         if let Some(j) = &mut self.job {
@@ -1174,8 +1275,8 @@ impl Desk {
             }
         }
         if let Some(&(g, _)) = self.wm.groups.iter().find(|(_, r)| r.contains(x, y)) {
-            let out = self.wm.raise_group(g);
-            self.apply(out);
+            // Into a group: back where you left it, with what changed.
+            self.group_go(g);
             return true;
         }
         false
@@ -1211,7 +1312,12 @@ impl Desk {
             && let Err(e) = s.record_action(kind, l)
         {
             say!("the undo list did not take it: {e}");
+            return;
         }
+        self.hint_once(
+            inbox::HINT_UNDO,
+            "Alaya kept the way it was. Changed your mind? Alaya key + Z",
+        );
     }
 
     fn set_group_of(&mut self, role: u64, g: u32) {
@@ -1412,9 +1518,12 @@ impl Desk {
                             self.wm.set_group(id, (g != 0).then_some(g));
                         }
                         self.set_group_of(role, g);
+                        self.wall_for(role, g);
                         self.damage_all();
                     }
-                    _ => {}
+                    _ => {
+                        self.group_undone(&l, redo);
+                    }
                 }
                 // A setting may have gone back.
                 self.read_look();
@@ -1935,6 +2044,8 @@ impl Desk {
                 foot: String::from("Next: you see the rules before it starts."),
                 ok: "Next",
                 no: "Cancel",
+                field: None,
+                empty: "No folders in your documents yet: make one in the file browser.",
             },
             JobStage::Rules {
                 folder,
@@ -1992,6 +2103,8 @@ impl Desk {
                     ),
                     ok: "Start",
                     no: "Cancel",
+                    field: None,
+                    empty: "No folders in your documents yet: make one in the file browser.",
                 }
             }
             JobStage::Result { report, conflicts } => {
@@ -2031,6 +2144,8 @@ impl Desk {
                         foot: String::from("Nothing is ever overwritten without asking (rule B6)."),
                         ok: "Keep, mine wins",
                         no: "Later",
+                        field: None,
+                        empty: "No folders in your documents yet: make one in the file browser.",
                     }
                 } else if report.passed {
                     JobView {
@@ -2045,6 +2160,8 @@ impl Desk {
                         ),
                         ok: "Keep",
                         no: "Later",
+                        field: None,
+                        empty: "No folders in your documents yet: make one in the file browser.",
                     }
                 } else {
                     JobView {
@@ -2059,6 +2176,8 @@ impl Desk {
                         ),
                         ok: "Keep anyway",
                         no: "Later",
+                        field: None,
+                        empty: "No folders in your documents yet: make one in the file browser.",
                     }
                 }
             }
@@ -2360,6 +2479,37 @@ impl Desk {
                 self.read_look();
                 ([dk::OK, 0, 0, 0, 0, 0], 0)
             }
+            // Any app may tell the person something; how soon it shows is
+            // Alaya's choice, never the app's (decision inbox).
+            dk::NOTIFY if owner != 0 => (
+                [
+                    self.post(owner, w[0] & 0xff, inbox::text_of(w[0] >> 8, &w[1..5])),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                0,
+            ),
+            dk::NOW if owner == 0 => (
+                [
+                    self.post(0, w[0] & 0xff, inbox::text_of(w[0] >> 8, &w[1..5])),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                0,
+            ),
+            dk::INBOX if owner == 0 => (self.inbox_counts(), 0),
+            dk::GROUP_FILE if owner == role::FILES || owner == 0 => {
+                ([self.group_choose(w[0]), 0, 0, 0, 0, 0], 0)
+            }
+            dk::GROUP_GO if owner == 0 => ([self.group_go(w[0] as u32), 0, 0, 0, 0, 0], 0),
+            dk::BRIEF_LINE if owner == 0 => self.brief_line(w[0] as usize),
+            dk::GROUP_SCREEN if owner == 0 => ([self.group_open(w[0] as u32), 0, 0, 0, 0, 0], 0),
             dk::MAKE_AGAIN if owner == role::FILES || owner == 0 => {
                 ([self.make_again(w[0]), 0, 0, 0, 0, 0], 0)
             }
@@ -2465,6 +2615,9 @@ impl Desk {
                         | (self.note.len().min(1 << 20) as u64) << 1
                         | u64::from(self.pick.is_some()) << 62
                         | self.job_state() << 48
+                        | self.group_state() << 40
+                        | u64::from(self.inbox_at.is_some()) << 44
+                        | (self.rules.len().min(7) as u64) << 45
                         | (self
                             .search
                             .as_ref()
@@ -2507,13 +2660,12 @@ const DOCK: [(&str, u32, u64); 4] = [
 
 /// What the dock holds in each look.
 fn dock_items(look: Look) -> impl Iterator<Item = (&'static str, u32, u64)> {
-    DOCK.iter()
-        .copied()
-        .filter(move |d| look == Look::Everything || d.2 != role::CHART)
+    DOCK.iter().copied().filter(move |d| match look {
+        Look::Everyday => d.2 != role::CHART,
+        Look::Play => d.2 == role::FILES || d.2 == role::SETTINGS,
+        Look::Everything | Look::Create | Look::Build => true,
+    })
 }
-
-/// The loose groups (decision 85): labels only, numbered from 1.
-const GROUPS: [(&str, u32); 2] = [("Work", 0x23_68_6b), ("Home", 0x9a_5b_00)];
 
 /// What the login screen says about the login parts (decision 74).
 fn notice(parts: u64) -> String {
@@ -2552,6 +2704,10 @@ struct JobView {
     foot: String,
     ok: &'static str,
     no: &'static str,
+    /// What is typed (naming a group).
+    field: Option<(&'static str, String)>,
+    /// What shows when there are no rows.
+    empty: &'static str,
 }
 
 /// Alaya's checks of a job, in a few words (the log).

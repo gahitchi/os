@@ -604,6 +604,49 @@ pub mod files {
     /// at 0 and now at [`DIFF_AT`] in the transfer pages ("show the
     /// difference"; Alaya's own programs only).
     pub const WHAT_CHANGED: u64 = 67;
+    /// Groups and protected tasks (milestone 7a; Alaya's own programs
+    /// only). GROUPS: → n; entries of [`GROUP_BYTES`] in the transfer
+    /// pages: id, flags (1 task, 2 paused), colour, made, left, then the
+    /// name (16 bytes, zero padded).
+    pub const GROUPS: u64 = 68;
+    /// GROUP_NEW: colour, name length (the name in the transfer pages) →
+    /// id.
+    pub const GROUP_NEW: u64 = 69;
+    /// GROUP_SET: id, flags, colour, left, name length (the name in the
+    /// transfer pages).
+    pub const GROUP_SET: u64 = 70;
+    /// GROUP_REMOVE: id (its files stay where they are).
+    pub const GROUP_REMOVE: u64 = 71;
+    /// GROUP_ADD: id, file → 1 when it was not in it.
+    pub const GROUP_ADD: u64 = 72;
+    /// GROUP_TAKE: id, file → 1 when it was in it.
+    pub const GROUP_TAKE: u64 = 73;
+    /// GROUP_FILES: id → n; the files' numbers in the transfer pages.
+    pub const GROUP_FILES: u64 = 74;
+    /// OPEN_IN_TASK: app, task (0: none). Only a protected task holds
+    /// apps; inside it, an app sees the task's files and nothing else.
+    pub const OPEN_IN_TASK: u64 = 75;
+    /// TASK_OF: app → task (0: none).
+    pub const TASK_OF: u64 = 76;
+    /// Resume (milestone 7a, step 2; Alaya's own programs only).
+    /// GROUP_LEAVE: group, roles open in it (bit r): the person left it
+    /// now; changes after this moment are "since you left".
+    pub const GROUP_LEAVE: u64 = 77;
+    /// GROUP_NOTE: group, length (the note in the transfer pages; at most
+    /// [`NOTE_MAX`]; empty clears it).
+    pub const GROUP_NOTE: u64 = 78;
+    /// RETURN_POINT: group → left (0: never), moment, roles, note length;
+    /// the note in the transfer pages.
+    pub const RETURN_POINT: u64 = 79;
+    /// SINCE_LEFT: group → n; entries of [`SINCE_BYTES`] in the transfer
+    /// pages: kind (1 changed, 2 needs a look), file, moment, time, app,
+    /// what, source, count. Each is a ledger record or a mark: its receipt.
+    pub const SINCE_LEFT: u64 = 80;
+    pub const NOTE_MAX: usize = 160;
+    pub const SINCE_BYTES: usize = 64;
+    pub const GROUP_BYTES: usize = 56;
+    pub const GROUP_TASK: u64 = 1;
+    pub const GROUP_PAUSED: u64 = 2;
     pub const CLIP_MAX: usize = 4096;
     pub const DIFF_AT: usize = 32 * 1024;
     pub const JOB_LABEL_AT: usize = 512;
@@ -926,6 +969,45 @@ pub mod desktop {
     /// (it gets a MAKE_AGAIN event; started first when it is not
     /// running). The file browser (and the first program) may ask.
     pub const MAKE_AGAIN: u64 = 25;
+    /// GROUP_SCREEN: group (0: the focused window's) → status: show a
+    /// group's screen (the first program only; people use Alaya key + G
+    /// or a right click on its label).
+    pub const GROUP_SCREEN: u64 = 26;
+    /// GROUP_FILE: file → status: ask the person which group to put it in
+    /// (the file browser, and the first program).
+    pub const GROUP_FILE: u64 = 27;
+    /// GROUP_GO: group → status: as if the person clicked its label (the
+    /// first program only). Leaves the group they were in; coming back
+    /// to one they left shows "since you left".
+    pub const GROUP_GO: u64 = 28;
+    /// BRIEF_LINE: i → status, kind (1 changed, 2 needs a look), file,
+    /// moment, app, what: line i of the briefing up now, and its receipt
+    /// (the first program only: "nothing invented" is checked).
+    pub const BRIEF_LINE: u64 = 29;
+    /// NOTIFY: kind wished ([`inbox`]) | text length << 8, then the text
+    /// (32 bytes in four words): something for the person. An app's wish
+    /// is never trusted: "now" becomes "about what you're doing" or "can
+    /// wait", unless the person's own rule lets the app through.
+    pub const NOTIFY: u64 = 30;
+    /// NOW: the same from Alaya itself (the first program only): a
+    /// channel no app can use, whose "now" always shows at once.
+    pub const NOW: u64 = 31;
+    /// INBOX: → status, "now" things shown at once, then how many of each
+    /// kind wait (now, about, can wait, just so you know) (the first
+    /// program only).
+    pub const INBOX: u64 = 32;
+    /// The decision inbox's kinds.
+    pub mod inbox {
+        pub const NOW: u64 = 0;
+        pub const ABOUT: u64 = 1;
+        pub const WAIT: u64 = 2;
+        pub const KNOW: u64 = 3;
+    }
+    /// Session notification bits the desktop signals: stop (freeze) the
+    /// app with role r, `1 << (PAUSE_SHIFT + r)`, or start it again,
+    /// `1 << (GO_ON_SHIFT + r)` (a paused task, rule B3).
+    pub const PAUSE_SHIFT: u64 = 40;
+    pub const GO_ON_SHIFT: u64 = 48;
     pub mod job_event {
         /// The person approved the rules: work in the folder.
         pub const STARTED: u64 = 1;
@@ -1014,6 +1096,9 @@ pub mod desktop {
         pub const JOB: u64 = 7;
         /// Make this result again from its sources as they are now.
         pub const MAKE_AGAIN: u64 = 8;
+        /// Show this moment (a commit) on the timeline: a receipt of
+        /// "since you left" (milestone 7a).
+        pub const MOMENT: u64 = 9;
     }
 
     /// Places, as WINDOW reports them.
@@ -1100,31 +1185,37 @@ pub mod desktop {
                 && let Some(end) = rest.find('}')
             {
                 let name = &rest[1..end];
-                let code = match name {
-                    "tab" => Some((15, 0)),
-                    "enter" => Some((28, 0)),
-                    "left" => Some((105, 0)),
-                    "right" => Some((106, 0)),
-                    "up" => Some((103, 0)),
-                    "down" => Some((108, 0)),
-                    "backspace" => Some((14, 0)),
-                    "escape" => Some((1, 0)),
-                    "home" => Some((102, 0)),
-                    "end" => Some((107, 0)),
-                    "delete" => Some((111, 0)),
-                    _ => match name.strip_prefix("super+") {
-                        // The Alaya key (the Windows-logo key).
-                        Some(k) => k
-                            .chars()
-                            .next()
-                            .and_then(key_code)
-                            .map(|(c, s)| (c, 4 | u8::from(s))),
-                        None => name
-                            .strip_prefix("ctrl+")
-                            .and_then(|k| k.chars().next())
-                            .and_then(key_code)
-                            .map(|(c, s)| (c, 2 | u8::from(s))),
-                    },
+                let named = |n: &str| -> Option<(u16, bool)> {
+                    let c = match n {
+                        "tab" => 15,
+                        "enter" => 28,
+                        "left" => 105,
+                        "right" => 106,
+                        "up" => 103,
+                        "down" => 108,
+                        "backspace" => 14,
+                        "escape" => 1,
+                        "home" => 102,
+                        "end" => 107,
+                        "delete" => 111,
+                        _ => {
+                            let mut cs = n.chars();
+                            return match (cs.next(), cs.next()) {
+                                (Some(c), None) => key_code(c),
+                                _ => None,
+                            };
+                        }
+                    };
+                    Some((c, false))
+                };
+                // `{super+x}` is the Alaya key (the Windows-logo key) with
+                // a key; `{ctrl+x}` likewise; a key may be named (`up`).
+                let code = if let Some(k) = name.strip_prefix("super+") {
+                    named(k).map(|(c, s)| (c, 4 | u8::from(s)))
+                } else if let Some(k) = name.strip_prefix("ctrl+") {
+                    named(k).map(|(c, s)| (c, 2 | u8::from(s)))
+                } else {
+                    named(name).filter(|_| name.len() > 1).map(|(c, _)| (c, 0))
                 };
                 if let Some((c, m)) = code {
                     f(c, m);

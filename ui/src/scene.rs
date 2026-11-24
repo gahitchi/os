@@ -15,8 +15,9 @@ pub struct WindowView<'a> {
     pub title: &'a str,
     /// The app's picture: pixels, width, height, stride.
     pub pixels: Option<(&'a [u32], i32, i32, i32)>,
-    /// The app stopped answering (drawn dimmed, with a note).
-    pub stuck: bool,
+    /// Drawn dimmed, with this note: the app stopped answering, or its
+    /// task is paused.
+    pub stuck: Option<&'a str>,
     /// The loose group it is in: its label and colour.
     pub group: Option<(&'a str, Color)>,
 }
@@ -433,7 +434,7 @@ fn draw_window(
         Some((px, pw, ph, stride)) => cv.blit(px, pw, ph, stride, c.x, c.y),
         None => cv.fill(c, theme::WIN),
     }
-    if v.stuck {
+    if let Some(note) = v.stuck {
         cv.fill_alpha(c, 0xff_ff_ff, 140);
         let (asc, _) = fonts.metrics(Face::Text, 14);
         fonts.draw(
@@ -442,7 +443,7 @@ fn draw_window(
             14,
             c.x + 16,
             c.y + 16 + asc,
-            "Not answering. Alaya is restarting it.",
+            note,
             theme::MUTED,
         );
     }

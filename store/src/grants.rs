@@ -161,6 +161,7 @@ impl<D: Disk> Store<D> {
 
     /// An app made `file`: it is the app's own.
     pub fn own_file(&mut self, p: Person, app: App, file: FileId) -> Result<(), Error> {
+        self.task_made(p, app, file)?;
         self.put_grant(p, app, file, true, Lasts::Live, true)
     }
 
@@ -368,6 +369,15 @@ impl<D: Disk> Store<D> {
 
     /// What `app` may do with `file` at time `now`.
     pub fn access(&mut self, p: Person, app: App, file: FileId, now: u64) -> Result<Access, Error> {
+        // An app opened in a protected task sees the task's files, and
+        // nothing else, whatever it was handed before (decision 85).
+        if let Some(inside) = self.task_access(p, app, file)? {
+            return Ok(if inside {
+                Access::Current(true)
+            } else {
+                Access::No
+            });
+        }
         let Some(g) = self.grant_of(p, app, file)? else {
             return Ok(Access::No);
         };

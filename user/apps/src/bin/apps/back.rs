@@ -211,6 +211,8 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut note = String::new();
     let mut last_look = 0;
     let mut shown_at = u64::MAX;
+    // A moment asked for (a receipt), shown once the list is read.
+    let mut want: Option<u64> = None;
     // Drawn again only when something changed: an idle window costs
     // nothing, also while another person's history is being made.
     let mut dirty = true;
@@ -221,6 +223,12 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             match e {
                 Event::Key(k) => keys.push(k),
                 Event::Close => crate::closed(&win),
+                Event::Moment(cn) => {
+                    // A receipt from "since you left": that moment.
+                    view = View::Timeline;
+                    want = Some(cn);
+                    last_look = 0;
+                }
                 _ => {}
             }
         }
@@ -305,6 +313,13 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 say!("what happened: {first}");
                 said = first;
             }
+        }
+        if look && let Some(c) = want.take() {
+            at = moments.iter().rposition(|m| m.0 <= c).unwrap_or(0);
+            say!(
+                "timeline: showing moment {} for a receipt (asked {c})",
+                moments.get(at).map_or(0, |m| m.0)
+            );
         }
         let cn = moments.get(at).map_or(0, |m| m.0);
         if view == View::Timeline && cn != 0 && cn != shown_at {
