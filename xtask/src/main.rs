@@ -964,22 +964,25 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                     // Real speed means KVM with a host core for every
                     // core Alaya has: with more, the host pauses Alaya's
                     // cores (one may hold the kernel lock), which measures
-                    // the host, not Alaya.
-                    let gated = accel == "KVM" && opts.cpus <= host_cpus();
-                    if gated && us >= 100_000 {
+                    // the host, not Alaya. Emulated, a moment must still
+                    // open within two seconds.
+                    let own_cores = opts.cpus <= host_cpus();
+                    let limit = if accel == "KVM" { 100_000 } else { 2_000_000 };
+                    if own_cores && us >= limit {
                         break Err(format!(
-                            "the timeline's gate: a moment took {us} us (must be under 100 ms)"
+                            "the timeline's gate: a moment took {us} us (must be under {} ms)",
+                            limit / 1000
                         ));
                     }
                     println!(
                         "  * timeline gate: {} ms a moment at most ({})",
                         us / 1000,
-                        if gated {
-                            "under 100 ms: passed"
+                        if !own_cores {
+                            "more cores than the host has: not checked, the gate needs one host core each"
                         } else if accel == "KVM" {
-                            "more cores than the host has; the gate needs one host core each"
+                            "under 100 ms: passed"
                         } else {
-                            "emulated; the 100 ms gate is checked with KVM"
+                            "emulated: under 2 s, passed; the 100 ms gate is checked with KVM"
                         }
                     );
                 }

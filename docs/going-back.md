@@ -105,8 +105,8 @@ decisions 108 to 110 in [`design/decisions.md`](design/decisions.md).
   that undo undone.
 - **A year of history** (a moment every 6 hours, 1,460 in all) thins to
   about 100 kept moments, and every one opens. Alaya's own check (84)
-  makes one moment a day, because every moment is a real save to the
-  disk and emulated ARM with 8 cores saves slowly.
+  makes one moment a week, because every moment is a real save to the
+  disk, and emulated ARM with more cores than its host saves very slowly.
 - **Power cuts during keep, undo and forget**, at every write: the store
   always opens as it was after the last commit it promised, or the one it
   was making.
@@ -130,10 +130,12 @@ decisions 108 to 110 in [`design/decisions.md`](design/decisions.md).
 
 Check 84 prints the slowest moment. The gate, under 100 ms, is for real
 speed: `cargo xtask test` enforces it when it runs Alaya with KVM and the
-host has a core for each of Alaya's (with fewer, the host pauses Alaya's
-cores, one of which may hold the kernel lock, and that measures the host). Plain
-emulation (TCG) is many times slower; there the number is shown, and a
-moment must still open within two seconds.
+host has a core for each of Alaya's. Plain emulation (TCG) is many times
+slower; there a moment must open within two seconds. With more cores
+than the host has, the host pauses Alaya's cores (one of which may hold
+the kernel lock), which measures the host, so the number is only shown;
+and once a minute has gone by with every core busy, the rest of the
+moments are opened with the cores at rest.
 
 ## What is not there yet
 

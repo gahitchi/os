@@ -119,7 +119,7 @@ pub struct Story {
 }
 
 /// One entry of a directory.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
     pub file: u64,

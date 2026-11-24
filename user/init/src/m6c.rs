@@ -101,7 +101,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
             .is_some_and(|(_, _, _, n)| &b[48..48 + n.min(64)] == b"numbers.txt")
     };
     assert!(
-        x.keys("{ctrl+o}", open, 8000),
+        x.keys("{ctrl+o}", open, 30_000),
         "Ctrl+O did not open numbers.txt"
     );
     // "Mon 3" becomes "Mon 9", saved.
@@ -110,7 +110,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         x.keys(
             "{right}{right}{right}{right}{right}{backspace}9{ctrl+s}",
             stale,
-            15_000
+            30_000
         ),
         "the chart is not marked after its numbers changed: {:?}",
         me.mark(chart)

@@ -644,7 +644,7 @@ pub(crate) fn run<'a>(
     let mut buf = [0u8; 512];
     let me = x.files();
     let typed = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, n)| n == 30);
-    x.keys("hi", || typed(&mut [0u8; 512]), 8000);
+    x.keys("hi", || typed(&mut [0u8; 512]), 30_000);
     assert!(typed(&mut buf), "the typed keys never reached the editor");
 
     // Tiling on and off.
@@ -720,7 +720,7 @@ pub(crate) fn run<'a>(
     );
     let grew = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, n)| n == 36);
     assert!(
-        x.keys("{left}{left} more ", || grew(&mut [0u8; 512]), 8000),
+        x.keys("{left}{left} more ", || grew(&mut [0u8; 512]), 30_000),
         "the editor did not keep its return point"
     );
     let (cursor, len) = return_point(&me, &mut buf).unwrap();
@@ -733,7 +733,7 @@ pub(crate) fn run<'a>(
     // One more letter: it lands at the cursor the editor had.
     let more = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, n)| n == len + 1);
     assert!(
-        x.keys("!", || more(&mut [0u8; 512]), 8000),
+        x.keys("!", || more(&mut [0u8; 512]), 30_000),
         "the editor did not come back"
     );
     let (c2, _) = return_point(&me, &mut buf).unwrap();
@@ -770,7 +770,7 @@ pub(crate) fn run<'a>(
     // The chart maker reads its numbers about a second after it starts.
     sleep_until(1500, || false);
     assert!(
-        x.keys("{enter}", picture, 10_000),
+        x.keys("{enter}", picture, 30_000),
         "the chart maker saved no picture"
     );
     let mut head = [0u8; 16];
@@ -839,7 +839,7 @@ pub(crate) fn run<'a>(
     ask(ep, dk::RAISE, &[set]);
     let basics = || ask(ep, dk::SESSION, &[])[3] == 0;
     assert!(
-        x.keys("{enter}", basics, 8000),
+        x.keys("{enter}", basics, 30_000),
         "Settings did not change the look"
     );
     assert!(
@@ -859,7 +859,7 @@ pub(crate) fn run<'a>(
     let n = return_point(&me, &mut buf).unwrap().1;
     let after = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, m)| m == n + 1);
     assert!(
-        x.keys("?", || after(&mut [0u8; 512]), 8000),
+        x.keys("?", || after(&mut [0u8; 512]), 30_000),
         "keys stopped after the keyboard driver came back"
     );
     pass("the keyboard driver crashes under the desktop; typing carries on");

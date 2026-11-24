@@ -211,9 +211,13 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut note = String::new();
     let mut last_look = 0;
     let mut shown_at = u64::MAX;
+    // Drawn again only when something changed: an idle window costs
+    // nothing, also while another person's history is being made.
+    let mut dirty = true;
     loop {
         let mut keys = Vec::new();
         while let Some(e) = win.next_event() {
+            dirty = true;
             match e {
                 Event::Key(k) => keys.push(k),
                 Event::Close => crate::closed(&win),
@@ -266,6 +270,13 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         // Draw, then act on a button pressed (by key or mouse).
         if look {
             last_look = rt::now_ms();
+            let before = (
+                moments.last().copied(),
+                named.len(),
+                list.len(),
+                list.first().map(|l| l.text.clone()),
+                now_files.clone(),
+            );
             list = lines(&store);
             chosen = chosen.min(list.len().saturating_sub(1));
             let follow = at == usize::MAX || at + 1 >= moments.len();
@@ -275,7 +286,17 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 at = moments.len().saturating_sub(1);
             }
             now_files = store.list(docs).unwrap_or_default();
-            shown_at = u64::MAX;
+            let after = (
+                moments.last().copied(),
+                named.len(),
+                list.len(),
+                list.first().map(|l| l.text.clone()),
+                now_files.clone(),
+            );
+            if before != after {
+                shown_at = u64::MAX;
+                dirty = true;
+            }
             let first = list
                 .first()
                 .map_or(String::from("nothing yet"), |l| l.text.clone());
@@ -297,11 +318,12 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 rt::now_us() - t0
             );
             shown_at = cn;
+            dirty = true;
         }
         if !then.is_empty() {
             file = file.min(then.len() - 1);
         }
-        {
+        if dirty || press.is_some() {
             let mut cv = win.canvas();
             let (w, h) = (win.width, win.height);
             cv.fill(Rect::new(0, 0, w, h), theme::WIN);
@@ -530,7 +552,10 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             }
             _ => {}
         }
-        win.damage_all();
+        if dirty || press.is_some() {
+            win.damage_all();
+        }
+        dirty = press.is_some();
         if press.is_none() && !look {
             win.wait();
         }

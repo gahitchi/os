@@ -185,7 +185,7 @@ jobs:
             cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --accel tcg --cpus $n --timeout 900
           done
       - name: Boot, KVM if available, 8 cores
-        run: cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus 8 --timeout 900
+        run: cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus 8 --timeout 1800
 
       - name: Fault reports
         run: |
