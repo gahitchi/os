@@ -146,8 +146,11 @@ pub fn start(parent: &mut Parent, spec: &Spec) -> Result<Program, Error> {
     crate::retype(ut, Kind::Table, spec.table_bits, 1, s.at(table))?;
     let space = s.take()?;
     crate::retype(ut, Kind::AddressSpace, 13, 1, s.at(space))?;
+    // Page tables come from this pool. Programs with much memory map
+    // much more (shared fonts, pictures), so they get a bigger one.
+    let pool_bits = if spec.own_bits >= 23 { 18 } else { 16 };
     let pool = s.take()?;
-    crate::retype(ut, Kind::Untyped, 16, 1, s.at(pool))?;
+    crate::retype(ut, Kind::Untyped, pool_bits, 1, s.at(pool))?;
     crate::space_assign(space, pool)?;
     s.next -= 1; // the pool moved into the address space
     let thread = s.take()?;

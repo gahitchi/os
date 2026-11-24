@@ -139,7 +139,7 @@ options:
   --cpus <n>        number of virtual cores (default 1)
   --uefi            boot with UEFI firmware (OVMF) instead of BIOS
   --accel <a>       kvm, tcg or auto (default auto: KVM when /dev/kvm is usable)
-  --memory <size>   guest memory, QEMU syntax (default 512M)
+  --memory <size>   guest memory, QEMU syntax (default 512M; 1G with UEFI)
   --display <kind>  QEMU display for run (gtk, sdl, vnc=:0, none); default:
                     QEMU's own window for run, none for tests
   --vnc             run: show the screen over VNC on port 5900 (phones)
@@ -281,9 +281,11 @@ fn main() -> ExitCode {
         // firmware keeps more of the memory for itself than a PC's, and
         // leaves it in smaller pieces: 1 GiB unless asked otherwise.
         opts.uefi = true;
-        if !memory_set {
-            opts.memory = "1G".into();
-        }
+    }
+    if opts.uefi && !memory_set {
+        // UEFI firmware (on any machine) leaves memory in smaller pieces,
+        // and the desktop wants a 64 MiB piece of its own.
+        opts.memory = "1G".into();
     }
     if opts.long && !timeout_set {
         opts.timeout = 15 * 60;
@@ -381,7 +383,7 @@ const FONTS: [&str; 4] = [
     "Figtree-Regular.ttf",
     "Figtree-SemiBold.ttf",
     "IBMPlexMono-Regular.ttf",
-    "NotoSans-Regular.ttf",
+    "NotoSans-Alaya.ttf",
 ];
 
 /// Build the first program and the programs it starts. They live in the
@@ -1359,6 +1361,8 @@ fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
                 "enter" => "ret".to_string(),
                 "backspace" => "backspace".to_string(),
                 "escape" => "esc".to_string(),
+                "compose" => "compose".to_string(),
+                "space" => "spc".to_string(),
                 n if n.starts_with("super+")
                     || n.starts_with("ctrl+")
                     || n.starts_with("shift+") =>
@@ -1381,6 +1385,9 @@ fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
                         "up" | "down" | "left" | "right" | "tab" | "delete" => {
                             (k.to_string(), false)
                         }
+                        "enter" => ("ret".to_string(), false),
+                        "space" => ("spc".to_string(), false),
+                        "escape" => ("esc".to_string(), false),
                         _ => {
                             let c = k.chars().next().ok_or("a modifier with what?")?;
                             qcode(c).ok_or(format!("no key for {c}"))?
