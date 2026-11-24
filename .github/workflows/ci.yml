@@ -195,7 +195,7 @@ jobs:
           cargo xtask test --arch aarch64 --accel tcg --cpus 4 --fault other-core-page
 
       - name: Kernel fuzzer, 4 cores, 60 s
-        run: cargo xtask test --arch aarch64 --accel tcg --cpus 4 --fuzz 60 --timeout 900
+        run: cargo xtask test --arch aarch64 --accel tcg --cpus 4 --fuzz 60 --timeout 900 --memory 1G
 
       - name: Pull the plug, 2 cores, 10 boots
         run: cargo xtask test --arch aarch64 --cpus 2 --plug 10 --timeout 900
