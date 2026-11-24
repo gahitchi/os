@@ -261,3 +261,45 @@ fn empty_sources_count_once_asked_for() {
     s.made_from(1, CHART, chart, &[src]).unwrap();
     assert_eq!(s.mark(1, chart).unwrap().kind, Kind::UpToDate);
 }
+
+/// Milestone 7, step 3: a part handed over by the clipboard carries the
+/// mark; "show the difference" shows what changed in the source.
+#[test]
+fn a_pasted_part_carries_the_mark_and_shows_the_difference() {
+    let (mut s, docs) = fresh();
+    let src = s.create(1, EDITOR, docs, b"prices.txt", false).unwrap();
+    put(&mut s, EDITOR, src, b"apples 3\npears 4\nplums 5\n");
+    s.commit(20).unwrap();
+    let st = s.stat(1, src).unwrap();
+    let source = Source {
+        file: src,
+        version: st.version,
+        edits: st.edits,
+    };
+    // The editor got one line of it through the clipboard, not by reading.
+    let note = s.create(1, EDITOR, docs, b"note.txt", false).unwrap();
+    put(&mut s, EDITOR, note, b"pears 4");
+    // Without the clipboard's word, a part is "not sure".
+    s.made_from(1, EDITOR, note, &[source]).unwrap();
+    assert_eq!(s.mark(1, note).unwrap().kind, Kind::NotSure);
+    s.note_pasted(1, EDITOR, source).unwrap();
+    s.made_from(1, EDITOR, note, &[source]).unwrap();
+    s.commit(30).unwrap();
+    assert_eq!(s.mark(1, note).unwrap().kind, Kind::UpToDate);
+    // Another app was not handed it.
+    let other = s.create(1, OTHER, docs, b"other.txt", false).unwrap();
+    put(&mut s, OTHER, other, b"pears 4");
+    s.made_from(1, OTHER, other, &[source]).unwrap();
+    assert_eq!(s.mark(1, other).unwrap().kind, Kind::NotSure);
+    // The prices change: needs a look, and the difference shows why.
+    put(&mut s, EDITOR, src, b"apples 3\npears 6\nplums 5\n");
+    s.commit(40).unwrap();
+    assert_eq!(s.mark(1, note).unwrap().kind, Kind::NeedsALook);
+    let d = s.what_changed(1, note).unwrap().unwrap();
+    assert!(d.exact);
+    assert_eq!(d.source, src);
+    assert_eq!(d.then, b"apples 3\npears 4\nplums 5\n");
+    assert_eq!(d.now, b"apples 3\npears 6\nplums 5\n");
+    // Nothing to show for a file that is not a result.
+    assert!(s.what_changed(1, src).unwrap().is_none());
+}

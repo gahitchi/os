@@ -26,6 +26,7 @@
 extern crate alloc;
 
 pub use alaya_crypto as crypto;
+pub mod again;
 pub mod backup;
 pub mod disk;
 pub mod format;
@@ -478,6 +479,9 @@ struct Branch {
     /// How much of which document version each app has read since the
     /// person's files were opened (living validity; kept in memory only).
     seen: BTreeMap<(App, FileId), made::Seen>,
+    /// Parts of documents apps were handed through the clipboard: (app,
+    /// file, version, edits). Not kept on disk, like `seen`.
+    pasted: BTreeSet<(App, FileId, u64, u64)>,
     /// Which app last changed each document since they were opened.
     writer: BTreeMap<FileId, App>,
     /// The person's list of file keys (empty in a side branch, which
@@ -505,6 +509,7 @@ impl Branch {
             docs_changed: true,
             apps_snapshot: false,
             seen: BTreeMap::new(),
+            pasted: BTreeSet::new(),
             writer: BTreeMap::new(),
             ktab: Tree::new(spare),
             fkeys: BTreeMap::new(),
@@ -843,6 +848,7 @@ impl<D: Disk> Store<D> {
             docs_changed: false,
             apps_snapshot: false,
             seen: BTreeMap::new(),
+            pasted: BTreeSet::new(),
             writer: BTreeMap::new(),
             ktab: Tree::open(root(4), spare),
             fkeys: BTreeMap::new(),

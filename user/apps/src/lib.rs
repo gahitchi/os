@@ -57,6 +57,14 @@ pub enum Event {
         save: bool,
         pinned: bool,
     },
+    /// About the job it asked for (`dk::job_event`), with the folder it
+    /// may change (started) or how many files were kept.
+    Job {
+        what: u64,
+        arg: u64,
+    },
+    /// Make this result again from its sources as they are now.
+    MakeAgain(u64),
 }
 
 pub struct Window {
@@ -181,6 +189,13 @@ impl Window {
         call(self.ep, dk::PICK, &[self.id, save as u64, write as u64, 0])[0] == dk::OK
     }
 
+    /// Ask for a job with rules (`done` false), or say the job is done
+    /// (true): Alaya shows the person the rules, or what its checks
+    /// found. The answer comes later as an [`Event::Job`].
+    pub fn ask_job(&self, done: bool) -> bool {
+        call(self.ep, dk::JOB, &[self.id, done as u64])[0] == dk::OK
+    }
+
     /// The next event, if one is waiting. Keeps size and pointer state.
     pub fn next_event(&mut self) -> Option<Event> {
         loop {
@@ -231,6 +246,11 @@ impl Window {
                     save: r[3] != 0,
                     pinned: r[5] == 1,
                 },
+                event::JOB => Event::Job {
+                    what: r[2],
+                    arg: r[3],
+                },
+                event::MAKE_AGAIN => Event::MakeAgain(r[2]),
                 _ => continue,
             };
             return Some(e);

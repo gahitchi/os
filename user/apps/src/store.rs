@@ -758,6 +758,143 @@ impl Store {
         Ok([r[1], r[2], r[3], r[4]])
     }
 
+    /// Start a job for `app` under rules the person approved (Alaya's
+    /// own programs only): the folder it may change, the checks, the
+    /// checklist (0: none) and what must stay unchanged.
+    pub fn job_start(
+        &self,
+        app: u64,
+        folder: u64,
+        checks: u64,
+        checklist: u64,
+        keep_same: &[u64],
+        label: &[u8],
+    ) -> Result<u64, Status> {
+        let b = xfer();
+        for (i, f) in keep_same.iter().enumerate() {
+            b[8 * i..8 * i + 8].copy_from_slice(&f.to_le_bytes());
+        }
+        let l = label.len().min(24);
+        b[fs::JOB_LABEL_AT..fs::JOB_LABEL_AT + l].copy_from_slice(&label[..l]);
+        Ok(self.call(
+            fs::JOB_START,
+            &[
+                app,
+                folder,
+                checks,
+                checklist,
+                keep_same.len() as u64,
+                l as u64,
+            ],
+        )?[1])
+    }
+
+    /// The asking app's own job: (folder, done, checks), if it has one.
+    pub fn job(&self) -> Result<Option<(u64, bool, u64)>, Status> {
+        let r = self.call(fs::JOB, &[])?;
+        Ok((r[1] != 0).then_some((r[2], r[3] != 0, r[4])))
+    }
+
+    /// The asking app says its job is done.
+    pub fn job_done(&self) -> Result<(), Status> {
+        self.call(fs::JOB_DONE, &[]).map(|_| ())
+    }
+
+    /// What Alaya's checks of `app`'s job found.
+    pub fn job_check(&self, app: u64) -> Result<JobReport, Status> {
+        let r = self.call(fs::JOB_CHECK, &[app])?;
+        let (n, m) = (r[2] as usize, r[3] as usize);
+        let b = xfer();
+        let w = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        Ok(JobReport {
+            passed: r[1] != 0,
+            checks: (0..n)
+                .map(|i| {
+                    let o = 32 * i;
+                    (w(o), w(o + 8) as u32, w(o + 16) != 0, w(o + 24))
+                })
+                .collect(),
+            stale: (0..m).map(|i| w(32 * n + 8 * i)).collect(),
+        })
+    }
+
+    /// Keep `app`'s job's work: (`fs::job_kept` kind, files). With
+    /// `anyway`, although its checks failed (the person's deliberate
+    /// choice, on record); `mine`: conflicts where the person's own
+    /// version stays.
+    pub fn job_keep(
+        &self,
+        app: u64,
+        anyway: bool,
+        mine: &[u64],
+    ) -> Result<(u64, Vec<u64>), Status> {
+        let b = xfer();
+        for (i, f) in mine.iter().enumerate() {
+            b[8 * i..8 * i + 8].copy_from_slice(&f.to_le_bytes());
+        }
+        let r = self.call(fs::JOB_KEEP, &[app, anyway as u64, mine.len() as u64])?;
+        let b = xfer();
+        let files = (0..r[2] as usize)
+            .map(|i| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap()))
+            .collect();
+        Ok((r[1], files))
+    }
+
+    /// Throw `app`'s job's work away.
+    pub fn job_discard(&self, app: u64) -> Result<(), Status> {
+        self.call(fs::JOB_DISCARD, &[app]).map(|_| ())
+    }
+
+    /// "Run it again" (Alaya's own programs): until its last window
+    /// closes, `app` sees exactly what it had read by commit `cn`. Returns
+    /// (files, how many exact).
+    pub fn run_again(&self, app: u64, cn: u64) -> Result<(u64, u64), Status> {
+        let r = self.call(fs::RUN_AGAIN, &[app, cn])?;
+        Ok((r[1], r[2]))
+    }
+
+    /// Copy part of a saved document: the clipboard knows exactly which
+    /// version it came from.
+    pub fn copy(&self, f: u64, at: u64, len: u64) -> Result<u64, Status> {
+        Ok(self.call(fs::COPY, &[f, at, len])?[1])
+    }
+
+    /// Copy text that belongs to no saved document.
+    pub fn copy_text(&self, text: &[u8]) -> Result<(), Status> {
+        let n = text.len().min(fs::CLIP_MAX);
+        xfer()[..n].copy_from_slice(&text[..n]);
+        self.call(fs::COPY_TEXT, &[n as u64]).map(|_| ())
+    }
+
+    /// What the clipboard holds, and the version it came from.
+    pub fn paste(&self) -> Result<(Vec<u8>, Option<Version>), Status> {
+        let r = self.call(fs::PASTE, &[])?;
+        let data = xfer()[..(r[1] as usize).min(fs::CLIP_MAX)].to_vec();
+        let src = (r[2] != 0).then_some(Version {
+            file: r[2],
+            version: r[3],
+            edits: r[4],
+        });
+        Ok((data, src))
+    }
+
+    /// "Show the difference" for a result that needs a look.
+    pub fn what_changed(&self, result: u64) -> Result<Option<Difference>, Status> {
+        let r = self.call(fs::WHAT_CHANGED, &[result])?;
+        if r[1] == 0 {
+            return Ok(None);
+        }
+        let b = xfer();
+        let then = b[..(r[3] as usize).min(fs::DIFF_AT)].to_vec();
+        let now = b[fs::DIFF_AT..fs::DIFF_AT + (r[4] as usize).min(fs::DIFF_AT)].to_vec();
+        Ok(Some(Difference {
+            source: r[1],
+            exact: r[2] != 0,
+            then,
+            now,
+        }))
+    }
+
     /// An app's last window closed (the desktop only).
     pub fn app_closed(&self, app: u64) -> Result<u64, Status> {
         Ok(self.call(fs::APP_CLOSED, &[app])?[1])
@@ -768,6 +905,26 @@ impl Store {
     pub fn save(&self) -> Result<u64, Status> {
         Ok(self.call(fs::SAVE, &[])?[1])
     }
+}
+
+/// What changed in a source since a result was made from it.
+#[derive(Clone, Debug, Default)]
+pub struct Difference {
+    pub source: u64,
+    /// `then` is exactly the version the result used.
+    pub exact: bool,
+    pub then: Vec<u8>,
+    pub now: Vec<u8>,
+}
+
+/// What Alaya's checks of a job found.
+#[derive(Clone, Debug, Default)]
+pub struct JobReport {
+    pub passed: bool,
+    /// (check bit, checklist line, ok, the file it failed on).
+    pub checks: Vec<(u64, u32, bool, u64)>,
+    /// Files the job read that the person changed since.
+    pub stale: Vec<u64>,
 }
 
 fn words(key: &[u8; 32]) -> [u64; 4] {
@@ -787,6 +944,8 @@ pub fn app_name(app: u64) -> &'static str {
         a if a == fs::app_id(role::CHART) => "the chart maker",
         a if a == fs::app_id(role::SETTINGS) => "Settings",
         a if a == fs::app_id(role::BACK) => "the timeline",
+        a if a == fs::app_id(role::HELPER) => "the tidy-up helper",
+        a if a == fs::app_id(role::HOSTILE) => "the hostile test helper",
         fs::DESKTOP_APP => "the desktop",
         fs::INIT_APP => "Alaya's checks",
         _ => "another app",

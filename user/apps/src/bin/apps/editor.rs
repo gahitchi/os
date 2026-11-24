@@ -17,7 +17,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_apps::store::Store;
+use alaya_apps::store::{Store, Version};
 use alaya_apps::{self as app, Event, Window};
 use alaya_programs::files::{APPS, DOCS};
 use alaya_sys::abi::StartInfo;
@@ -135,6 +135,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut win = Window::open(&mut mem, 560, 360, "Text editor").expect("open a window");
     let mut said = String::new();
     let mut note = String::new();
+    // What was pasted into this document, from which exact versions: a
+    // save notes them, so the document carries their mark.
+    let mut used: Vec<Version> = Vec::new();
     loop {
         let mut pending = Vec::new();
         while let Some(e) = win.next_event() {
@@ -160,9 +163,69 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                         note = String::from("Choose a name in the Save window.");
                     }
                 }
+                Event::Shortcut('c') => {
+                    // This line: from the saved document when it is saved
+                    // (the clipboard then knows its version).
+                    let t = edit.text.as_bytes();
+                    let from = t[..edit.cursor]
+                        .iter()
+                        .rposition(|&b| b == b'\n')
+                        .map_or(0, |i| i + 1);
+                    let to = t[edit.cursor..]
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .map_or(t.len(), |i| edit.cursor + i);
+                    let ok = match file {
+                        Some(f) if !dirty => store.copy(f, from as u64, (to - from) as u64).is_ok(),
+                        _ => store.copy_text(&t[from..to]).is_ok(),
+                    };
+                    note = String::from(if ok {
+                        "Copied this line."
+                    } else {
+                        "Could not copy."
+                    });
+                    changed = true;
+                    say!(
+                        "copied line {} ({} bytes)",
+                        edit.position().0 + 1,
+                        to - from
+                    );
+                }
+                Event::Shortcut('v') => {
+                    if let Ok((data, src)) = store.paste()
+                        && !data.is_empty()
+                    {
+                        let text = String::from_utf8_lossy(&data).into_owned();
+                        edit.text.insert_str(edit.cursor, &text);
+                        edit.cursor += text.len();
+                        dirty = true;
+                        changed = true;
+                        if let Some(v) = src
+                            && !used.contains(&v)
+                        {
+                            used.push(v);
+                        }
+                        note = String::from(if src.is_some() {
+                            "Pasted. Saving notes where it came from."
+                        } else {
+                            "Pasted."
+                        });
+                        say!(
+                            "pasted {} bytes{}",
+                            data.len(),
+                            if src.is_some() {
+                                " from a saved document"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
+                }
                 Event::Shortcut('s') => {
                     let ok = file.is_some_and(|f| {
-                        store.write_all(f, edit.text.as_bytes()).is_ok() && store.save().is_ok()
+                        store.write_all(f, edit.text.as_bytes()).is_ok()
+                            && (used.is_empty() || store.made_from(f, &used).is_ok())
+                            && store.save().is_ok()
                     });
                     note = String::from(if ok { "Saved." } else { "Could not save." });
                     if ok {
@@ -219,6 +282,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                         edit = TextEdit::new(&String::from_utf8_lossy(&b));
                         file = Some(*f);
                         name = name_of(&store, docs, *f).unwrap_or_default();
+                        used.clear();
                         note.clear();
                         changed = true;
                         dirty = false;
@@ -230,8 +294,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     save: true,
                     ..
                 } => {
-                    let ok =
-                        store.write_all(*f, edit.text.as_bytes()).is_ok() && store.save().is_ok();
+                    let ok = store.write_all(*f, edit.text.as_bytes()).is_ok()
+                        && (used.is_empty() || store.made_from(*f, &used).is_ok())
+                        && store.save().is_ok();
                     if ok {
                         file = Some(*f);
                         name = name_of(&store, docs, *f).unwrap_or_default();

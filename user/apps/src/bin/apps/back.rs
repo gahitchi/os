@@ -252,6 +252,7 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     chosen = (chosen + 1).min(list.len().saturating_sub(1))
                 }
                 (View::Happened, Key::Enter | Key::Char('u')) => press = Some("Undo this"),
+                (View::Happened, Key::Char('a')) => press = Some("Run it again"),
                 (View::Timeline, Key::Left) => at = at.saturating_sub(1),
                 (View::Timeline, Key::Home) => at = 0,
                 (View::Timeline, Key::End) => at = moments.len().saturating_sub(1),
@@ -378,6 +379,16 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                             press = Some("Undo this");
                         }
                     }
+                    // An app's own change: open it again on what it read.
+                    if list
+                        .get(chosen)
+                        .is_some_and(|l| l.changes.first().is_some_and(|c| c.1 >= fs::app_id(1)))
+                    {
+                        let (hit, _) = ui.button(140, h - 58, "Run it again", true);
+                        if hit {
+                            press = Some("Run it again");
+                        }
+                    }
                 }
                 View::Timeline => {
                     // The slider: one tick per moment kept, named ones
@@ -486,6 +497,31 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             win.pointer.released = false;
         }
         match press {
+            Some("Run it again") => {
+                if let Some(&(cn, app)) = list.get(chosen).and_then(|l| l.changes.first()) {
+                    let r = alaya_sys::ipc_call(
+                        start::FIRST_GIVEN + dk::APP_G_DESKTOP,
+                        &Msg::new(dk::RUN_AGAIN, &[app, cn]),
+                        Caps::default(),
+                    )
+                    .map_or([u64::MAX; 6], |m| m.words);
+                    note = if r[0] == dk::OK {
+                        format!(
+                            "{} opens again on {} file(s) as it read them{}.",
+                            capital(app_name(app)),
+                            r[1],
+                            if r[2] == r[1] {
+                                ""
+                            } else {
+                                " (some from the nearest kept moment)"
+                            }
+                        )
+                    } else {
+                        String::from("That app cannot run again.")
+                    };
+                    say!("run it again ({}): {}", app_name(app), note);
+                }
+            }
             Some("Undo this") => {
                 if let Some(l) = list.get(chosen) {
                     let ok = match l.action {

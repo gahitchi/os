@@ -127,6 +127,25 @@ pub struct Mark {
 
 const AS_OF: u64 = 1;
 const WHOLE: u64 = 1;
+/// Only part of the source was used, handed over by the clipboard (a
+/// trusted carrier, rule B1): the store knows exactly which version.
+const PART: u64 = 2;
+
+/// What changed in a source since a result was made from it ("show the
+/// difference").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Difference {
+    pub source: FileId,
+    /// The start of the source as the result used it, and as it is now
+    /// (at most [`DIFF_MAX`] bytes each).
+    pub then: Vec<u8>,
+    pub now: Vec<u8>,
+    /// `then` is exactly the version used (false: history kept only a
+    /// nearby moment, rule B2).
+    pub exact: bool,
+}
+
+pub const DIFF_MAX: usize = 16 * 1024;
 
 impl<D: Disk> Store<D> {
     /// `app` says it made `result` from `sources`. Only the app that last
@@ -157,12 +176,19 @@ impl<D: Disk> Store<D> {
         if b.writer.get(&result) != Some(&app) {
             return Err(Error::BadRequest);
         }
-        let whole: Vec<bool> = sources
+        let whole: Vec<u64> = sources
             .iter()
             .map(|s| {
-                b.seen
+                if b.seen
                     .get(&(app, s.file))
                     .is_some_and(|x| x.version == s.version && x.edits == s.edits && x.whole())
+                {
+                    WHOLE
+                } else if b.pasted.contains(&(app, s.file, s.version, s.edits)) {
+                    PART
+                } else {
+                    0
+                }
             })
             .collect();
         self.room(4 + sources.len() as u64 / 8, false)?;
@@ -184,13 +210,66 @@ impl<D: Disk> Store<D> {
                 dev,
                 &b.keys,
                 k_made(obj, 1 + i as u64),
-                words(&[s.file.0, s.version, s.edits, if *w { WHOLE } else { 0 }]),
+                words(&[s.file.0, s.version, s.edits, *w]),
             )?;
         }
         *b.changes.entry((app, result)).or_insert(0) |= crate::what::MADE;
         b.touched = true;
         b.docs_changed = true;
         Ok(())
+    }
+
+    /// The clipboard handed `app` part of `s` (that exact version): a
+    /// result made from it may name it, and stays "up to date" while the
+    /// source is unchanged.
+    pub fn note_pasted(&mut self, p: Person, app: App, s: Source) -> Result<(), Error> {
+        let b = self.branch(p)?;
+        b.pasted.insert((app, s.file, s.version, s.edits));
+        Ok(())
+    }
+
+    /// Whether the clipboard handed `app` any version of `f`.
+    pub fn was_pasted(&mut self, p: Person, app: App, f: FileId) -> Result<bool, Error> {
+        Ok(self
+            .branch(p)?
+            .pasted
+            .iter()
+            .any(|(a, g, _, _)| *a == app && *g == f))
+    }
+
+    /// What changed in the source that makes `result` "Needs a look":
+    /// the source then (as the result used it) and now.
+    pub fn what_changed(&mut self, p: Person, result: FileId) -> Result<Option<Difference>, Error> {
+        let m = self.mark(p, result)?;
+        let (Kind::NeedsALook, Some(f)) = (m.kind, m.source) else {
+            return Ok(None);
+        };
+        let Some((s, _)) = self
+            .sources(p, result)?
+            .into_iter()
+            .find(|(s, _)| s.file == f)
+        else {
+            return Ok(None);
+        };
+        let moments = self.history(p)?;
+        let Some((cn, exact)) = self.moment_of(p, f, s.version, &moments)? else {
+            return Ok(None);
+        };
+        let view = self.past(p, Class::Documents, cn)?;
+        let mut then = alloc::vec![0u8; DIFF_MAX];
+        let n = self.past_read(&view, f, 0, &mut then)?;
+        then.truncate(n);
+        let mut now = alloc::vec![0u8; DIFF_MAX];
+        let size = self.stat(p, f)?.size as usize;
+        let mut blk = [0u8; crate::format::BLOCK];
+        let k = self.peek(p, f, 0, &mut now[..size.min(DIFF_MAX)], &mut blk)?;
+        now.truncate(k);
+        Ok(Some(Difference {
+            source: f,
+            then,
+            now,
+            exact,
+        }))
     }
 
     /// The person says `result` shows a fixed moment (or not any more).
@@ -238,7 +317,7 @@ impl<D: Disk> Store<D> {
                             version: word(v, 1),
                             edits: word(v, 2),
                         },
-                        word(v, 3) & WHOLE != 0,
+                        word(v, 3) & (WHOLE | PART) != 0,
                     )
                 })
                 .collect(),

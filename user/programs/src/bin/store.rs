@@ -16,10 +16,12 @@ use alloc::vec::Vec;
 
 use alaya_programs::files::{self as fs, st};
 use alaya_programs::{keeper as k, status};
+use alaya_store::again::ReadThen;
 use alaya_store::disk::{Disk, IoError};
 use alaya_store::format::Block;
 use alaya_store::grants::{Access, Lasts};
 use alaya_store::history::{Restored, Undo};
+use alaya_store::jobs::Job;
 use alaya_store::made::Source;
 use alaya_store::{Class, Error, FileId, Options, Store};
 use alaya_sys::abi::{StartInfo, call, start};
@@ -235,6 +237,9 @@ fn main(info: &'static StartInfo) -> ! {
         store: &mut store,
         hold_until: 0,
         stick,
+        jobs: None,
+        replay: Vec::new(),
+        clips: Vec::new(),
     };
     let mut msg = alaya_sys::msg_call(
         call::RECV,
@@ -354,6 +359,15 @@ struct Server<'a> {
     hold_until: u64,
     /// The backup stick (milestone 7), if there is one.
     stick: Option<KeeperDisk>,
+    /// The jobs running now (milestone 7, step 3), by person and app;
+    /// None when they must be looked up again.
+    jobs: Option<Vec<Job>>,
+    /// Apps run again on what they read at a past moment: (person, app,
+    /// the files at their versions). Until the app closes.
+    replay: Vec<(u64, u64, Vec<ReadThen>)>,
+    /// The clipboard of each person: the bytes, and the exact version of
+    /// the document they came from, if any.
+    clips: Vec<(u64, Vec<u8>, Option<Source>)>,
 }
 
 /// Bytes to stir the key generator with, and whether the processor's
@@ -436,21 +450,44 @@ impl Server<'_> {
         if !restricted(app) {
             return Ok(None);
         }
+        if let Some(job) = self.job_for(p, app) {
+            return self.job_guard(label, app, ch, w, &job);
+        }
+        if let Some(i) = self.replay.iter().position(|r| r.0 == p && r.1 == app) {
+            let files = self.replay[i].2.clone();
+            return self.replay_guard(label, p, ch, w, &files);
+        }
         let s = &mut *self.store;
         let docs = |f: u64| FileId(f).class() == Class::Documents;
         let need = |s: &mut Store<KeeperDisk>, f: u64, write: bool| need(s, p, app, f, write, now);
         match label {
-            fs::ROOT | fs::SAVE | fs::STATS | fs::ACTION_BEGIN | fs::RECORD_ACTION => Ok(None),
+            fs::ROOT
+            | fs::SAVE
+            | fs::STATS
+            | fs::ACTION_BEGIN
+            | fs::RECORD_ACTION
+            | fs::JOB
+            | fs::JOB_DONE => Ok(None),
             fs::WRITE | fs::TRUNCATE | fs::AS_OF => need(s, w[0], true).map(|_| None),
             fs::MARK => need(s, w[0], false).map(|_| None),
             fs::MADE_FROM => {
                 need(s, w[0], true)?;
                 let n = (w[1] as usize).min(alaya_store::made::MADE_MAX);
                 for i in 0..n {
-                    need(s, word_at(xfer(ch), 3 * i), false)?;
+                    // A source it may read, or one the clipboard handed it.
+                    let f = word_at(xfer(ch), 3 * i);
+                    if !s.was_pasted(p, app, FileId(f))? {
+                        need(s, f, false)?;
+                    }
                 }
                 Ok(None)
             }
+            fs::COPY => {
+                need(s, w[0], false)?;
+                s.note_private_read(p, app, FileId(w[0]), now)?;
+                Ok(None)
+            }
+            fs::COPY_TEXT | fs::PASTE => Ok(None),
             fs::READ | fs::STAT => match need(s, w[0], false)? {
                 Access::Pinned(cn) => {
                     if label == fs::READ {
@@ -536,6 +573,212 @@ impl Server<'_> {
         }
     }
 
+    /// The job `app` runs for person `p`, if any.
+    fn job_for(&mut self, p: u64, app: u64) -> Option<Job> {
+        if self.jobs.is_none() {
+            let mut all = Vec::new();
+            for q in self.store.people().unwrap_or_default() {
+                if let Ok(j) = self.store.jobs(q) {
+                    all.extend(j);
+                }
+            }
+            self.jobs = Some(all);
+        }
+        self.jobs
+            .as_ref()
+            .and_then(|l| l.iter().find(|j| j.owner == p && j.app == app).cloned())
+    }
+
+    /// Jobs with rules (milestone 7, step 3): an app with a job works on
+    /// its side copy, and sees and changes only the job's folder. Its
+    /// private files stay invisible to it, the files that must stay
+    /// unchanged are read only, and once it says it is done it changes
+    /// nothing more. Everything else of the person's is not there for it.
+    fn job_guard(
+        &mut self,
+        label: u64,
+        app: u64,
+        ch: u64,
+        w: &[u64; 6],
+        job: &Job,
+    ) -> Result<Option<Vec<u64>>, Error> {
+        let s = &mut *self.store;
+        let side = job.side;
+        let docs = |f: u64| FileId(f).class() == Class::Documents;
+        let may = |s: &mut Store<KeeperDisk>, f: u64, write: bool| -> Result<(), Error> {
+            let f = FileId(f);
+            if !s.job_may(job, f, false)? || s.is_private(job.owner, f)? {
+                return Err(Error::NotFound);
+            }
+            if write && !s.job_may(job, f, true)? {
+                return Err(Error::BadRequest);
+            }
+            Ok(())
+        };
+        let len = |n: u64| (n as usize).min(fs::XFER_BYTES);
+        match label {
+            fs::ROOT | fs::SAVE | fs::STATS | fs::JOB | fs::JOB_DONE => return Ok(None),
+            fs::READ
+            | fs::WRITE
+            | fs::STAT
+            | fs::TRUNCATE
+            | fs::CREATE
+            | fs::LOOKUP
+            | fs::LIST
+            | fs::REMOVE
+            | fs::RENAME
+                if !docs(w[0]) =>
+            {
+                // Its own app files and caches, as always.
+                if label == fs::RENAME && docs(w[1]) {
+                    return Err(Error::BadRequest);
+                }
+                return Ok(None);
+            }
+            _ => {}
+        }
+        let out = match label {
+            fs::READ => {
+                may(s, w[0], false)?;
+                let n = len(w[2]);
+                alloc::vec![s.read(side, app, FileId(w[0]), w[1], &mut xfer(ch)[..n])? as u64]
+            }
+            fs::STAT => {
+                may(s, w[0], false)?;
+                let st = s.stat(side, FileId(w[0]))?;
+                alloc::vec![st.size, st.version, st.is_dir as u64, st.edits]
+            }
+            fs::WRITE => {
+                may(s, w[0], true)?;
+                let n = len(w[2]);
+                s.write(side, app, FileId(w[0]), w[1], &xfer(ch)[..n])?;
+                alloc::vec![]
+            }
+            fs::TRUNCATE => {
+                may(s, w[0], true)?;
+                s.truncate(side, app, FileId(w[0]), w[1])?;
+                alloc::vec![]
+            }
+            fs::CREATE => {
+                may(s, w[0], true)?;
+                let name = Self::name(ch, w[2])?;
+                alloc::vec![s.create(side, app, FileId(w[0]), &name, w[1] != 0)?.0]
+            }
+            fs::LOOKUP => {
+                may(s, w[0], false)?;
+                let name = Self::name(ch, w[1])?;
+                let f = s.lookup(side, FileId(w[0]), &name)?;
+                may(s, f.0, false)?;
+                alloc::vec![f.0]
+            }
+            fs::LIST => {
+                may(s, w[0], false)?;
+                let mut l = s.list(side, FileId(w[0]))?;
+                let mut keep = Vec::with_capacity(l.len());
+                for (name, f) in l.drain(..) {
+                    if !s.is_private(job.owner, f)? {
+                        keep.push((name, f));
+                    }
+                }
+                put_list(ch, &keep)
+            }
+            fs::REMOVE => {
+                may(s, w[0], true)?;
+                let name = Self::name(ch, w[1])?;
+                let f = s.lookup(side, FileId(w[0]), &name)?;
+                may(s, f.0, true)?;
+                s.remove(side, app, FileId(w[0]), &name)?;
+                alloc::vec![]
+            }
+            fs::RENAME => {
+                may(s, w[0], true)?;
+                if !docs(w[1]) {
+                    return Err(Error::BadRequest);
+                }
+                may(s, w[1], true)?;
+                let name = Self::name(ch, w[2])?;
+                let f = s.lookup(side, FileId(w[0]), &name)?;
+                may(s, f.0, true)?;
+                let b = len(w[3]);
+                if b == 0 || b > alaya_store::NAME_MAX {
+                    return Err(Error::BadName);
+                }
+                let to = xfer(ch)[fs::NAME2..fs::NAME2 + b].to_vec();
+                s.rename(side, app, FileId(w[0]), &name, FileId(w[1]), &to)?;
+                alloc::vec![]
+            }
+            // Its "made from" notes, the person's history, undo, grants:
+            // not while it works under rules.
+            _ => return Err(Error::BadRequest),
+        };
+        Ok(Some(out))
+    }
+
+    /// "Run it again": the app sees only the documents it had read then,
+    /// each at the version it read, and changes none of them. Its own app
+    /// files work as always.
+    fn replay_guard(
+        &mut self,
+        label: u64,
+        p: u64,
+        ch: u64,
+        w: &[u64; 6],
+        files: &[ReadThen],
+    ) -> Result<Option<Vec<u64>>, Error> {
+        let s = &mut *self.store;
+        let docs = |f: u64| FileId(f).class() == Class::Documents;
+        let then = |f: u64| files.iter().find(|r| r.file.0 == f).copied();
+        match label {
+            fs::ROOT | fs::SAVE | fs::STATS | fs::JOB | fs::ACTION_BEGIN | fs::RECORD_ACTION => {
+                return Ok(None);
+            }
+            fs::READ
+            | fs::WRITE
+            | fs::STAT
+            | fs::TRUNCATE
+            | fs::CREATE
+            | fs::LOOKUP
+            | fs::LIST
+            | fs::REMOVE
+            | fs::RENAME
+                if !docs(w[0]) =>
+            {
+                if label == fs::RENAME && docs(w[1]) {
+                    return Err(Error::BadRequest);
+                }
+                return Ok(None);
+            }
+            _ => {}
+        }
+        let out = match label {
+            fs::READ | fs::STAT => {
+                let r = then(w[0]).ok_or(Error::NotFound)?;
+                let past = s.past(p, Class::Documents, r.moment)?;
+                if label == fs::STAT {
+                    let st = s.past_stat(&past, r.file)?;
+                    alloc::vec![st.size, st.version, st.is_dir as u64, st.edits]
+                } else {
+                    let n = (w[2] as usize).min(fs::XFER_BYTES);
+                    alloc::vec![s.past_read(&past, r.file, w[1], &mut xfer(ch)[..n])? as u64]
+                }
+            }
+            fs::LOOKUP => {
+                let name = Self::name(ch, w[1])?;
+                let f = s.lookup(p, FileId(w[0]), &name)?;
+                then(f.0).ok_or(Error::NotFound)?;
+                alloc::vec![f.0]
+            }
+            fs::LIST => {
+                let mut l = s.list(p, FileId(w[0]))?;
+                l.retain(|(_, f)| then(f.0).is_some());
+                put_list(ch, &l)
+            }
+            // Read only: nothing of the person's changes.
+            _ => return Err(Error::BadRequest),
+        };
+        Ok(Some(out))
+    }
+
     fn name(ch: u64, len: u64) -> Result<Vec<u8>, Error> {
         if len == 0 || len > alaya_store::NAME_MAX as u64 {
             return Err(Error::BadName);
@@ -557,6 +800,7 @@ impl Server<'_> {
         Ok(match label {
             fs::UNLOCK => {
                 s.unlock(p, &secret(&w[..4]))?;
+                self.jobs = None;
                 alloc::vec![]
             }
             fs::ADD_PERSON => {
@@ -913,7 +1157,27 @@ impl Server<'_> {
                 if app != fs::DESKTOP_APP && app != fs::INIT_APP {
                     return Err(Error::BadRequest);
                 }
+                self.replay.retain(|r| !(r.0 == p && r.1 == w[0]));
                 alloc::vec![s.app_closed(p, w[0])?]
+            }
+            fs::RUN_AGAIN => {
+                if s.has_changes() {
+                    s.commit(now)?;
+                }
+                let l = s.read_then(p, w[0], w[1])?;
+                let buf = xfer(ch);
+                let n = l.len().min(fs::XFER_BYTES / 32);
+                for (i, r) in l.iter().take(n).enumerate() {
+                    put_words(
+                        buf,
+                        32 * i,
+                        &[r.file.0, r.version, r.moment, r.exact as u64],
+                    );
+                }
+                let exact = l.iter().filter(|r| r.exact).count();
+                self.replay.retain(|r| !(r.0 == p && r.1 == w[0]));
+                self.replay.push((p, w[0], l));
+                alloc::vec![n as u64, exact as u64]
             }
             fs::FORGET_LATER => {
                 let name = Self::name(ch, w[1])?;
@@ -1033,6 +1297,143 @@ impl Server<'_> {
                 }
                 alloc::vec![n as u64]
             }
+            fs::JOB => match s.job_of(p, app)? {
+                Some(j) => alloc::vec![1, j.rules.folder.0, j.done as u64, j.rules.checks],
+                None => alloc::vec![0],
+            },
+            fs::JOB_DONE => {
+                let j = s.job_of(p, app)?.ok_or(Error::NotFound)?;
+                s.job_done(j.side)?;
+                self.jobs = None;
+                alloc::vec![]
+            }
+            fs::JOB_START => {
+                // What the rules name must be saved: the job starts from
+                // the last saved moment.
+                if s.has_changes() {
+                    s.commit(now)?;
+                }
+                let n = (w[4] as usize).min(alaya_store::jobs::KEEP_SAME_MAX + 1);
+                let buf = xfer(ch);
+                let keep_same = (0..n).map(|i| FileId(word_at(buf, i))).collect();
+                let l = (w[5] as usize).min(alaya_store::side::LABEL_MAX);
+                let label = buf[fs::JOB_LABEL_AT..fs::JOB_LABEL_AT + l].to_vec();
+                let rules = alaya_store::jobs::Rules {
+                    folder: FileId(w[1]),
+                    keep_same,
+                    checks: w[2],
+                    checklist: (w[3] != 0).then_some(FileId(w[3])),
+                };
+                let side = s.job_start(p, w[0], &label, &rules, now)?;
+                s.commit(now)?;
+                self.jobs = None;
+                alloc::vec![side]
+            }
+            fs::JOB_CHECK => {
+                let j = s.job_of(p, w[0])?.ok_or(Error::NotFound)?;
+                let r = s.job_check(j.side)?;
+                let buf = xfer(ch);
+                let n = r.checks.len().min(64);
+                for (i, c) in r.checks.iter().take(n).enumerate() {
+                    put_words(
+                        buf,
+                        32 * i,
+                        &[
+                            c.check,
+                            c.line as u64,
+                            c.ok as u64,
+                            c.file.map_or(0, |f| f.0),
+                        ],
+                    );
+                }
+                let m = r.stale.len().min(64);
+                for (i, f) in r.stale.iter().take(m).enumerate() {
+                    put_words(buf, 32 * n + 8 * i, &[f.0]);
+                }
+                alloc::vec![r.passed() as u64, n as u64, m as u64]
+            }
+            fs::JOB_KEEP => {
+                let j = s.job_of(p, w[0])?.ok_or(Error::NotFound)?;
+                if s.has_changes() {
+                    s.commit(now)?;
+                }
+                let buf = xfer(ch);
+                let n = (w[2] as usize).min(256);
+                let mine: Vec<FileId> = (0..n).map(|i| FileId(word_at(buf, i))).collect();
+                let (kind, files) = match s.job_keep(j.side, w[1] != 0, &[], &mine)? {
+                    alaya_store::jobs::Kept::Kept(f) => {
+                        s.commit(now)?;
+                        (fs::job_kept::KEPT, f)
+                    }
+                    alaya_store::jobs::Kept::Held(r) => (fs::job_kept::HELD, r.stale),
+                    alaya_store::jobs::Kept::Conflicts(f) => (fs::job_kept::CONFLICTS, f),
+                };
+                self.jobs = None;
+                let m = files.len().min(256);
+                for (i, f) in files.iter().take(m).enumerate() {
+                    put_words(buf, 8 * i, &[f.0]);
+                }
+                alloc::vec![kind, m as u64]
+            }
+            fs::JOB_DISCARD => {
+                let j = s.job_of(p, w[0])?.ok_or(Error::NotFound)?;
+                s.job_discard(j.side)?;
+                s.commit(now)?;
+                self.jobs = None;
+                alloc::vec![]
+            }
+            fs::COPY => {
+                let f = FileId(w[0]);
+                let st = s.stat(p, f)?;
+                if st.is_dir {
+                    return Err(Error::IsADirectory);
+                }
+                let n = (w[2] as usize).min(fs::CLIP_MAX);
+                let mut data = alloc::vec![0u8; n];
+                let got = s.read(p, app, f, w[1], &mut data)?;
+                data.truncate(got);
+                let src = (f.class() == Class::Documents).then_some(Source {
+                    file: f,
+                    version: st.version,
+                    edits: st.edits,
+                });
+                self.clips.retain(|c| c.0 != p);
+                self.clips.push((p, data, src));
+                alloc::vec![got as u64]
+            }
+            fs::COPY_TEXT => {
+                let n = (w[0] as usize).min(fs::CLIP_MAX);
+                let data = xfer(ch)[..n].to_vec();
+                self.clips.retain(|c| c.0 != p);
+                self.clips.push((p, data, None));
+                alloc::vec![n as u64]
+            }
+            fs::PASTE => {
+                let Some((_, data, src)) = self.clips.iter().find(|c| c.0 == p).cloned() else {
+                    return Ok(alloc::vec![0, 0, 0, 0]);
+                };
+                xfer(ch)[..data.len()].copy_from_slice(&data);
+                if let Some(src) = src {
+                    s.note_pasted(p, app, src)?;
+                    // The mark spreads with what is pasted (decision 27);
+                    // Alaya's own programs are never marked (rule B1).
+                    if restricted(app) {
+                        s.note_private_read(p, app, src.file, now)?;
+                    }
+                }
+                let (f, v, e) = src.map_or((0, 0, 0), |x| (x.file.0, x.version, x.edits));
+                alloc::vec![data.len() as u64, f, v, e]
+            }
+            fs::WHAT_CHANGED => match s.what_changed(p, FileId(w[0]))? {
+                Some(d) => {
+                    let buf = xfer(ch);
+                    let (a, b) = (d.then.len().min(fs::DIFF_AT), d.now.len().min(fs::DIFF_AT));
+                    buf[..a].copy_from_slice(&d.then[..a]);
+                    buf[fs::DIFF_AT..fs::DIFF_AT + b].copy_from_slice(&d.now[..b]);
+                    alloc::vec![d.source.0, d.exact as u64, a as u64, b as u64]
+                }
+                None => alloc::vec![0, 0, 0, 0],
+            },
             fs::STICK => {
                 let last = s.last_backup(p)?.map_or((0, 0), |(_, run, m)| (run, m));
                 match &self.stick {

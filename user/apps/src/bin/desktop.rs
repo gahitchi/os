@@ -115,6 +115,41 @@ struct Search {
     chosen: usize,
 }
 
+/// A job with rules (milestone 7, step 3): an app asked for one, and
+/// Alaya, not the app, shows the person the rules before it starts, and
+/// what Alaya's own checks found when it is done.
+struct JobScreen {
+    win: u32,
+    role: u64,
+    chosen: usize,
+    stage: JobStage,
+}
+
+enum JobStage {
+    /// Which one folder may it change?
+    Folder(Vec<Entry>),
+    /// The rules, with what Alaya enforces, checks, or can only wish for.
+    Rules {
+        folder: Entry,
+        checklist: Option<(u64, usize)>,
+        keep_same: Vec<u64>,
+        private: usize,
+    },
+    /// What the checks found; `conflicts`: files the person changed too.
+    Result {
+        report: st::JobReport,
+        conflicts: Vec<u64>,
+    },
+}
+
+/// The checklist a job's folder may hold: its lines are checked by
+/// Alaya before the work is kept.
+const CHECKLIST: &str = "checklist.txt";
+/// The checks every job gets (`alaya_store::jobs::check`): nothing lost,
+/// nothing emptied; the checklist when there is one.
+const JOB_CHECKS: u64 = 4 | 8;
+const CHECK_LIST: u64 = 16;
+
 /// How many results the search box shows, and how many kept moments it
 /// looks back through.
 const SEARCH_MOST: u64 = 40;
@@ -184,6 +219,8 @@ struct Desk {
     pick: Option<Pick>,
     /// The search box is up.
     search: Option<Search>,
+    /// A job's rules screen or result is up.
+    job: Option<JobScreen>,
     /// A file handed over from the search box, for an app that is still
     /// starting: (role, the event its window gets).
     hand: Option<(u64, [u64; 5])>,
@@ -298,6 +335,7 @@ fn main(info: &'static StartInfo) -> ! {
         ask: None,
         pick: None,
         search: None,
+        job: None,
         hand: None,
         groups_of: Vec::new(),
     };
@@ -510,7 +548,27 @@ impl Desk {
             .map(|q| q.found.iter().map(found_row).collect())
             .unwrap_or_default();
         let search_refs: Vec<&str> = search_rows.iter().map(|r| r.as_str()).collect();
+        let job_view = self.job.as_ref().map(|j| self.job_view(j));
+        let job_refs: Vec<&str> = job_view
+            .as_ref()
+            .map(|v| v.rows.iter().map(|r| r.as_str()).collect())
+            .unwrap_or_default();
         let picker = match (&self.pick, &self.search) {
+            _ if job_view.is_some() && self.pick.is_none() && self.search.is_none() => {
+                let v = job_view.as_ref().unwrap();
+                Some(Picker {
+                    title: &v.title,
+                    hint: &v.hint,
+                    rows: &job_refs,
+                    chosen: self.job.as_ref().map_or(0, |j| j.chosen),
+                    mark: v.mark,
+                    field: None,
+                    foot: &v.foot,
+                    empty: "No folders in your documents yet: make one in the file browser.",
+                    ok: v.ok,
+                    no: v.no,
+                })
+            }
             (Some(p), _) => Some(Picker {
                 title: pick_title.as_deref().unwrap_or(""),
                 hint: "Only what you pick is handed over. Tab: how long it keeps it.",
@@ -521,6 +579,7 @@ impl Desk {
                 foot: pick_foot.as_deref().unwrap_or(""),
                 empty: "No documents yet.",
                 ok: if p.save { "Save here" } else { "Hand it over" },
+                no: "Cancel",
             }),
             (None, Some(q)) => Some(Picker {
                 title: "Search your documents",
@@ -536,6 +595,7 @@ impl Desk {
                     "Nothing found, now or in the past."
                 },
                 ok: "Open",
+                no: "Cancel",
             }),
             _ => None,
         };
@@ -675,6 +735,14 @@ impl Desk {
                 && let Some(k) = us_key(code, self.shift)
             {
                 self.search_key(k);
+            }
+            return;
+        }
+        if self.job.is_some() {
+            if value != 0
+                && let Some(k) = us_key(code, self.shift)
+            {
+                self.job_key(k);
             }
             return;
         }
@@ -1058,6 +1126,23 @@ impl Desk {
             }
             return true;
         }
+        if let Some(j) = &mut self.job {
+            let (ok, no) = scene::picker_buttons(self.width, self.height);
+            let first = scene::picker_first(j.chosen);
+            if ok.contains(x, y) {
+                // A click on "Keep anyway" is the deliberate choice.
+                self.job_ok(true);
+            } else if no.contains(x, y) {
+                self.job_key(Key::Escape);
+            } else if let Some(i) = scene::picker_row_at(self.width, self.height, x, y, first)
+                && let JobStage::Folder(l) = &j.stage
+                && i < l.len()
+            {
+                j.chosen = i;
+                self.damage_all();
+            }
+            return true;
+        }
         if self.ask.is_some() {
             // Only the question's buttons answer while it is asked.
             let (yes, no) = scene::question_buttons(self.width, self.height);
@@ -1141,6 +1226,72 @@ impl Desk {
         self.note = text;
         self.note_until = rt::now_ms() + NOTE_MS;
         self.damage(Rect::new(0, 0, self.width, alaya_ui::wm::STRIP));
+    }
+
+    /// "Make again": the app that made `result` makes it again from its
+    /// sources as they are now. Only apps that can are asked (the chart
+    /// maker); the person sees why not otherwise.
+    fn make_again(&mut self, result: u64) -> u64 {
+        let Some(s) = self.mine() else {
+            return dk::BAD_REQUEST;
+        };
+        let Ok(m) = s.mark(result) else {
+            return dk::BAD_REQUEST;
+        };
+        let r = m.maker.wrapping_sub(fs::app_id(0));
+        let name = s.name_of(result, 0).unwrap_or_default();
+        if r != role::CHART {
+            self.say_note(alloc::format!(
+                "{} cannot make {name} again by itself: open it and save again",
+                capital(st::app_name(m.maker))
+            ));
+            return dk::BAD_REQUEST;
+        }
+        self.say_note(alloc::format!(
+            "{} makes {name} again from what it is made from now",
+            capital(st::app_name(m.maker))
+        ));
+        let e = [event::MAKE_AGAIN, result, 0, 0, 0];
+        match self.wins.iter().rev().find(|w| w.owner == r).map(|w| w.id) {
+            Some(id) => self.push(id, e),
+            None => {
+                self.hand = Some((r, e));
+                self.show_app(r, "the chart maker");
+            }
+        }
+        dk::OK
+    }
+
+    /// "Run it again": open `app` again on exactly what it had read by
+    /// commit `cn` (rule B2). A copy still running closes first, so what
+    /// it had until then goes back.
+    fn run_again(&mut self, app: u64, cn: u64) -> (u64, u64, u64) {
+        let r = app.wrapping_sub(fs::app_id(0));
+        if !(1..=role::COUNT).contains(&r) || r == role::BACK || self.mine().is_none() {
+            return (dk::BAD_REQUEST, 0, 0);
+        }
+        self.forget(r);
+        let Some(s) = self.mine() else {
+            return (dk::BAD_REQUEST, 0, 0);
+        };
+        match s.run_again(app, cn) {
+            Ok((n, exact)) => {
+                self.say_note(alloc::format!(
+                    "Running {} again on {n} file{} as it read {}{}",
+                    st::app_name(app),
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "it" } else { "them" },
+                    if exact == n {
+                        ""
+                    } else {
+                        " (some from the nearest kept moment)"
+                    }
+                ));
+                let _ = alaya_sys::signal(self.session_ntfn, 1 << r);
+                (dk::OK, n, exact)
+            }
+            Err(_) => (dk::BAD_REQUEST, 0, 0),
+        }
     }
 
     /// The one undo: the person's last action, anywhere (decision 110).
@@ -1485,6 +1636,435 @@ impl Desk {
         );
     }
 
+    /// An app asks for a job, or says its job is done (dk::JOB).
+    fn job_request(&mut self, owner: u64, w: &[u64; 6]) -> u64 {
+        let Some(s) = self.mine() else {
+            return dk::BAD_REQUEST;
+        };
+        let Some(win) = self
+            .wins
+            .iter()
+            .find(|x| u64::from(x.id) == w[0] && x.owner == owner)
+            .map(|x| x.id)
+        else {
+            return dk::NO_WINDOW;
+        };
+        if self.pick.is_some() || self.ask.is_some() || self.job.is_some() || owner == 0 {
+            return dk::BAD_REQUEST;
+        }
+        let app = fs::app_id(owner);
+        let stage = match w[1] {
+            0 => {
+                let docs = s.root(DOCS).unwrap_or(0);
+                let mut l: Vec<Entry> = s
+                    .list(docs)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|e| e.is_dir)
+                    .collect();
+                l.sort_by(|a, b| a.name.cmp(&b.name));
+                say!(
+                    "{} asks for a job; {} folders to choose from",
+                    st::app_name(app),
+                    l.len()
+                );
+                JobStage::Folder(l)
+            }
+            1 => match s.job_check(app) {
+                Ok(report) => {
+                    say!(
+                        "{} says its job is done; Alaya's checks: {}",
+                        st::app_name(app),
+                        job_summary(&report)
+                    );
+                    JobStage::Result {
+                        report,
+                        conflicts: Vec::new(),
+                    }
+                }
+                Err(_) => return dk::BAD_REQUEST,
+            },
+            _ => return dk::BAD_REQUEST,
+        };
+        self.job = Some(JobScreen {
+            win,
+            role: owner,
+            chosen: 0,
+            stage,
+        });
+        self.damage_all();
+        dk::OK
+    }
+
+    /// For STATE: 0 no job screen, 1 choosing the folder, 2 the rules,
+    /// 3 the result (passed), 4 held, 5 conflicts to settle.
+    fn job_state(&self) -> u64 {
+        match &self.job {
+            None => 0,
+            Some(j) => match &j.stage {
+                JobStage::Folder(_) => 1,
+                JobStage::Rules { .. } => 2,
+                JobStage::Result { conflicts, .. } if !conflicts.is_empty() => 5,
+                JobStage::Result { report, .. } if report.passed => 3,
+                JobStage::Result { .. } => 4,
+            },
+        }
+    }
+
+    fn job_key(&mut self, k: Key) {
+        let Some(j) = &mut self.job else { return };
+        match (&j.stage, k) {
+            (JobStage::Folder(l), Key::Up) => {
+                j.chosen = j.chosen.saturating_sub(1).min(l.len().saturating_sub(1))
+            }
+            (JobStage::Folder(l), Key::Down) => {
+                j.chosen = (j.chosen + 1).min(l.len().saturating_sub(1))
+            }
+            (JobStage::Rules { .. }, Key::Backspace) => {
+                // Back to the folders.
+                let (win, role) = (j.win, j.role);
+                self.job = None;
+                self.job_request(role, &[u64::from(win), 0, 0, 0, 0, 0]);
+            }
+            (JobStage::Folder(_) | JobStage::Rules { .. }, Key::Escape) => {
+                let (win, app) = (j.win, fs::app_id(j.role));
+                self.job = None;
+                say!("job for {}: you said no", st::app_name(app));
+                self.push(win, [event::JOB, dk::job_event::REFUSED, 0, 0, 0]);
+            }
+            (JobStage::Result { .. }, Key::Escape) => {
+                // Later: the work waits on the side.
+                self.job = None;
+                say!("job result put aside for later");
+            }
+            (JobStage::Result { .. }, Key::Char('t' | 'T')) => {
+                let (win, app) = (j.win, fs::app_id(j.role));
+                self.job = None;
+                if let Some(s) = self.mine()
+                    && s.job_discard(app).is_ok()
+                {
+                    say!("job of {}: its work was thrown away", st::app_name(app));
+                    self.push(win, [event::JOB, dk::job_event::THROWN, 0, 0, 0]);
+                }
+            }
+            (JobStage::Result { .. }, Key::Char('k' | 'K')) => return self.job_ok(true),
+            (_, Key::Enter) => return self.job_ok(false),
+            _ => {}
+        }
+        self.damage_all();
+    }
+
+    /// The screen's main button: next, start, keep. `deliberate`: the
+    /// person clicked it or pressed K; only that keeps work whose checks
+    /// failed (rule R5), Enter never does.
+    fn job_ok(&mut self, deliberate: bool) {
+        let Some(j) = self.job.take() else { return };
+        self.damage_all();
+        let Some(s) = self.mine() else { return };
+        let app = fs::app_id(j.role);
+        match j.stage {
+            JobStage::Folder(l) => {
+                let Some(folder) = l.get(j.chosen).cloned() else {
+                    self.job = Some(JobScreen {
+                        stage: JobStage::Folder(l),
+                        ..j
+                    });
+                    return;
+                };
+                // What must stay unchanged: the checklist, and the
+                // person's private files (which it does not even see).
+                let inside = s.list(folder.file).unwrap_or_default();
+                let checklist = inside
+                    .iter()
+                    .find(|e| !e.is_dir && e.name == CHECKLIST)
+                    .map(|e| {
+                        let b = s.read_all(e.file).unwrap_or_default();
+                        let lines = b
+                            .split(|&c| c == b'\n')
+                            .filter(|l| {
+                                let t = l.trim_ascii();
+                                !t.is_empty() && t[0] != b'#'
+                            })
+                            .count();
+                        (e.file, lines)
+                    });
+                let mut keep_same: Vec<u64> = checklist.iter().map(|c| c.0).collect();
+                let mut private = 0;
+                for e in &inside {
+                    if !e.is_dir && s.private(e.file, None).unwrap_or(false) {
+                        private += 1;
+                        if keep_same.len() < 8 && !keep_same.contains(&e.file) {
+                            keep_same.push(e.file);
+                        }
+                    }
+                }
+                say!(
+                    "job for {}: the rules for {} ({} must stay unchanged{})",
+                    st::app_name(app),
+                    folder.name,
+                    keep_same.len(),
+                    if checklist.is_some() {
+                        ", with a checklist"
+                    } else {
+                        ""
+                    }
+                );
+                self.job = Some(JobScreen {
+                    chosen: 0,
+                    stage: JobStage::Rules {
+                        folder,
+                        checklist,
+                        keep_same,
+                        private,
+                    },
+                    ..j
+                });
+            }
+            JobStage::Rules {
+                folder,
+                checklist,
+                keep_same,
+                ..
+            } => {
+                let checks = JOB_CHECKS | if checklist.is_some() { CHECK_LIST } else { 0 };
+                let label = alloc::format!("job: {}", folder.name);
+                match s.job_start(
+                    app,
+                    folder.file,
+                    checks,
+                    checklist.map_or(0, |c| c.0),
+                    &keep_same,
+                    label.as_bytes(),
+                ) {
+                    Ok(_) => {
+                        say!(
+                            "job for {} started on a side copy of {}",
+                            st::app_name(app),
+                            folder.name
+                        );
+                        self.push(
+                            j.win,
+                            [event::JOB, dk::job_event::STARTED, folder.file, 0, 0],
+                        );
+                    }
+                    Err(e) => {
+                        say!("could not start the job: {e}");
+                        self.push(j.win, [event::JOB, dk::job_event::REFUSED, 0, 0, 0]);
+                    }
+                }
+            }
+            JobStage::Result { report, conflicts } => {
+                if !report.passed && !deliberate {
+                    // Enter never keeps held work.
+                    self.job = Some(JobScreen {
+                        stage: JobStage::Result { report, conflicts },
+                        ..j
+                    });
+                    return;
+                }
+                match s.job_keep(app, !report.passed, &conflicts) {
+                    Ok((k, files)) if k == fs::job_kept::KEPT => {
+                        say!(
+                            "job of {}: kept{} ({} files)",
+                            st::app_name(app),
+                            if report.passed {
+                                ""
+                            } else {
+                                " anyway, on record"
+                            },
+                            files.len()
+                        );
+                        self.push(
+                            j.win,
+                            [event::JOB, dk::job_event::KEPT, files.len() as u64, 0, 0],
+                        );
+                    }
+                    Ok((k, files)) if k == fs::job_kept::CONFLICTS => {
+                        say!(
+                            "job of {}: you changed {} of the same files; asking",
+                            st::app_name(app),
+                            files.len()
+                        );
+                        self.job = Some(JobScreen {
+                            stage: JobStage::Result {
+                                report,
+                                conflicts: files,
+                            },
+                            ..j
+                        });
+                    }
+                    _ => {
+                        // Held after all (something changed meanwhile):
+                        // look again.
+                        if let Ok(report) = s.job_check(app) {
+                            self.job = Some(JobScreen {
+                                stage: JobStage::Result {
+                                    report,
+                                    conflicts: Vec::new(),
+                                },
+                                ..j
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// What the job screen shows.
+    fn job_view(&self, j: &JobScreen) -> JobView {
+        let app = capital(st::app_name(fs::app_id(j.role)));
+        let s = self.mine();
+        let name = |f: u64| {
+            s.as_ref()
+                .and_then(|s| s.name_of(f, 0).ok())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| String::from("a new file"))
+        };
+        match &j.stage {
+            JobStage::Folder(l) => JobView {
+                title: alloc::format!("{app} asks for a job"),
+                hint: String::from(
+                    "Choose the one folder it may change. Nothing else of yours is there for it.",
+                ),
+                rows: l
+                    .iter()
+                    .map(|e| alloc::format!("{}   ·   folder", e.name))
+                    .collect(),
+                mark: true,
+                foot: String::from("Next: you see the rules before it starts."),
+                ok: "Next",
+                no: "Cancel",
+            },
+            JobStage::Rules {
+                folder,
+                checklist,
+                keep_same,
+                private,
+            } => {
+                let mut same = Vec::new();
+                if checklist.is_some() {
+                    same.push(String::from(CHECKLIST));
+                }
+                if *private > 0 {
+                    same.push(alloc::format!(
+                        "{private} private file{}",
+                        if *private == 1 { "" } else { "s" }
+                    ));
+                }
+                let mut rows = alloc::vec![
+                    alloc::format!("May change: files in {}   ·   enforced", folder.name),
+                    alloc::format!(
+                        "Must stay unchanged: {}   ·   enforced",
+                        if same.is_empty() {
+                            String::from("nothing named")
+                        } else {
+                            same.join(", ")
+                        }
+                    ),
+                    String::from("Your private files: invisible to it   ·   enforced"),
+                    String::from("Everything else of yours: not there for it   ·   enforced"),
+                    String::from(
+                        "Before keeping: nothing lost, nothing emptied   ·   checked by Alaya"
+                    ),
+                ];
+                if let Some((_, n)) = checklist {
+                    rows.push(alloc::format!(
+                        "Before keeping: the {n} lines of {CHECKLIST}, as now   ·   checked by Alaya"
+                    ));
+                }
+                rows.push(String::from(
+                    "Internet: none (Alaya has no network yet)   ·   enforced",
+                ));
+                rows.push(String::from(
+                    "\"Do a good job\"   ·   a wish: Alaya can't check this",
+                ));
+                let _ = keep_same;
+                JobView {
+                    title: alloc::format!("{app}: the rules of this job"),
+                    hint: String::from(
+                        "It works on a side copy. Nothing is kept before you see the result.",
+                    ),
+                    rows,
+                    mark: false,
+                    foot: String::from(
+                        "Enforced: it cannot. Checked: Alaya looks itself, when it is done.",
+                    ),
+                    ok: "Start",
+                    no: "Cancel",
+                }
+            }
+            JobStage::Result { report, conflicts } => {
+                let mut rows = Vec::new();
+                for &(check, line, ok, f) in &report.checks {
+                    let what = match check {
+                        1 => String::from("Nothing outside the folder changed"),
+                        2 => String::from("What must stay unchanged did"),
+                        4 => String::from("Nothing lost"),
+                        8 => String::from("Nothing emptied"),
+                        _ => alloc::format!("{CHECKLIST}, line {line}"),
+                    };
+                    rows.push(if ok {
+                        alloc::format!("Passed: {what}")
+                    } else if f != 0 {
+                        alloc::format!("Did not pass: {what} ({})", name(f))
+                    } else {
+                        alloc::format!("Did not pass: {what}")
+                    });
+                }
+                for &f in &report.stale {
+                    rows.push(alloc::format!(
+                        "Needs a look: it read {}, which you changed since",
+                        name(f)
+                    ));
+                }
+                if !conflicts.is_empty() {
+                    let names: Vec<String> = conflicts.iter().map(|&f| name(f)).collect();
+                    JobView {
+                        title: alloc::format!("{app}: you changed some of the same files"),
+                        hint: alloc::format!(
+                            "Yours stays for: {}. The rest of its work is kept.",
+                            names.join(", ")
+                        ),
+                        rows,
+                        mark: false,
+                        foot: String::from("Nothing is ever overwritten without asking (rule B6)."),
+                        ok: "Keep, mine wins",
+                        no: "Later",
+                    }
+                } else if report.passed {
+                    JobView {
+                        title: alloc::format!("{app} is done: every check passed"),
+                        hint: String::from(
+                            "Checked by Alaya on the side copy, not by the app. Passing is not proof it is right.",
+                        ),
+                        rows,
+                        mark: false,
+                        foot: String::from(
+                            "Keep: one step; What happened? can take it back. T throws it away.",
+                        ),
+                        ok: "Keep",
+                        no: "Later",
+                    }
+                } else {
+                    JobView {
+                        title: alloc::format!("{app} is done: held, some checks did not pass"),
+                        hint: String::from(
+                            "Nothing reached your files. Look at the reasons below.",
+                        ),
+                        rows,
+                        mark: false,
+                        foot: String::from(
+                            "Keep anyway (K or click) is your call, on record. T throws it away.",
+                        ),
+                        ok: "Keep anyway",
+                        no: "Later",
+                    }
+                }
+            }
+        }
+    }
+
     fn search_start(&mut self) {
         if self.locked() || self.mine().is_none() || self.pick.is_some() || self.ask.is_some() {
             return;
@@ -1599,6 +2179,15 @@ impl Desk {
         if self.pick.as_ref().is_some_and(|p| p.win == x.id) {
             self.pick = None;
         }
+        // Asking for a job ends with the window; a result stays (the work
+        // waits on the side for the person).
+        if self
+            .job
+            .as_ref()
+            .is_some_and(|j| j.win == x.id && !matches!(j.stage, JobStage::Result { .. }))
+        {
+            self.job = None;
+        }
         // The app's last window: what it had until it closed goes back.
         if x.owner != 0
             && !self.wins.iter().any(|w| w.owner == x.owner)
@@ -1694,6 +2283,7 @@ impl Desk {
                 ([dk::OK, u64::from(id), 0, 0, 0, 0], 0)
             }
             dk::PICK => ([self.pick_start(owner, &w), 0, 0, 0, 0, 0], 0),
+            dk::JOB => ([self.job_request(owner, &w), 0, 0, 0, 0, 0], 0),
             dk::PAGE => match find(self, w[0]) {
                 Some(i) if w[1] < dk::PAGES => {
                     // Lend a copy of the page; the desktop keeps its own.
@@ -1769,6 +2359,13 @@ impl Desk {
             dk::LOOK_CHANGED => {
                 self.read_look();
                 ([dk::OK, 0, 0, 0, 0, 0], 0)
+            }
+            dk::MAKE_AGAIN if owner == role::FILES || owner == 0 => {
+                ([self.make_again(w[0]), 0, 0, 0, 0, 0], 0)
+            }
+            dk::RUN_AGAIN if owner == role::BACK || owner == 0 => {
+                let (st, n, exact) = self.run_again(w[0], w[1]);
+                ([st, n, exact, 0, 0, 0], 0)
             }
             dk::UNDO if owner == role::BACK || owner == 0 => {
                 let r = self.undo_for(w[0], w[1], w[2]);
@@ -1867,6 +2464,7 @@ impl Desk {
                     u64::from(self.ask.is_some())
                         | (self.note.len().min(1 << 20) as u64) << 1
                         | u64::from(self.pick.is_some()) << 62
+                        | self.job_state() << 48
                         | (self
                             .search
                             .as_ref()
@@ -1943,6 +2541,29 @@ fn capital(s: &str) -> String {
         Some(f) => f.to_uppercase().chain(c).collect(),
         None => String::new(),
     }
+}
+
+/// What the job screen shows (see `job_view`).
+struct JobView {
+    title: String,
+    hint: String,
+    rows: Vec<String>,
+    mark: bool,
+    foot: String,
+    ok: &'static str,
+    no: &'static str,
+}
+
+/// Alaya's checks of a job, in a few words (the log).
+fn job_summary(r: &st::JobReport) -> String {
+    let failed = r.checks.iter().filter(|c| !c.2).count();
+    alloc::format!(
+        "{} of {} passed, {} read files changed since{}",
+        r.checks.len() - failed,
+        r.checks.len(),
+        r.stale.len(),
+        if r.passed { "; all passed" } else { "; held" }
+    )
 }
 
 /// One search result, as a row.

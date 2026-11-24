@@ -11,7 +11,9 @@
 //! story: where it came from and what was made from it. F, pressed twice,
 //! forgets it for good after an hour (decision 62); until then K keeps it.
 //! P marks it private, or not (decision 27): an app that reads a private
-//! document is marked, and needs your OK before it goes online.
+//! document is marked, and needs your OK before it goes online. On a
+//! result that needs a look, S shows the difference (what changed in its
+//! source since) and M asks the app that made it to make it again.
 
 use alloc::format;
 use alloc::string::String;
@@ -19,12 +21,15 @@ use alloc::vec::Vec;
 
 use alaya_apps::store::{Entry, Kind, Mark, Store, Why, app_name, label, make_label};
 use alaya_apps::{self as app, Event, Window};
+use alaya_programs::desktop as dk;
 use alaya_programs::files::{DOCS, FORGET_GRACE, act, what};
-use alaya_sys::abi::StartInfo;
+use alaya_sys::abi::{StartInfo, start};
 use alaya_sys::rt::{self, Mem};
 use alaya_sys::say;
+use alaya_sys::{Caps, Msg};
 use alaya_ui::Rect;
 use alaya_ui::canvas::Color;
+use alaya_ui::diff::{Line, diff_lines};
 use alaya_ui::text::Face;
 use alaya_ui::widgets::{Key, Ui, theme};
 
@@ -130,6 +135,39 @@ fn about(store: &Store, rows: &[Entry], m: &Mark) -> String {
     }
 }
 
+/// "Show the difference": the source's lines that changed since the
+/// result was made from it.
+fn difference(store: &Store, rows: &[Row], result: u64) -> String {
+    let Ok(Some(d)) = store.what_changed(result) else {
+        return String::from("Alaya no longer keeps the version it was made from.");
+    };
+    let src = rows
+        .iter()
+        .find(|r| r.e.file == d.source)
+        .map_or(String::from("its source"), |r| r.e.name.clone());
+    let mut parts = Vec::new();
+    for l in diff_lines(&d.then, &d.now, 6) {
+        match l {
+            Line::Out(t) => parts.push(format!("was \"{}\"", String::from_utf8_lossy(t))),
+            Line::In(t) => parts.push(format!("now \"{}\"", String::from_utf8_lossy(t))),
+            Line::Same(_) => {}
+        }
+    }
+    format!(
+        "In {src}{}: {}. M makes it again.",
+        if d.exact {
+            ""
+        } else {
+            " (compared with the nearest kept moment)"
+        },
+        if parts.is_empty() {
+            String::from("only spaces or line ends changed")
+        } else {
+            parts.join(", ")
+        }
+    )
+}
+
 pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut fonts = app::fonts(info);
     let docs = store.root(DOCS).expect("documents");
@@ -169,6 +207,36 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 Key::Delete | Key::Char('d') => delete = true,
                 Key::Char('f') => forget = true,
                 Key::Char('k') => keep = true,
+                // Show the difference: what changed in the source since
+                // the chosen result was made.
+                Key::Char('s') => {
+                    if let Some(r) = selected.and_then(|i| rows.get(i))
+                        && r.mark.kind == Kind::NeedsALook
+                    {
+                        let text = difference(&store, &rows, r.e.file);
+                        say!("difference for {}: {}", r.e.name, text);
+                        told = Some((r.e.file, text));
+                    }
+                }
+                // Make again, by the app that made it, from the sources now.
+                Key::Char('m') => {
+                    if let Some(r) = selected.and_then(|i| rows.get(i))
+                        && r.mark.kind != Kind::NoMark
+                    {
+                        let ok = alaya_sys::ipc_call(
+                            start::FIRST_GIVEN + dk::APP_G_DESKTOP,
+                            &Msg::new(dk::MAKE_AGAIN, &[r.e.file]),
+                            Caps::default(),
+                        )
+                        .is_ok_and(|m| m.words[0] == dk::OK);
+                        say!(
+                            "make {} again: {}",
+                            r.e.name,
+                            if ok { "asked" } else { "cannot" }
+                        );
+                        look = true;
+                    }
+                }
                 Key::Char('p') => {
                     if let Some(r) = selected.and_then(|i| rows.get(i))
                         && !r.e.is_dir

@@ -74,6 +74,8 @@ pub struct Picker<'a> {
     /// What shows when there are no rows.
     pub empty: &'a str,
     pub ok: &'a str,
+    /// The other button ("Cancel").
+    pub no: &'a str,
 }
 
 /// Where the picker is drawn on a screen `w` by `h`, and its buttons
@@ -184,7 +186,7 @@ fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32)
     }
     fonts.draw(cv, Face::Strong, 12, r.x + 22, y + a2, p.foot, theme::PAST);
     let (ok, no) = picker_buttons(sw, sh);
-    for (b, name, primary) in [(ok, p.ok, true), (no, "Cancel", false)] {
+    for (b, name, primary) in [(ok, p.ok, true), (no, p.no, false)] {
         cv.round_rect(
             b,
             7,

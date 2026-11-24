@@ -558,6 +558,60 @@ pub mod files {
     /// each: the apps that read a private file and need the person's OK
     /// before going online.
     pub const MARKS: u64 = 56;
+    /// JOB_START: app, folder, checks (`alaya_store::jobs::check` bits),
+    /// the checklist file (0: none), how many must stay unchanged (their
+    /// numbers in the transfer pages), label length (the label at byte
+    /// [`JOB_LABEL_AT`]) → side branch. Alaya's own programs only (the
+    /// desktop, after the person approved the rules screen). From then on
+    /// the app's document requests go to the job's side copy, only inside
+    /// the folder (milestone 7, step 3).
+    pub const JOB_START: u64 = 57;
+    /// JOB: → whether the asking app has a job (1), its folder, whether it
+    /// said it is done, its checks. For the app itself.
+    pub const JOB: u64 = 58;
+    /// JOB_DONE: the asking app says its job is done: it can change
+    /// nothing more, and Alaya runs the checks.
+    pub const JOB_DONE: u64 = 59;
+    /// JOB_CHECK: app → passed, checks, stale files; then each check as
+    /// (check, line, ok, file) 32 bytes, then the stale files' numbers.
+    pub const JOB_CHECK: u64 = 60;
+    /// JOB_KEEP: app, anyway (1: the person keeps it although the checks
+    /// failed), how many conflicts the person's version wins (their
+    /// numbers in the transfer pages) → [`job_kept`], count, then files.
+    pub const JOB_KEEP: u64 = 61;
+    /// JOB_DISCARD: app: throw the job's work away.
+    pub const JOB_DISCARD: u64 = 62;
+    /// RUN_AGAIN: app, commit → how many files, how many exact; each
+    /// (file, version, moment, exact) 32 bytes. "Run it again" (Alaya's
+    /// own programs only): until its last window closes, the app sees
+    /// exactly the documents it had read by that commit, each at the
+    /// version it read, read only (rule B2: the nearest kept moment when
+    /// that one was thinned, and then not exact).
+    pub const RUN_AGAIN: u64 = 63;
+    /// COPY: file, offset, length → copied: the clipboard (kept by the
+    /// store, a trusted carrier) holds that part of that exact version of
+    /// the document, at most [`CLIP_MAX`] bytes.
+    pub const COPY: u64 = 64;
+    /// COPY_TEXT: length (the text in the transfer pages): text that
+    /// belongs to no saved document.
+    pub const COPY_TEXT: u64 = 65;
+    /// PASTE: → length, the source (file, version, edits; 0 when none);
+    /// the bytes in the transfer pages. A result made from what was
+    /// pasted may name that source, and carries its mark (living
+    /// validity); a private source marks the app (decision 27).
+    pub const PASTE: u64 = 66;
+    /// WHAT_CHANGED: result → source, exact, bytes then, bytes now; then
+    /// at 0 and now at [`DIFF_AT`] in the transfer pages ("show the
+    /// difference"; Alaya's own programs only).
+    pub const WHAT_CHANGED: u64 = 67;
+    pub const CLIP_MAX: usize = 4096;
+    pub const DIFF_AT: usize = 32 * 1024;
+    pub const JOB_LABEL_AT: usize = 512;
+    pub mod job_kept {
+        pub const KEPT: u64 = 0;
+        pub const HELD: u64 = 1;
+        pub const CONFLICTS: u64 = 2;
+    }
     /// Back up by itself this often, when something changed.
     pub const BACKUP_EVERY: u64 = 600;
 
@@ -641,7 +695,7 @@ pub mod files {
     /// Transfer channels and their size. The first program's checks use
     /// channels 0 to 3 (milestone 5); after them, channel 0 is the first
     /// program's, 1 the desktop's and 2 on each app's ([`app_channel`]).
-    pub const CHANNELS: u64 = 8;
+    pub const CHANNELS: u64 = 10;
     pub const XFER_PAGES: u64 = 16;
     pub const XFER_BYTES: usize = (XFER_PAGES * 4096) as usize;
     /// Where the transfer pages are, in the store server.
@@ -856,6 +910,32 @@ pub mod desktop {
     /// the Open or Save window; the answer comes later as a PICKED event
     /// (milestone 7, step 2).
     pub const PICK: u64 = 22;
+    /// JOB: window, what (0: ask for a job, 1: the job is done) → status.
+    /// Asking shows the rules screen: the person picks the one folder it
+    /// may change and sees the rules before it starts; the app hears back
+    /// as a JOB event. Done shows what Alaya's checks found, and the
+    /// person keeps the work, throws it away, or keeps it anyway.
+    pub const JOB: u64 = 23;
+    /// RUN_AGAIN: app, commit → status, files, how many exact. "Run it
+    /// again": the app opens again (a running copy is closed first) on
+    /// exactly what it had read by that commit, read only. "What
+    /// happened?" (and the first program) may ask.
+    pub const RUN_AGAIN: u64 = 24;
+    /// MAKE_AGAIN: a result → status. "Make again" (living validity): the
+    /// app that made it makes it again from its sources as they are now
+    /// (it gets a MAKE_AGAIN event; started first when it is not
+    /// running). The file browser (and the first program) may ask.
+    pub const MAKE_AGAIN: u64 = 25;
+    pub mod job_event {
+        /// The person approved the rules: work in the folder.
+        pub const STARTED: u64 = 1;
+        /// The person said no.
+        pub const REFUSED: u64 = 2;
+        /// The work was kept.
+        pub const KEPT: u64 = 3;
+        /// The work was thrown away.
+        pub const THROWN: u64 = 4;
+    }
     pub mod undo_by {
         /// The last action (as Alaya key + Z).
         pub const LAST: u64 = 0;
@@ -900,7 +980,13 @@ pub mod desktop {
         pub const SETTINGS: u64 = 4;
         /// "What happened?" and the timeline (milestone 7).
         pub const BACK: u64 = 5;
-        pub const COUNT: u64 = 5;
+        /// The tidy-up helper (milestone 7, step 3): works only through a
+        /// job with rules.
+        pub const HELPER: u64 = 6;
+        /// A deliberately hostile helper, for the attack checks: it tries
+        /// every way around a job's rules. Never in the dock.
+        pub const HOSTILE: u64 = 7;
+        pub const COUNT: u64 = 7;
     }
 
     pub const OK: u64 = 0;
@@ -924,6 +1010,10 @@ pub mod desktop {
         /// The Open or Save window closed: the file handed over (0:
         /// nothing), save, write, how long (a `Lasts` kind).
         pub const PICKED: u64 = 6;
+        /// About its job: what ([`super::job_event`]), the folder.
+        pub const JOB: u64 = 7;
+        /// Make this result again from its sources as they are now.
+        pub const MAKE_AGAIN: u64 = 8;
     }
 
     /// Places, as WINDOW reports them.

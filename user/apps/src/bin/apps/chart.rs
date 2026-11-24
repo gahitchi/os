@@ -146,6 +146,13 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             match e {
                 Event::Key(k) => keys.push(k),
                 Event::Shortcut('s') => save = true,
+                // Make again (living validity): look at the numbers as
+                // they are now, then save the picture and summary again.
+                Event::MakeAgain(_) => {
+                    save = true;
+                    last_look = 0;
+                    say!("asked to make it again");
+                }
                 Event::Close => crate::closed(&win),
                 _ => {}
             }

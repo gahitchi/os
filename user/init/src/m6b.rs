@@ -386,6 +386,8 @@ impl<'a> Session<'a> {
             role::FILES => "files",
             role::CHART => "chart",
             role::BACK => "back",
+            role::HELPER => "helper",
+            role::HOSTILE => "hostile",
             _ => "settings",
         };
         program::start(
@@ -910,6 +912,7 @@ pub(crate) fn run<'a>(
     crate::m6c::run(&mut x, pass);
     crate::m7::run(&mut x, pass);
     crate::m7b::run(&mut x, pass);
+    crate::m7c::run(&mut x, pass);
     x
 }
 

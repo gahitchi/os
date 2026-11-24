@@ -15,6 +15,7 @@ mod back;
 mod chart;
 mod editor;
 mod files;
+mod helper;
 mod settings;
 
 use alaya_apps::store::Store;
@@ -41,6 +42,8 @@ fn main(info: &'static StartInfo) -> ! {
         role::CHART => chart::run(info, mem, store),
         role::SETTINGS => settings::run(info, mem, store),
         role::BACK => back::run(info, mem, store),
+        role::HELPER => helper::run(info, mem, store, false),
+        role::HOSTILE => helper::run(info, mem, store, true),
         r => panic!("no app has role {r}"),
     }
 }

@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod canvas;
+pub mod diff;
 pub mod font;
 pub mod login;
 pub mod scene;
