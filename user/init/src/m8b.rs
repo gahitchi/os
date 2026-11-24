@@ -7,11 +7,36 @@
 
 use alaya_bundle::promise;
 use alaya_programs::desktop::{self as dk, installed as ins, role};
-use alaya_programs::files::DOCS;
+use alaya_programs::files::{DOCS, act};
 
 use crate::m3::sleep_until;
 use crate::m6b::{Session, ask};
 use crate::m8a::{example, place, put};
+
+/// Close the window of installed place 0 with its close button, as a
+/// person would.
+fn close_it(x: &Session<'_>) {
+    let w = x.window_of(role::INSTALLED).expect("its window");
+    ask(x.ep, dk::RAISE, &[w]);
+    let f = ask(x.ep, dk::WINDOW, &[w]);
+    let close = (f[1] + f[3] - 6 - 11, f[2] + 16);
+    assert!(
+        x.drag(close, close, || x.window_of(role::INSTALLED).is_none()),
+        "the close button did not close it"
+    );
+}
+
+/// Act on the desktop's end bits until place 0's app has ended (or not).
+fn ended(x: &mut Session<'_>) -> bool {
+    for _ in 0..40 {
+        x.pause_now();
+        if !x.app_running(role::INSTALLED) {
+            return true;
+        }
+        sleep_until(250, || false);
+    }
+    false
+}
 
 const SLOW: u64 = 30_000;
 
@@ -22,6 +47,7 @@ struct Trial {
     left: u64,
     tried: u64,
     went_back_from: u64,
+    asks: u64,
     flags: u64,
     usual: u64,
     last: u64,
@@ -34,7 +60,8 @@ fn trial(ep: u64) -> Trial {
     Trial {
         left: r[1] & 0xff,
         tried: (r[1] >> 8) & 0xff,
-        went_back_from: (r[1] >> 16) & 0xffff_ffff,
+        went_back_from: (r[1] >> 16) & 0xffff,
+        asks: (r[1] >> 32) & 0xffff,
         flags: r[1] >> 48,
         usual: r[2],
         last: r[3],
@@ -104,45 +131,67 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "its refused notification was not noted"
     );
     assert!(trial(ep).left == u64::from(ins::TRIAL_STARTS) - 1);
+    // Without the background line, its last window closing ends it.
+    close_it(x);
+    assert!(ended(x), "it kept running with no window");
     pass(
-        "an update asking for nothing new is taken at once and goes on trial; what it tried beyond what you allowed is noted",
+        "an update asking for nothing new is taken at once and goes on trial; what it tried beyond what you allowed is noted; with no window and no background line, it ends",
     );
 
-    // ---- 115. An update that asks for more waits on a difference
-    // screen; "not now" keeps the old one, and new lines stay off.
+    // ---- 115. An update that asks for more is taken at once with what
+    // you allowed before (decision 88); the new line stays off until the
+    // app first tries it, and then Alaya asks.
     assert!(ask(ep, dk::OFFER_INSTALL, &[v[2]])[0] == dk::OK);
     assert!(
-        sleep_until(SLOW, || place(ep).2 == 5),
-        "no difference screen: {:?}",
+        sleep_until(SLOW, || version(ep) == 3 && place(ep).2 == 4),
+        "the update was held back: version {}, {:?}",
+        version(ep),
         place(ep)
-    );
-    assert!(version(ep) == 2, "it updated before you said so");
-    crate::say!("screenshot update");
-    sleep_until(500, || false);
-    assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
-    assert!(version(ep) == 2, "not now still updated it");
-    assert!(ask(ep, dk::OFFER_INSTALL, &[v[2]])[0] == dk::OK);
-    assert!(sleep_until(SLOW, || place(ep).2 == 5));
-    assert!(
-        x.keys("{enter}", || version(ep) == 3, SLOW),
-        "Update did nothing"
     );
     let may = place(ep).1;
     assert!(
-        may & promise::NETWORK == 0 && may & promise::FILES != 0 && may & promise::NOTIFY == 0,
+        may & promise::BACKGROUND == 0 && may & promise::FILES != 0 && may & promise::NOTIFY == 0,
         "the update's promise grew by itself: {may:#x}"
     );
+    assert!(trial(ep).asks == u64::from(promise::BACKGROUND));
+    crate::say!("screenshot update");
+    sleep_until(500, || false);
     assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
+    x.start_app(role::INSTALLED);
+    x.wait_window(role::INSTALLED);
+    assert!(
+        sleep_until(SLOW, || place(ep).2 == 5),
+        "no question when it first tried the new line: {:?}",
+        place(ep)
+    );
+    assert!(
+        x.keys("{enter}", || place(ep).1 & promise::BACKGROUND != 0, SLOW),
+        "Allow did not give it the line"
+    );
+    assert!(trial(ep).asks == 0);
+    // Now it keeps running with no window.
+    close_it(x);
+    assert!(
+        !ended(x),
+        "it was ended although it may run in the background"
+    );
     pass(
-        "an update that asks for more waits on a difference screen; not now keeps the old version, and its new lines stay off",
+        "an update that asks for more is taken at once with what you allowed before; the new line is asked about when the app first tries it",
     );
 
     // ---- 116. One undo takes an update back.
+    // (On its line in "What happened?": closing the window came after.)
+    let (update, _) = me
+        .newest(act::SETTINGS)
+        .expect("the update on the undo list");
+    assert!(ask(ep, dk::UNDO, &[dk::undo_by::ACTION, update, 0])[0] == dk::OK);
     assert!(
-        x.keys("{super+z}", || version(ep) == 2, SLOW),
+        sleep_until(SLOW, || version(ep) == 2),
         "undo did not take the update back: version {}",
         version(ep)
     );
+    // The version swapped out ends.
+    assert!(ended(x), "the version taken back kept running");
     assert!(trial(ep).kept == 3 && place(ep).0 == ins::ON);
     x.start_app(role::INSTALLED);
     x.wait_window(role::INSTALLED);

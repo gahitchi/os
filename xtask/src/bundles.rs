@@ -97,8 +97,9 @@ pub const POSTCARDS_PROMISE: u32 = promise::FILES | promise::NOTIFY;
 /// The versions of Postcards the boot test installs and updates
 /// (milestone 8, steps 1 and 2), in this order in `example-apps`. The
 /// program is the same; it reads its version from the bundle, and
-/// versions 4 and 5 are slow to start on purpose, for the Experience
-/// Guardian's check.
+/// version 3 also asks to keep running with no window, and versions 4
+/// and 5 are slow to start on purpose, for the Experience Guardian's
+/// check.
 pub fn postcards(program: &[u8]) -> [Example<'_>; 5] {
     let p = POSTCARDS_PROMISE;
     let v = |version, promise, flags| Example {
@@ -112,8 +113,8 @@ pub fn postcards(program: &[u8]) -> [Example<'_>; 5] {
         v(1, p, 0),
         // A fix that asks for nothing new.
         v(2, p, 0),
-        // One that also wants the network.
-        v(3, p | promise::NETWORK, 0),
+        // One that also wants to keep running with no window open.
+        v(3, p | promise::BACKGROUND, 0),
         // Slow to start.
         v(4, p, 0),
         // Slow too, but a security fix.

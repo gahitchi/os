@@ -1108,10 +1108,16 @@ pub mod desktop {
     pub const STARTING: u64 = 40;
     /// TRIAL: place → status, starts left on trial | what it tried beyond
     /// what it may << 8 | the version the Experience Guardian went back
-    /// from << 16 | flags << 48, the usual start time in ms, the last
+    /// from << 16 | new lines not asked about yet << 32 | flags << 48, the usual start time in ms, the last
     /// start time in ms, and the version kept for undo (the first program
     /// only, for checks).
     pub const TRIAL: u64 = 41;
+    /// BACKGROUND: → status. An app asks to keep running when its last
+    /// window closes (milestone 8). Alaya's own apps may; an installed
+    /// app only with the promise line "Keep running with no window open"
+    /// left ticked. Without it, an installed app whose last window closes
+    /// is ended: no processor time with no window.
+    pub const BACKGROUND: u64 = 42;
     pub mod reader_role {
         pub const WINDOW: u64 = 0;
         pub const LABEL: u64 = 1;

@@ -2901,6 +2901,15 @@ impl Desk {
                 Some(i) => {
                     let id = self.wins[i].id;
                     self.close_window(id);
+                    // No window, no processor time: an installed app
+                    // keeps running only with the background line.
+                    if role::installed(owner)
+                        && !self.wins.iter().any(|w| w.owner == owner)
+                        && !self.allowed(owner, alaya_bundle::promise::BACKGROUND)
+                    {
+                        say!("its last window closed: app {owner} ends (no background time)");
+                        let _ = alaya_sys::signal(self.session_ntfn, 1 << (dk::END_SHIFT + owner));
+                    }
                     ([dk::OK, 0, 0, 0, 0, 0], 0)
                 }
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
@@ -2921,6 +2930,13 @@ impl Desk {
             }
             dk::INSTALLED if owner == 0 => (self.installed_words(w[0]), 0),
             dk::TRIAL if owner == 0 => (self.trial_words(w[0]), 0),
+            dk::BACKGROUND if owner != 0 => {
+                let ok = self.may(owner, alaya_bundle::promise::BACKGROUND);
+                (
+                    [if ok { dk::OK } else { dk::NOT_ALLOWED }, 0, 0, 0, 0, 0],
+                    0,
+                )
+            }
             dk::STARTING if owner == 0 && role::installed(w[0]) => {
                 let i = (w[0] - role::INSTALLED) as usize;
                 self.starting[i] = alaya_sys::rt::now_ms();

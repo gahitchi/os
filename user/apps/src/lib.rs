@@ -226,6 +226,11 @@ impl Window {
         )[0] == dk::OK
     }
 
+    /// Ask to keep running when the last window closes (`dk::BACKGROUND`).
+    pub fn background(&self) -> bool {
+        call(self.ep, dk::BACKGROUND, &[])[0] == dk::OK
+    }
+
     pub fn set_title(&self, title: &str) {
         let mut b = [0u8; 32];
         // Cut at a character boundary.

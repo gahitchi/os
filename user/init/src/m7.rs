@@ -44,7 +44,7 @@ impl Files {
     }
 
     /// The newest action of `kind`: (number, undone).
-    fn newest(&self, kind: u64) -> Option<(u64, bool)> {
+    pub(crate) fn newest(&self, kind: u64) -> Option<(u64, bool)> {
         let r = self.call(fs::ACTIONS, &[0, 16]);
         if r[0] != st::OK {
             return None;

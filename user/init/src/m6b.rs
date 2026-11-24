@@ -505,6 +505,11 @@ impl<'a> Session<'a> {
         crate::installed::load(m, self.person, slot)
     }
 
+    /// Whether a copy of the app of role `r` is running.
+    pub(crate) fn app_running(&self, r: u64) -> bool {
+        self.apps[r as usize].thread != 0
+    }
+
     /// End the running copy of the app of role `r`, if any: all it has
     /// is taken back, and nothing of it runs.
     pub(crate) fn end_app(&mut self, r: u64) {

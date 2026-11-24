@@ -82,6 +82,14 @@ fn main(info: &'static StartInfo) -> ! {
         "postcards: hello {}",
         if hello { "sent" } else { "refused" }
     );
+    // From version 3 on, it would like to keep running with no window.
+    if version >= 3 && version < SLOW_FROM {
+        let bg = win.background();
+        say!(
+            "postcards: background {}",
+            if bg { "allowed" } else { "not allowed" }
+        );
+    }
     let mut note = String::new();
     let mut write = false;
     loop {
