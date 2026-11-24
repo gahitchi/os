@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Milestone 8 checks, step two: updates that cannot take more on their
-//! own. The boot image carries Postcards in five versions
-//! (`xtask/src/bundles.rs`): 2 asks for nothing new, 3 also wants the
-//! network, 4 is slow to start, 5 is slow too but a security fix.
+//! own, and a rehearsal on a copy of your files. The boot image carries
+//! Postcards in five versions (`xtask/src/bundles.rs`): 2 asks for
+//! nothing new, 3 also wants the network, 4 is slow to start, 5 is slow
+//! too but a security fix.
 
 use alaya_bundle::promise;
 use alaya_programs::desktop::{self as dk, installed as ins, role};
@@ -187,5 +188,148 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     assert!(t.last > t.usual, "version 5 was not slow: {} ms", t.last);
     pass(
         "the Experience Guardian: a clearly slower update goes back by itself; a security fix is never taken back",
+    );
+
+    // ---- 118. A rehearsal: the app runs for real on a side copy of
+    // your documents; Alaya shows what it read and would have changed,
+    // then throws the copy away. Nothing real changes.
+    assert!(ask(ep, dk::OFFER_INSTALL, &[v[4]])[0] == dk::OK);
+    assert!(sleep_until(SLOW, || place(ep).2 == 3));
+    assert!(
+        x.keys("{delete}", || place(ep).2 == 4, SLOW),
+        "Delete did not remove it"
+    );
+    x.pause_now();
+    assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
+    let card = me
+        .lookup(docs, "postcard.txt")
+        .expect("the postcard from check 113");
+    let mut before = [0u8; 512];
+    let n = me.read_at(card, 0, &mut before).unwrap_or(0);
+    assert!(n > 0);
+    assert!(ask(ep, dk::OFFER_INSTALL, &[v[0]])[0] == dk::OK);
+    assert!(sleep_until(SLOW, || place(ep).2 == 1), "no install sheet");
+    assert!(
+        x.keys("r", || place(ep).2 == 6, SLOW),
+        "R did not start a rehearsal: {:?}",
+        place(ep)
+    );
+    assert!(place(ep).0 == ins::REHEARSAL);
+    x.store_given = None;
+    x.start_app(role::INSTALLED);
+    let w = x.wait_window(role::INSTALLED);
+    assert!(x.store_given == Some(true));
+    ask(ep, dk::RAISE, &[w]);
+    sleep_until(1500, || false);
+    // It adds a line to the postcard, on the side copy.
+    x.keys("{ctrl+s}", || false, 3000);
+    sleep_until(3000, || false);
+    crate::say!("screenshot rehearsal");
+    assert!(
+        x.keys("{super+r}", || place(ep).2 == 7, SLOW),
+        "the rehearsal did not end: {:?}",
+        place(ep)
+    );
+    x.pause_now();
+    assert!(sleep_until(SLOW, || x.window_of(role::INSTALLED).is_none()));
+    let r = ask(ep, dk::TRIAL, &[0])[5];
+    let (read, changed, gone) = (r & 0xffff, (r >> 16) & 0xffff, r >> 32);
+    crate::say!("the rehearsal read {read} files and would have changed {changed}");
+    assert!(read >= 1 && changed >= 1, "the rehearsal showed nothing");
+    assert!(gone == 1, "the side copy was not thrown away");
+    assert!(
+        place(ep).0 == ins::EMPTY,
+        "the rehearsal installed something"
+    );
+    let mut after = [0u8; 512];
+    let m = me.read_at(card, 0, &mut after).unwrap_or(0);
+    assert!(
+        m == n && after[..m] == before[..n],
+        "the rehearsal reached the real postcard"
+    );
+    assert!(
+        x.keys("{enter}", || place(ep).2 == 1, SLOW),
+        "not back to the install sheet"
+    );
+    assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
+    pass(
+        "a rehearsal: the app runs on a side copy of your documents; Alaya shows what it read and would have changed, then throws the copy away; nothing real changes",
+    );
+
+    // ---- 119. The installer under a fuzzer: bundles changed at random
+    // places are all refused, and nothing is installed.
+    let f = v[0];
+    let good = example(x, 0);
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    const TRIES: usize = 40;
+    for t in 0..TRIES {
+        // Half in the head (name, promise, flags, key, signature), half
+        // anywhere.
+        let at = if t % 2 == 0 {
+            (next() % alaya_bundle::HEAD as u64) as usize
+        } else {
+            (next() % good.len() as u64) as usize
+        };
+        let flip = 1u8 << (next() % 8);
+        me.buf()[0] = good[at] ^ flip;
+        assert!(
+            me.call(alaya_programs::files::WRITE, &[f, at as u64, 1])[0]
+                == alaya_programs::files::st::OK
+        );
+        assert!(ask(ep, dk::OFFER_INSTALL, &[f])[0] == dk::OK);
+        assert!(
+            sleep_until(SLOW, || place(ep).2 == 4),
+            "a bundle changed at byte {at} was not refused: {:?}",
+            place(ep)
+        );
+        assert!(place(ep).0 == ins::EMPTY, "a changed bundle was installed");
+        me.buf()[0] = good[at];
+        assert!(
+            me.call(alaya_programs::files::WRITE, &[f, at as u64, 1])[0]
+                == alaya_programs::files::st::OK
+        );
+    }
+    assert!(ask(ep, dk::OFFER_INSTALL, &[f])[0] == dk::OK);
+    assert!(
+        sleep_until(SLOW, || place(ep).2 == 1),
+        "the good bundle was refused after"
+    );
+    pass(
+        "the installer under a fuzzer: every bundle changed at a random byte is refused, and nothing is installed",
+    );
+
+    // ---- 120. Install, then update and undo many times in a row.
+    assert!(x.keys("{enter}", || place(ep).0 == ins::ASIDE, SLOW));
+    assert!(x.keys("{enter}", || place(ep).0 == ins::ON, SLOW));
+    const ROUNDS: u64 = 50;
+    let t0 = alaya_sys::rt::now_ms();
+    for i in 0..ROUNDS {
+        assert!(ask(ep, dk::OFFER_INSTALL, &[v[1]])[0] == dk::OK);
+        assert!(
+            sleep_until(SLOW, || version(ep) == 2),
+            "round {i}: the update was not taken"
+        );
+        assert!(ask(ep, dk::UNDO, &[dk::undo_by::LAST, 0, 0])[0] == dk::OK);
+        assert!(
+            sleep_until(SLOW, || version(ep) == 1),
+            "round {i}: undo did not take the update back"
+        );
+    }
+    crate::say!(
+        "{ROUNDS} updates and undos took {} ms",
+        alaya_sys::rt::now_ms() - t0
+    );
+    assert!(place(ep).0 == ins::ON && trial(ep).kept == 2);
+    x.start_app(role::INSTALLED);
+    x.wait_window(role::INSTALLED);
+    assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
+    pass(
+        "an app installed, then updated and undone 50 times in a row: it still starts, at the right version",
     );
 }

@@ -840,6 +840,20 @@ impl Store {
         Ok((r[1], files))
     }
 
+    /// What `app`'s job read and changed on its side copy so far (Alaya's
+    /// own programs): (documents read, (document, what) changed).
+    pub fn job_trace(&self, app: u64) -> Result<(Vec<u64>, Vec<(u64, u64)>), Status> {
+        let r = self.call(fs::JOB_TRACE, &[app])?;
+        let (n, m) = (r[1] as usize, r[2] as usize);
+        let b = xfer();
+        let w = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+        let read = (0..n).map(|i| w(8 * i)).collect();
+        let changed = (0..m)
+            .map(|i| (w(8 * n + 16 * i), w(8 * n + 16 * i + 8)))
+            .collect();
+        Ok((read, changed))
+    }
+
     /// Throw `app`'s job's work away.
     pub fn job_discard(&self, app: u64) -> Result<(), Status> {
         self.call(fs::JOB_DISCARD, &[app]).map(|_| ())

@@ -61,7 +61,7 @@ pub(crate) fn load(m: &Files, person: u64, slot: u64) -> Result<Ready, &'static 
     if m.read_at(list, at as u64, &mut rec) != Some(ins::RECORD) {
         return Err("the place is empty");
     }
-    if rec[0] != ins::ON {
+    if rec[0] != ins::ON && rec[0] != ins::REHEARSAL {
         return Err("the app is not approved");
     }
     let ticked = u32::from_le_bytes(rec[4..8].try_into().unwrap());

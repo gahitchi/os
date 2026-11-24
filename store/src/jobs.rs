@@ -123,6 +123,10 @@ impl Report {
     }
 }
 
+/// What a job's program read, and what it changed with [`crate::what`]
+/// bits (see [`Store::job_trace`]).
+pub type Trace = (Vec<FileId>, Vec<(FileId, u64)>);
+
 /// What [`Store::job_keep`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kept {
@@ -573,27 +577,43 @@ impl<D: Disk> Store<D> {
 
     /// Files the job read, did not change itself, and the person changed
     /// or removed since it started.
-    fn job_stale(&mut self, j: &Job, changed: &[(FileId, u64)]) -> Result<Vec<FileId>, Error> {
+    /// Every document read on side branch `side` (saved or not).
+    pub fn side_reads(&mut self, side: Person) -> Result<Vec<FileId>, Error> {
         let mut read: Vec<FileId> = Vec::new();
-        {
-            let Store { dev, branches, .. } = self;
-            let b = branches.get_mut(&j.side).ok_or(Error::Locked)?;
-            b.hist.range(
-                dev,
-                &b.keys,
-                crate::format::Key::MIN,
-                Key(crate::H_ACT - 1, u64::MAX),
-                &mut |k, v| {
-                    if k.0 & 0xff == H_READ {
-                        read.push(FileId(word(v, 1)));
-                    }
-                    true
-                },
-            )?;
-            read.extend(b.reads.iter().map(|r| r.file));
-        }
+        let Store { dev, branches, .. } = self;
+        let b = branches.get_mut(&side).ok_or(Error::Locked)?;
+        b.hist.range(
+            dev,
+            &b.keys,
+            crate::format::Key::MIN,
+            Key(crate::H_ACT - 1, u64::MAX),
+            &mut |k, v| {
+                if k.0 & 0xff == H_READ {
+                    read.push(FileId(word(v, 1)));
+                }
+                true
+            },
+        )?;
+        read.extend(b.reads.iter().map(|r| r.file));
+        read.retain(|f| f.class() == Class::Documents);
         read.sort();
         read.dedup();
+        Ok(read)
+    }
+
+    /// What a job's program did on its side copy so far: the documents it
+    /// read, and the ones it changed (with [`crate::what`] bits). A
+    /// rehearsal (milestone 8) shows this, then throws the copy away.
+    pub fn job_trace(&mut self, side: Person) -> Result<Trace, Error> {
+        self.job(side)?;
+        let read = self.side_reads(side)?;
+        let mut changed = self.side_changes(side)?;
+        changed.retain(|(f, _)| f.class() == Class::Documents);
+        Ok((read, changed))
+    }
+
+    fn job_stale(&mut self, j: &Job, changed: &[(FileId, u64)]) -> Result<Vec<FileId>, Error> {
+        let read = self.side_reads(j.side)?;
         let mut out = Vec::new();
         for f in read {
             if changed.iter().any(|(g, _)| *g == f) {

@@ -52,13 +52,27 @@ A new version is **on trial for its next three starts**:
 - Alaya notes what it **tried** beyond what you allowed (for now: notifications with that line unticked). The install sheet shows it as what it tried, **never as proof that it is safe** (R12).
 - The **Experience Guardian** times each start, from Alaya starting the program to its window opening. Off trial, it learns how long the app usually takes. On trial, a start **clearly slower** than usual (more than twice the usual time, and a second more) takes the app back to the version before, by itself, with a note saying why; the window of the slow version closes. A version its maker marked a **security fix** (a signed flag in the bundle) is never taken back for being slower.
 
+## A rehearsal on your own files (decision 148)
+
+On the install sheet, press **R** before installing. Alaya makes a **side copy of your documents** and runs the app for real on it, with what you left ticked. The app gets the keyboard; the strip says "Rehearsing …", and **Alaya key + R** ends it. Alaya then shows:
+
+- the files it **read**;
+- the files it **would have changed**, made or removed;
+- that the side copy was **thrown away**, checked on the store.
+
+Nothing real is touched, and nothing is installed. **Enter** goes back to the install sheet. (For now it rehearses on your documents as they are now. Rehearsing on an older moment of your history comes later.)
+
+## Ending an app for real
+
+When an app is removed, taken away by undo, sent back by the Experience Guardian or done rehearsing, closing its windows is not enough: an app could ignore that. The desktop asks the first program to **end the program itself** (a new "end" bit, next to pause and go on), which takes back everything it holds.
+
 ## For makers
 
 `cargo xtask` builds the example app **Postcards** (`user/apps/src/bin/postcards.rs`), cuts its program down to what is loaded, signs it with the **example maker key** (public on purpose, in `xtask/src/bundles.rs`; for test apps only) and puts it in the boot image as `example-apps`, in five versions: 2 asks for nothing new, 3 also wants the network, 4 is slow to start on purpose, 5 is slow too but marked a security fix. A real maker keeps their secret key secret.
 
 A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like everything else, and a flag Alaya does not know is refused.
 
-## Checked in every boot test (checks 110 to 117)
+## Checked in every boot test (checks 110 to 120)
 
 - 110: a bundle with one byte changed after signing is refused; nothing is installed.
 - 111: installed on the side with the files line unticked, then approved; the app's store handle really is absent.
@@ -68,3 +82,6 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 115: an update that also wants the network waits on the difference screen; "not now" keeps version 2; updating leaves the new line off.
 - 116: one undo takes the update back.
 - 117: a clearly slower version 4 goes back to version 2 by itself; a slower security fix (version 5) is kept.
+- 118: a rehearsal reads and adds to the postcard on the side copy; Alaya shows what it read and changed, throws the copy away, and the real postcard is unchanged.
+- 119: the installer under a fuzzer: 40 bundles, each changed at a random byte, are all refused.
+- 120: installed, then updated and undone 50 times in a row; it still starts at the right version.

@@ -309,3 +309,49 @@ fn two_jobs_and_the_person_at_once_lose_nothing() {
     assert_eq!(read(&mut s, 1, w.style), b"h1 { color: red }");
     assert_eq!(read(&mut s, 1, w.outside), b"dear diary, busy day");
 }
+
+#[test]
+fn a_rehearsal_shows_what_was_read_and_changed_then_leaves_nothing() {
+    // Milestone 8: a job on the whole documents folder, traced, then
+    // thrown away.
+    let mut s = fresh();
+    let w = site(&mut s);
+    let docs = s.root(Class::Documents);
+    let before = read(&mut s, 1, w.outside);
+    let side = s
+        .job_start(
+            1,
+            HELPER,
+            b"rehearsal",
+            &Rules {
+                folder: docs,
+                keep_same: vec![],
+                checks: 0,
+                checklist: None,
+            },
+            30,
+        )
+        .unwrap();
+    let mut b = [0u8; 4];
+    s.read(side, HELPER, w.outside, 0, &mut b).unwrap();
+    put(&mut s, side, HELPER, w.index, b"rehearsed");
+    let made = s.create(side, HELPER, docs, b"new.txt", false).unwrap();
+    let (read_, changed) = s.job_trace(side).unwrap();
+    assert!(read_.contains(&w.outside));
+    assert!(
+        changed
+            .iter()
+            .any(|(f, x)| *f == w.index && x & what::WROTE != 0)
+    );
+    assert!(
+        changed
+            .iter()
+            .any(|(f, x)| *f == made && x & what::CREATED != 0)
+    );
+    s.job_discard(side).unwrap();
+    s.commit(40).unwrap();
+    assert_eq!(read(&mut s, 1, w.outside), before);
+    assert_eq!(read(&mut s, 1, w.index), b"<h1>Welcome</h1> old news");
+    assert!(s.lookup(1, docs, b"new.txt").is_err());
+    assert!(s.job_trace(side).is_err());
+}

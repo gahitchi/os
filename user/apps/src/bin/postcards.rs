@@ -3,7 +3,7 @@
 //! It comes as a signed bundle, is installed and approved by the person,
 //! and gets only what they left ticked of its promise.
 //!
-//! It writes a short postcard (`postcard.txt`) when it may use files, and
+//! It adds a line to a postcard (`postcard.txt`) when it may use files, and
 //! says plainly when it may not: with "Open and save the files you hand
 //! it" unticked, it is given no way to reach the store at all. When it
 //! starts it says hello with a notification, if it may.
@@ -102,10 +102,15 @@ fn main(info: &'static StartInfo) -> ! {
         if core::mem::take(&mut write) {
             note = match docs {
                 Some(d) => {
-                    let text = format!("Greetings from Postcards {version}, installed on Alaya.\n");
+                    // One more line on the postcard (it reads what is there).
+                    let line = format!("Greetings from Postcards {version}, installed on Alaya.\n");
                     let ok = store
                         .open(d, CARD)
-                        .and_then(|f| store.write_all(f, text.as_bytes()))
+                        .and_then(|f| {
+                            let mut text = store.read_all(f)?;
+                            text.extend_from_slice(line.as_bytes());
+                            store.write_all(f, &text)
+                        })
                         .and_then(|_| store.save())
                         .is_ok();
                     if ok {

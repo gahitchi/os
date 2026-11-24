@@ -280,6 +280,10 @@ struct Desk {
     /// When the first program started each installed place's app (ms),
     /// until its window opens: the Experience Guardian's clock.
     starting: [u64; role::INSTALLED_MAX as usize],
+    /// The last rehearsal: (documents read, changed, side copy gone).
+    rehearsed: Option<(u64, u64, bool)>,
+    /// The version each installed place's running copy was started at.
+    running_version: [u32; role::INSTALLED_MAX as usize],
 }
 
 fn font(info: &StartInfo, i: usize) -> &'static [u8] {
@@ -412,6 +416,8 @@ fn main(info: &'static StartInfo) -> ! {
         install: None,
         removed: None,
         starting: [0; role::INSTALLED_MAX as usize],
+        rehearsed: None,
+        running_version: [0; role::INSTALLED_MAX as usize],
     };
     d.tick();
     say!(
@@ -834,7 +840,7 @@ impl Desk {
             .unwrap_or_default();
         let search_refs: Vec<&str> = search_rows.iter().map(|r| r.as_str()).collect();
         let job_view = match (&self.gscreen, self.inbox_at) {
-            _ if self.install.is_some() => self.install.as_ref().map(|x| self.install_view(x)),
+            _ if self.sheet_up() => self.install.as_ref().map(|x| self.install_view(x)),
             (_, Some(at)) => Some(self.inbox_view(at)),
             (Some(g), _) => Some(self.group_view(g)),
             _ => self.job.as_ref().map(|j| self.job_view(j)),
@@ -851,9 +857,7 @@ impl Desk {
                     hint: &v.hint,
                     rows: &job_refs,
                     chosen: match (&self.gscreen, self.inbox_at) {
-                        _ if self.install.is_some() => {
-                            self.install.as_ref().map_or(0, |x| x.chosen)
-                        }
+                        _ if self.sheet_up() => self.install.as_ref().map_or(0, |x| x.chosen),
                         (_, Some(at)) => at,
                         (Some(g), _) => g.chosen,
                         _ => self.job.as_ref().map_or(0, |j| j.chosen),
@@ -1084,7 +1088,12 @@ impl Desk {
             }
             return;
         }
-        if self.install.is_some() {
+        if self.super_key && value == 1 && code == 19 && self.rehearsing().is_some() {
+            // Alaya key + R: end the rehearsal and see what it did.
+            self.install_key(Key::Enter);
+            return;
+        }
+        if self.sheet_up() {
             if value != 0
                 && let Some(k) = us_key(code, self.shift)
             {
@@ -1597,7 +1606,7 @@ impl Desk {
             }
             return true;
         }
-        if let Some(inst) = &self.install {
+        if let Some(inst) = self.install.as_ref().filter(|_| self.sheet_up()) {
             let (ok, no) = scene::picker_buttons(self.width, self.height);
             let first = scene::picker_first(inst.chosen);
             let removes = matches!(inst.stage, install::Stage::Installed(_));
@@ -2913,7 +2922,9 @@ impl Desk {
             dk::INSTALLED if owner == 0 => (self.installed_words(w[0]), 0),
             dk::TRIAL if owner == 0 => (self.trial_words(w[0]), 0),
             dk::STARTING if owner == 0 && role::installed(w[0]) => {
-                self.starting[(w[0] - role::INSTALLED) as usize] = alaya_sys::rt::now_ms();
+                let i = (w[0] - role::INSTALLED) as usize;
+                self.starting[i] = alaya_sys::rt::now_ms();
+                self.running_version[i] = w[1] as u32;
                 ([dk::OK, 0, 0, 0, 0, 0], 0)
             }
             dk::TYPING => match find(self, w[0]) {

@@ -1385,6 +1385,21 @@ impl Server<'_> {
                 }
                 alloc::vec![kind, m as u64]
             }
+            fs::JOB_TRACE => {
+                let j = s.job_of(p, w[0])?.ok_or(Error::NotFound)?;
+                let (read, changed) = s.job_trace(j.side)?;
+                let buf = xfer(ch);
+                let room = fs::XFER_BYTES / 8;
+                let r = read.len().min(room / 2);
+                let c = changed.len().min((room - r) / 2);
+                for (i, f) in read.iter().take(r).enumerate() {
+                    put_words(buf, 8 * i, &[f.0]);
+                }
+                for (i, (f, what)) in changed.iter().take(c).enumerate() {
+                    put_words(buf, 8 * r + 16 * i, &[f.0, *what]);
+                }
+                alloc::vec![r as u64, c as u64]
+            }
             fs::JOB_DISCARD => {
                 let j = s.job_of(p, w[0])?.ok_or(Error::NotFound)?;
                 s.job_discard(j.side)?;

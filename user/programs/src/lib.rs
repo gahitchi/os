@@ -652,6 +652,12 @@ pub mod files {
     pub const FINISH: u64 = 82;
     /// FINISH_UNDO: group. Everything Finish did comes back.
     pub const FINISH_UNDO: u64 = 83;
+    /// JOB_TRACE: app → how many documents its job read, how many it
+    /// changed; in the transfer pages the read ones (8 bytes each), then
+    /// each changed one with its `what` bits (16 bytes each). A
+    /// rehearsal (milestone 8) shows this before throwing the copy away.
+    /// Alaya's own programs only.
+    pub const JOB_TRACE: u64 = 84;
     pub const FINISH_BYTES: usize = 32;
     pub mod fate {
         pub const KEEP: u64 = 0;
@@ -1095,7 +1101,7 @@ pub mod desktop {
     /// last removal's role | what was left << 16, and what was taken back
     /// | what it made << 32 (the first program only, for checks).
     pub const INSTALLED: u64 = 39;
-    /// STARTING: role → status. The first program is starting an
+    /// STARTING: role, version → status. The first program is starting an
     /// installed app now; the desktop times how long until its window
     /// opens (the Experience Guardian, milestone 8 step 2). The first
     /// program only.
@@ -1130,6 +1136,11 @@ pub mod desktop {
     /// (Sixteen bits each: roles up to [`role::LAST`].)
     pub const PAUSE_SHIFT: u64 = 16;
     pub const GO_ON_SHIFT: u64 = 48;
+    /// Bit `END_SHIFT + r` on the first program's session notification:
+    /// end the running copy of the app of role r for good (an installed
+    /// app removed, taken away, gone back from or done rehearsing). Its
+    /// windows alone closing is not enough: an app could ignore that.
+    pub const END_SHIFT: u64 = 33;
     pub mod job_event {
         /// The person approved the rules: work in the folder.
         pub const STARTED: u64 = 1;
@@ -1277,6 +1288,9 @@ pub mod desktop {
         pub const ASIDE: u8 = 1;
         /// Approved: in the dock, and it may run.
         pub const ON: u8 = 2;
+        /// Running in a rehearsal (milestone 8): on a side copy of the
+        /// person's documents, thrown away after; not in the dock.
+        pub const REHEARSAL: u8 = 3;
         /// Where the record of `person`'s place `slot` starts.
         pub const fn at(person: u64, slot: u64) -> usize {
             (((person - 1) * super::role::INSTALLED_MAX + slot) as usize) * RECORD

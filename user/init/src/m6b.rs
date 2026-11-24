@@ -346,15 +346,7 @@ impl<'a> Session<'a> {
                 Err(e) => {
                     say!("installed app {} not started: {e}", r - role::INSTALLED);
                     // A copy still running ends too: it may not run.
-                    let a = self.apps[i];
-                    if a.ut != 0 {
-                        let k = &mut self.s.k;
-                        let _ = alaya_sys::revoke(k.at(a.ut));
-                        for x in a.slots..a.slots + APP_SLOTS {
-                            let _ = alaya_sys::delete(k.at(x));
-                        }
-                        self.apps[i].thread = 0;
-                    }
+                    self.end_app(r);
                     return;
                 }
             }
@@ -423,7 +415,7 @@ impl<'a> Session<'a> {
             args[dk::ARG_VERSION] = u64::from(x.version);
             args[dk::ARG_MAY] = u64::from(x.granted);
             // The desktop times it, for the Experience Guardian.
-            ask(self.ep, dk::STARTING, &[r]);
+            ask(self.ep, dk::STARTING, &[r, u64::from(x.version)]);
         }
         let app_sc = sc(k, 1000, 1000);
         let clock = sc(k, 50, 10_000);
@@ -513,6 +505,22 @@ impl<'a> Session<'a> {
         crate::installed::load(m, self.person, slot)
     }
 
+    /// End the running copy of the app of role `r`, if any: all it has
+    /// is taken back, and nothing of it runs.
+    pub(crate) fn end_app(&mut self, r: u64) {
+        let a = self.apps[r as usize];
+        if a.ut == 0 || a.thread == 0 {
+            return;
+        }
+        let k = &mut self.s.k;
+        let _ = alaya_sys::revoke(k.at(a.ut));
+        for x in a.slots..a.slots + APP_SLOTS {
+            let _ = alaya_sys::delete(k.at(x));
+        }
+        self.apps[r as usize].thread = 0;
+        say!("app {r} ended");
+    }
+
     /// A paused task's app is frozen, not closed (rule B3): its thread
     /// stops where it is, and starts again when the task goes on.
     pub(crate) fn pause_bits(&mut self, bits: u64, r: u64) {
@@ -528,6 +536,9 @@ impl<'a> Session<'a> {
             let _ = alaya_sys::thread_start(t);
             say!("app {r} goes on");
         }
+        if bits & (1 << (dk::END_SHIFT + r)) != 0 {
+            self.end_app(r);
+        }
     }
 
     /// The checks run before [`Session::serve`]: act on the desktop's
@@ -537,8 +548,11 @@ impl<'a> Session<'a> {
         for r in 1..=role::LAST {
             self.pause_bits(bits, r);
         }
-        self.asked
-            .set(bits & !(0xffff << dk::PAUSE_SHIFT) & !(0xffff << dk::GO_ON_SHIFT));
+        self.asked.set(
+            bits & !(0xffff << dk::PAUSE_SHIFT)
+                & !(0xffff << dk::GO_ON_SHIFT)
+                & !(0x7fff << dk::END_SHIFT),
+        );
     }
 
     /// Role `r`'s app is frozen (its thread stopped).

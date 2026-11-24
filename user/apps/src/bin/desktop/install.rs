@@ -84,6 +84,10 @@ pub(crate) enum Stage {
     Installed(u64),
     /// A later version asks for more: the new lines, to tick or not.
     Update(u64),
+    /// Running in a rehearsal in this place, on a side copy.
+    Rehearsing(u64),
+    /// What the rehearsal showed: lines to read, then back to Review.
+    Rehearsed(Vec<String>),
     /// Refused (why), or a removal's receipt: lines to read.
     Read(Vec<String>),
 }
@@ -336,7 +340,7 @@ impl Desk {
                     .collect();
                 v.foot = String::from(
                     "Space: tick or untick the line · Enter: install it on the side (nothing \
-                     changes until you approve)",
+                     changes until you approve) · R: rehearse it first on a copy of your files",
                 );
             }
             Stage::Aside(_) => {
@@ -389,6 +393,30 @@ impl Desk {
                 v.ok = "Keep";
                 v.no = "Remove";
                 v.foot = String::from("Enter: keep it · Delete: remove it, with a receipt");
+            }
+            Stage::Rehearsing(_) => {
+                v.title = format!("Rehearsing {}", x.name);
+                v.rows = alloc::vec![
+                    String::from(
+                        "It runs now on a side copy of your documents, with what you left ticked.",
+                    ),
+                    String::from(
+                        "Nothing it does reaches your real files. Try it, then come back."
+                    ),
+                ];
+                v.mark = false;
+                v.ok = "End the rehearsal";
+                v.no = "End the rehearsal";
+                v.foot = String::from("Alaya key + R: end the rehearsal and see what it did");
+            }
+            Stage::Rehearsed(l) => {
+                v.title = format!("What {} did in the rehearsal", x.name);
+                v.hint = String::new();
+                v.rows = l.clone();
+                v.mark = false;
+                v.ok = "Back to installing";
+                v.no = "Cancel";
+                v.foot = String::from("Enter: back to the install sheet · Escape: cancel");
             }
             Stage::Read(l) => {
                 v.hint = String::new();
@@ -448,6 +476,15 @@ impl Desk {
                 }
             }
             (Stage::Review, Key::Enter) => self.install_aside(),
+            (Stage::Review, Key::Char('r' | 'R')) => self.rehearse(),
+            (Stage::Rehearsing(slot), Key::Enter | Key::Escape) => {
+                let slot = *slot;
+                self.end_rehearsal(slot);
+            }
+            (Stage::Rehearsed(_), Key::Enter) => {
+                x.stage = Stage::Review;
+                x.chosen = 0;
+            }
             (Stage::Aside(slot), Key::Enter) => {
                 let slot = *slot;
                 self.install_approve(slot);
@@ -559,7 +596,7 @@ impl Desk {
         let name = place.name.clone();
         // Its running copy ends, its windows close.
         let running = self.wins.iter().any(|w| w.owner == r);
-        self.forget(r);
+        self.end_app(r);
         let Some(s) = self.mine() else { return };
         // What it was handed goes back.
         let grants = s.grants(app).unwrap_or_default();
@@ -666,7 +703,7 @@ impl Desk {
         let mut place = self.installed[slot as usize].clone();
         place.state = if on { ins::ON } else { ins::EMPTY };
         if !on {
-            self.forget(role::INSTALLED + slot);
+            self.end_app(role::INSTALLED + slot);
         }
         let _ = self.write_record(p, slot, &place);
         say!(
@@ -693,6 +730,8 @@ impl Desk {
                 Stage::Installed(_) => 3,
                 Stage::Read(_) => 4,
                 Stage::Update(_) => 5,
+                Stage::Rehearsing(_) => 6,
+                Stage::Rehearsed(_) => 7,
             })),
             gone | left << 16,
             taken | made << 32,
@@ -709,11 +748,14 @@ impl Desk {
         }
         let slot = owner - role::INSTALLED;
         let place = &self.installed[slot as usize];
-        if place.state == ins::ON && place.ticked & bit != 0 {
+        if (place.state == ins::ON || place.state == ins::REHEARSAL) && place.ticked & bit != 0 {
             return true;
         }
         say!("{} asked for what it may not ({bit:#x})", place.name);
+        // Only the version on trial counts, not an older copy still
+        // running.
         if place.trial > 0
+            && self.running_version[slot as usize] == place.version
             && let Some(p) = self.person_id()
         {
             let mut place = place.clone();
@@ -912,7 +954,7 @@ impl Desk {
         }
         // The Experience Guardian: back to the version before.
         let from = place.version;
-        self.forget(role::INSTALLED + slot);
+        self.end_app(role::INSTALLED + slot);
         if !self.swap_versions(slot) {
             return;
         }
@@ -935,6 +977,177 @@ impl Desk {
         ));
     }
 
+    /// Whether the install sheet is up and takes the keys: not during a
+    /// rehearsal, when the app being rehearsed has them.
+    pub(crate) fn sheet_up(&self) -> bool {
+        self.install
+            .as_ref()
+            .is_some_and(|x| !matches!(x.stage, Stage::Rehearsing(_)))
+    }
+
+    /// The app being rehearsed, if one is.
+    pub(crate) fn rehearsing(&self) -> Option<&str> {
+        self.install
+            .as_ref()
+            .filter(|x| matches!(x.stage, Stage::Rehearsing(_)))
+            .map(|x| x.name.as_str())
+    }
+
+    /// End the running copy of installed role `r` for good: its windows
+    /// close, and the first program ends the program itself.
+    pub(crate) fn end_app(&mut self, r: u64) {
+        self.forget(r);
+        let _ = alaya_sys::signal(self.session_ntfn, 1 << (dk::END_SHIFT + r));
+    }
+
+    /// R on the promise: run the app for real on a side copy of the
+    /// person's documents (a job on the whole documents folder), with
+    /// what is ticked, before installing anything (decision 148).
+    fn rehearse(&mut self) {
+        let Some(p) = self.person_id() else { return };
+        let Some(x) = self.install.take() else { return };
+        let fail = |x: Install, why: &str| Install {
+            stage: Stage::Read(alloc::vec![
+                format!("No rehearsal: {why}."),
+                String::from("Nothing was changed."),
+            ]),
+            ..x
+        };
+        let Some(slot) = self.installed.iter().position(|q| q.state == ins::EMPTY) else {
+            self.install = Some(fail(x, "there is no free place; remove an app first"));
+            return;
+        };
+        let slot = slot as u64;
+        let r = role::INSTALLED + slot;
+        let mut nb = [0u8; 8];
+        let name = ins::bundle_file(p, slot, &mut nb);
+        let m = &self.machine;
+        let kept = m
+            .root(APPS)
+            .and_then(|a| m.open(a, name))
+            .and_then(|f| m.write_all(f, &x.bytes));
+        let place = Place {
+            state: ins::REHEARSAL,
+            ticked: x.ticked & x.promise,
+            version: x.version,
+            promise: x.promise,
+            flags: x.flags,
+            id: x.id,
+            name: x.name.clone(),
+            ..Place::default()
+        };
+        if kept.is_err() || self.write_record(p, slot, &place).is_err() {
+            self.install = Some(fail(x, "the disk did not take it"));
+            return;
+        }
+        let Some(s) = self.mine() else { return };
+        let label = format!("rehearsal: {}", x.name);
+        let started = s
+            .root(fs::DOCS)
+            .and_then(|docs| s.job_start(fs::app_id(r), docs, 0, 0, &[], label.as_bytes()));
+        if let Err(e) = started {
+            say!("rehearsal: no side copy ({e})");
+            let _ = self.write_record(p, slot, &Place::default());
+            self.install = Some(fail(x, "Alaya could not make a side copy"));
+            return;
+        }
+        say!(
+            "rehearsal: {} {} runs in place {slot} on a side copy, may {:#x}",
+            x.name,
+            x.version,
+            place.ticked
+        );
+        self.rehearsed = None;
+        let _ = alaya_sys::signal(self.session_ntfn, 1 << r);
+        self.install = Some(Install {
+            stage: Stage::Rehearsing(slot),
+            ..x
+        });
+        self.say_note(format!(
+            "Rehearsing {} on a copy of your files. Alaya key + R ends it",
+            place.name
+        ));
+    }
+
+    /// End a rehearsal: the app ends, the side copy shows what it read
+    /// and changed, then is thrown away (checked on the store), and the
+    /// place is free again.
+    fn end_rehearsal(&mut self, slot: u64) {
+        let Some(p) = self.person_id() else { return };
+        let Some(x) = self.install.take() else { return };
+        let r = role::INSTALLED + slot;
+        let app = fs::app_id(r);
+        self.end_app(r);
+        let Some(s) = self.mine() else { return };
+        let _ = s.save();
+        let (read, changed) = s.job_trace(app).unwrap_or_default();
+        let named = |f: u64| s.name_of(f, 0).ok().filter(|n| !n.is_empty());
+        let list = |files: &mut dyn Iterator<Item = String>| {
+            let all: Vec<String> = files.collect();
+            let n = all.len();
+            let mut l: Vec<String> = all.into_iter().take(4).collect();
+            if n > 4 {
+                l.push(format!("and {} more", n - 4));
+            }
+            l.join(", ")
+        };
+        let mut lines = alloc::vec![format!(
+            "{} ran on a side copy of your documents. Nothing real was touched.",
+            x.name
+        )];
+        lines.push(if read.is_empty() {
+            String::from("It read none of your files.")
+        } else {
+            format!(
+                "It read {} of your files: {}.",
+                read.len(),
+                list(
+                    &mut read
+                        .iter()
+                        .map(|&f| named(f).unwrap_or_else(|| String::from("a file")))
+                )
+            )
+        });
+        lines.push(if changed.is_empty() {
+            String::from("It would have changed nothing.")
+        } else {
+            format!(
+                "It would have changed {}: {}.",
+                changed.len(),
+                list(&mut changed.iter().map(|&(f, what)| match named(f) {
+                    Some(n) if what & fs::what::DELETED != 0 => format!("{n} (removed)"),
+                    Some(n) if what & fs::what::CREATED != 0 => format!("{n} (made)"),
+                    Some(n) => format!("{n} (changed)"),
+                    None => String::from("a new file (made)"),
+                }))
+            )
+        });
+        let gone = s.job_discard(app).is_ok() && s.job_trace(app).is_err();
+        lines.push(if gone {
+            String::from("The side copy is thrown away: checked on the store, none of it is left.")
+        } else {
+            String::from("The side copy could not be thrown away: see Settings, Apps.")
+        });
+        let mut nb = [0u8; 8];
+        let file = ins::bundle_file(p, slot, &mut nb);
+        let m = &self.machine;
+        if let Ok(a) = m.root(APPS) {
+            let _ = m.remove(a, file);
+        }
+        let _ = self.write_record(p, slot, &Place::default());
+        say!(
+            "rehearsal: {} read {}, would have changed {}; side copy gone: {gone}",
+            x.name,
+            read.len(),
+            changed.len()
+        );
+        self.rehearsed = Some((read.len() as u64, changed.len() as u64, gone));
+        self.install = Some(Install {
+            stage: Stage::Rehearsed(lines),
+            ..x
+        });
+    }
+
     /// `dk::TRIAL` for the checks.
     pub(crate) fn trial_words(&self, slot: u64) -> [u64; 6] {
         let Some(place) = self.installed.get(slot as usize) else {
@@ -949,7 +1162,9 @@ impl Desk {
             u64::from(place.usual_ms),
             u64::from(place.last_ms),
             u64::from(place.kept.version),
-            0,
+            self.rehearsed.map_or(0, |(read, changed, gone)| {
+                read | changed << 16 | u64::from(gone) << 32
+            }),
         ]
     }
 }

@@ -178,6 +178,11 @@ impl Desk {
 
     /// What the strip says when nothing else: how much is held.
     pub(crate) fn held_words(&self) -> Option<String> {
+        if let Some(name) = self.rehearsing() {
+            return Some(alloc::format!(
+                "Rehearsing {name} on a copy of your files · Alaya key + R ends it"
+            ));
+        }
         let held = self.inbox.iter().filter(|x| !x.shown).count();
         (held > 0).then(|| {
             alloc::format!(
