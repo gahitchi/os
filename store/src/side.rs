@@ -439,6 +439,19 @@ impl<D: Disk> Store<D> {
         side_wins: &[FileId],
         owner_wins: &[FileId],
     ) -> Result<Keep, Error> {
+        self.side_keep_as(id, app, 0, side_wins, owner_wins)
+    }
+
+    /// [`Store::side_keep`], adding `extra` to what each kept change
+    /// records (a job kept although its checks failed says so).
+    pub(crate) fn side_keep_as(
+        &mut self,
+        id: Person,
+        app: App,
+        extra: u64,
+        side_wins: &[FileId],
+        owner_wins: &[FileId],
+    ) -> Result<Keep, Error> {
         self.ok()?;
         let info = self.branch(id)?.side.ok_or(Error::BadRequest)?;
         {
@@ -654,7 +667,7 @@ impl<D: Disk> Store<D> {
             } else {
                 o.writer.remove(&f);
             }
-            *o.changes.entry((app, f)).or_insert(0) |= what | crate::what::KEPT;
+            *o.changes.entry((app, f)).or_insert(0) |= what | crate::what::KEPT | extra;
             o.touched = true;
             o.docs_changed = true;
             kept.push(f);

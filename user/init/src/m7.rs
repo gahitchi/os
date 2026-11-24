@@ -109,7 +109,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     );
     // The file browser puts it on the undo list just after.
     assert!(
-        sleep_until(5000, || me.newest(act::FILES).is_some_and(|a| !a.1)),
+        sleep_until(SLOW, || me.newest(act::FILES).is_some_and(|a| !a.1)),
         "deleting is not on the undo list"
     );
     assert!(
@@ -193,7 +193,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "the close button did not close the chart maker"
     );
     assert!(
-        sleep_until(5000, || me.newest(act::WINDOW).is_some_and(|a| !a.1)),
+        sleep_until(SLOW, || me.newest(act::WINDOW).is_some_and(|a| !a.1)),
         "closing the window is not on the undo list"
     );
     assert!(

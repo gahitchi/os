@@ -31,6 +31,7 @@ pub mod disk;
 pub mod format;
 pub mod grants;
 pub mod history;
+pub mod jobs;
 pub mod made;
 pub mod search;
 pub mod side;
@@ -197,6 +198,9 @@ pub mod what {
     pub const RESTORED: u64 = 64;
     /// Kept from a side branch.
     pub const KEPT: u64 = 128;
+    /// Kept from a job although its checks did not pass: the person chose
+    /// to, with one deliberate click (rule R5).
+    pub const ANYWAY: u64 = 256;
 }
 
 /// One recorded read: an app opened this version of a document.

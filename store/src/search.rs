@@ -66,7 +66,7 @@ fn matches(hay: &[u8], q: &[u8]) -> Option<usize> {
 
 /// Look for `q` (already lower case) in a file of `size` bytes, reading
 /// with `read(offset, buf)`. Returns where it starts and its line.
-fn scan(
+pub(crate) fn scan(
     size: u64,
     q: &[u8],
     mut read: impl FnMut(u64, &mut [u8]) -> Result<usize, Error>,
@@ -243,7 +243,7 @@ impl<D: Disk> Store<D> {
     }
 
     /// Read a document without noting the read for any app.
-    fn peek(
+    pub(crate) fn peek(
         &mut self,
         p: Person,
         f: FileId,
