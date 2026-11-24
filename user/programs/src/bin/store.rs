@@ -247,6 +247,7 @@ fn main(info: &'static StartInfo) -> ! {
     );
     let mut last_clean = u64::MAX;
     let mut last_auto = now();
+    let mut last_forget = 0;
     loop {
         let answer = match msg {
             Ok(m) if m.info.has(MsgInfo::SIGNAL) => {
@@ -261,7 +262,10 @@ fn main(info: &'static StartInfo) -> ! {
                 }
                 // Documents whose hour is up are forgotten for good
                 // (decision 62), and that is saved at once.
-                if m.badge & TICK_BIT != 0 {
+                // Once a second is plenty: the grace is an hour, and every
+                // look costs a walk of each person's records.
+                if m.badge & TICK_BIT != 0 && rt::now_ms() >= last_forget + 1000 {
+                    last_forget = rt::now_ms();
                     let mut forgot = 0;
                     for p in serve.store.people().unwrap_or_default() {
                         forgot += serve.store.forget_due(p, now()).unwrap_or(0);
