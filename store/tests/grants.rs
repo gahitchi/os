@@ -143,6 +143,26 @@ fn forgetting_waits_an_hour_and_can_be_cancelled() {
 }
 
 #[test]
+fn a_document_forgotten_before_any_moment_held_it_can_still_be_kept() {
+    let mut s = fresh();
+    let docs = s.root(Class::Documents);
+    s.commit(100).unwrap();
+    // Made and forgotten with no moment in between.
+    let f = s.create(1, DESKTOP, docs, b"secret.txt", false).unwrap();
+    s.write(1, DESKTOP, f, 0, b"new").unwrap();
+    s.forget_later(1, DESKTOP, docs, b"secret.txt", 3700)
+        .unwrap();
+    s.commit(200).unwrap();
+    s.keep_forgotten(1, DESKTOP, f).unwrap();
+    let mut buf = [0u8; 3];
+    s.read(1, DESKTOP, f, 0, &mut buf).unwrap();
+    assert_eq!(&buf, b"new");
+    s.commit(300).unwrap();
+    let r = s.check().unwrap();
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+}
+
+#[test]
 fn reading_a_private_file_marks_the_app_until_it_closes() {
     let mut s = fresh();
     let docs = s.root(Class::Documents);

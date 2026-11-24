@@ -239,7 +239,13 @@ impl<D: Disk> Store<D> {
         if self.stat(p, f)?.is_dir {
             return Err(Error::IsADirectory);
         }
-        let cn = self.cn;
+        // The moment it is kept back from must hold it as it is now: a
+        // document made (or changed) since the last moment is saved in
+        // one first, or keeping it would find nothing to bring back.
+        // (A moment holds the person's documents only when they changed
+        // in it: the newest moment that holds them.)
+        self.commit(self.now)?;
+        let cn = self.history(p)?.last().map_or(self.cn, |m| m.cn);
         self.remove(p, app, dir, name)?;
         self.room(2, false)?;
         let Store { dev, branches, .. } = self;
