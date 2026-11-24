@@ -692,7 +692,7 @@ fn display_args(opts: &Options, serial: &str) -> Vec<String> {
 /// like the disk. The mouse is a "tablet": it reports where the pointer
 /// is, so it follows the host's pointer exactly.
 const SEAT_DEVICES: [&str; 3] = [
-    "virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800",
+    "virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800,max_outputs=2",
     "virtio-keyboard-pci,id=kbd0,disable-legacy=on,iommu_platform=on",
     "virtio-tablet-pci,id=tablet0,disable-legacy=on,iommu_platform=on",
 ];
@@ -1359,40 +1359,38 @@ fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
                 "enter" => "ret".to_string(),
                 "backspace" => "backspace".to_string(),
                 "escape" => "esc".to_string(),
-                n if n.starts_with("super+") => {
-                    let k = &n[6..];
+                n if n.starts_with("super+")
+                    || n.starts_with("ctrl+")
+                    || n.starts_with("shift+") =>
+                {
+                    // Modifiers may chain: `{super+shift+right}`.
+                    let mut k = n;
+                    let mut held: Vec<&str> = Vec::new();
+                    loop {
+                        if let Some(r) = k.strip_prefix("super+") {
+                            (k, held) = (r, [held, vec!["meta_l"]].concat());
+                        } else if let Some(r) = k.strip_prefix("ctrl+") {
+                            (k, held) = (r, [held, vec!["ctrl"]].concat());
+                        } else if let Some(r) = k.strip_prefix("shift+") {
+                            (k, held) = (r, [held, vec!["shift"]].concat());
+                        } else {
+                            break;
+                        }
+                    }
                     let (code, shift) = match k {
                         "up" | "down" | "left" | "right" | "tab" | "delete" => {
                             (k.to_string(), false)
                         }
                         _ => {
-                            let c = k.chars().next().ok_or("super+ what?")?;
+                            let c = k.chars().next().ok_or("a modifier with what?")?;
                             qcode(c).ok_or(format!("no key for {c}"))?
                         }
                     };
-                    if shift {
-                        press(q, &["meta_l", "shift", &code])?;
-                    } else {
-                        press(q, &["meta_l", &code])?;
+                    if shift && !held.contains(&"shift") {
+                        held.push("shift");
                     }
-                    continue;
-                }
-                n if n.starts_with("ctrl+") => {
-                    let k = &n[5..];
-                    let (code, shift) = match k {
-                        "up" | "down" | "left" | "right" | "tab" | "delete" => {
-                            (k.to_string(), false)
-                        }
-                        _ => {
-                            let c = k.chars().next().ok_or("ctrl+ what?")?;
-                            qcode(c).ok_or(format!("no key for {c}"))?
-                        }
-                    };
-                    if shift {
-                        press(q, &["ctrl", "shift", &code])?;
-                    } else {
-                        press(q, &["ctrl", &code])?;
-                    }
+                    held.push(&code);
+                    press(q, &held)?;
                     continue;
                 }
                 n => n.to_string(),

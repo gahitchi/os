@@ -953,6 +953,7 @@ pub(crate) fn run<'a>(
     crate::m7c::run(&mut x, pass);
     crate::m7d::run(&mut x, pass);
     crate::m7e::run(&mut x, pass);
+    crate::m7f::run(&mut x, pass);
     x
 }
 

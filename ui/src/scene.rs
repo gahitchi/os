@@ -54,6 +54,10 @@ pub struct Desktop<'a> {
     /// The Open or Save window Alaya draws for an app (milestone 7,
     /// step 2): what you pick is all the app gets.
     pub picker: Option<&'a Picker<'a>>,
+    /// The screens in the picture, main one first (milestone 7b): the
+    /// strip, the dock and Alaya's own screens go on the main one. Empty:
+    /// the whole canvas is one screen.
+    pub screens: &'a [Rect],
 }
 
 /// The Open or Save window, and the search box: Alaya, not an app,
@@ -466,13 +470,26 @@ pub fn draw<'a>(
     desk: &Desktop,
     clip: Rect,
 ) {
-    let (sw, sh) = (cv.width, cv.height);
+    let main = desk
+        .screens
+        .first()
+        .copied()
+        .unwrap_or(Rect::new(0, 0, cv.width, cv.height));
+    let (sw, sh) = (main.w, main.h);
     let old = cv.set_clip(clip);
+    if desk.screens.len() > 1 {
+        // Screens of different heights leave parts of the picture no
+        // screen shows.
+        cv.fill(Rect::new(0, 0, cv.width, cv.height), 0);
+    }
     cv.gradient(
         Rect::new(0, STRIP, sw, sh - STRIP),
         theme::WALL_TOP,
         theme::WALL_BOTTOM,
     );
+    for s in desk.screens.iter().skip(1) {
+        cv.gradient(*s, theme::WALL_TOP, theme::WALL_BOTTOM);
+    }
     let front = wm.focused();
     for w in wm.wins.iter().filter(|_| !desk.locked) {
         if !w.frame.grow(crate::wm::SHADOW).intersect(clip).is_empty() {

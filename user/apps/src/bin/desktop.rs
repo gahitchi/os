@@ -43,7 +43,7 @@ use alaya_ui::login::{self, Login, Look, NewPerson, Person, Setup};
 use alaya_ui::scene::{self, Desktop, DockItem, GroupChip, Picker, Question, WindowView};
 use alaya_ui::text::Fonts;
 use alaya_ui::widgets::{Key, us_key};
-use alaya_ui::wm::{Out, Place, Wm};
+use alaya_ui::wm::{Out, Place, Screen, Wm};
 
 #[path = "desktop/groups.rs"]
 mod groups;
@@ -209,6 +209,11 @@ struct Desk {
     /// A frame was posted and is not shown yet.
     in_flight: bool,
     frames: u64,
+    /// The whole picture (all screens side by side); `width` and `height`
+    /// are the main screen's (milestone 7b).
+    full: (i32, i32),
+    /// The screens' changes seen so far.
+    layout: u64,
     shift: bool,
     super_key: bool,
     abs: (u32, u32),
@@ -276,7 +281,7 @@ fn main(info: &'static StartInfo) -> ! {
     let seat_ntfn = g + dk::G_SEAT;
     alaya_sys::thread_bind(start::THREAD, seat_ntfn).expect("bind");
     rt::start_clock(&mut mem, seat_ntfn, CLOCK_BIT, 50, info.priority).expect("clock");
-    let (width, height) = (load(&screen.width) as i32, load(&screen.height) as i32);
+    let (width, height) = main_screen(screen);
     let fonts = Fonts::new(font(info, 0), font(info, 1), font(info, 2), font(info, 3));
     let recv_slot = mem.slot().expect("slot");
     let word_bytes = |at: usize| {
@@ -346,6 +351,8 @@ fn main(info: &'static StartInfo) -> ! {
         dirty: Rect::new(0, 0, width, height),
         in_flight: false,
         frames: 0,
+        full: (width, height),
+        layout: load(&screen.layout),
         shift: false,
         super_key: false,
         abs: (0, 0),
@@ -380,8 +387,37 @@ fn main(info: &'static StartInfo) -> ! {
             _ => "CHANGED since the last login",
         }
     );
+    d.read_screens();
     d.frame();
     d.serve(g + dk::G_EP)
+}
+
+/// The screens the driver shows, main one first.
+fn screens_of(page: &ScreenPage) -> Vec<Screen> {
+    let n = (load(&page.screens) as usize).min(seat::MAX_SCREENS);
+    (0..n)
+        .map(|i| {
+            let r = &page.rects[i];
+            Screen {
+                id: load(&r[4]) as u32,
+                rect: Rect::new(
+                    load(&r[0]) as i32,
+                    load(&r[1]) as i32,
+                    load(&r[2]) as i32,
+                    load(&r[3]) as i32,
+                ),
+            }
+        })
+        .collect()
+}
+
+/// The main screen's size (the whole picture when the driver says
+/// nothing of screens).
+fn main_screen(page: &ScreenPage) -> (i32, i32) {
+    match screens_of(page).first() {
+        Some(s) => (s.rect.w, s.rect.h),
+        None => (load(&page.width) as i32, load(&page.height) as i32),
+    }
 }
 
 fn screen_px(w: i32, h: i32) -> &'static mut [u32] {
@@ -444,6 +480,9 @@ impl Desk {
         if bits & seat::INPUT_BIT != 0 {
             self.read_input();
         }
+        if bits & seat::SCREENS_BIT != 0 || load(&self.screen.layout) != self.layout {
+            self.read_screens();
+        }
         if bits & CLOCK_BIT != 0 {
             self.tick();
         }
@@ -470,7 +509,37 @@ impl Desk {
     fn damage(&mut self, r: Rect) {
         self.dirty = self
             .dirty
-            .union(r.intersect(Rect::new(0, 0, self.width, self.height)));
+            .union(r.intersect(Rect::new(0, 0, self.full.0, self.full.1)));
+    }
+
+    /// The screens changed (or this is the start): lay the windows out
+    /// on them again and draw everything.
+    fn read_screens(&mut self) {
+        self.layout = load(&self.screen.layout);
+        let list = screens_of(self.screen);
+        if list.is_empty() {
+            return;
+        }
+        self.full = (
+            load(&self.screen.width) as i32,
+            load(&self.screen.height) as i32,
+        );
+        let main = list[0].rect;
+        (self.width, self.height) = (main.w, main.h);
+        say!(
+            "screens: {} ({})",
+            list.len(),
+            list.iter()
+                .map(|s| alloc::format!("{} by {}", s.rect.w, s.rect.h))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let out = self.wm.set_screens(list);
+        self.apply(out);
+        self.place_chips();
+        // A frame on its way was for the old picture.
+        self.in_flight = false;
+        self.damage_all();
     }
 
     /// Draw what changed and hand it to the screen driver, unless a frame
@@ -481,8 +550,9 @@ impl Desk {
         }
         let clip = self.dirty;
         self.dirty = Rect::default();
-        let (w, h) = (self.width, self.height);
+        let (w, h) = self.full;
         let mut cv = Canvas::new(screen_px(w, h), w, h, w).expect("screen");
+        let screen_rects: Vec<Rect> = self.wm.screens.iter().map(|s| s.rect).collect();
         let labels: Vec<(u32, String, u32)> = self
             .groups
             .iter()
@@ -658,14 +728,20 @@ impl Desk {
             buttons: true,
             question: question.as_ref(),
             picker: picker.as_ref(),
+            screens: &screen_rects,
         };
         scene::draw(&mut cv, &mut self.fonts, &self.wm, &views, &desk, clip);
+        // The login and setup screens: on the main screen.
+        let mut cv = Canvas::new(screen_px(w, h), self.width, self.height, w).expect("screen");
         let old = cv.set_clip(clip);
         match &self.stage {
             Stage::Setup(f) => f.draw(&mut cv, &mut self.fonts),
             Stage::Login(f) => f.draw(&mut cv, &mut self.fonts),
             Stage::Open(_) => {}
         }
+        cv.set_clip(old);
+        let mut cv = Canvas::new(screen_px(w, h), w, h, w).expect("screen");
+        let old = cv.set_clip(clip);
         let (px, py) = self.wm.pointer;
         scene::draw_pointer(&mut cv, px, py);
         cv.set_clip(old);
@@ -851,6 +927,9 @@ impl Desk {
             // Window keys: Super with an arrow snaps, Super+T tiles.
             if let Some(id) = self.wm.focused() {
                 let out = match code {
+                    // With Shift: to the screen before, or the next one.
+                    105 if self.shift => self.wm.to_screen(id, -1),
+                    106 if self.shift => self.wm.to_screen(id, 1),
                     105 => self.wm.place(id, Place::Left),
                     106 => self.wm.place(id, Place::Right),
                     103 => self.wm.place(id, Place::Full),
@@ -986,7 +1065,7 @@ impl Desk {
     }
 
     fn damage_all(&mut self) {
-        self.damage(Rect::new(0, 0, self.width, self.height));
+        self.damage(Rect::new(0, 0, self.full.0, self.full.1));
     }
 
     fn form_key(&mut self, k: Key) {

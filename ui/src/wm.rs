@@ -47,6 +47,18 @@ pub struct Window {
     pub free: Rect,
     /// The loose group it belongs to (a label only, decision 85).
     pub group: Option<u32>,
+    /// Its screen went away: which screen, where it was on it and how it
+    /// sat there. When that screen comes back, so does the window.
+    pub home: Option<(u32, Rect, Place)>,
+}
+
+/// One screen, in the desktop's picture (milestone 7b). The first is the
+/// main one, with the strip and the dock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Screen {
+    /// The output number on the card: the same screen keeps it.
+    pub id: u32,
+    pub rect: Rect,
 }
 
 impl Window {
@@ -160,6 +172,8 @@ pub struct Wm {
     /// Group labels on the screen: dropping a window on one puts the
     /// window in that group (decision 85).
     pub groups: Vec<(u32, Rect)>,
+    /// The screens, main one first.
+    pub screens: Vec<Screen>,
 }
 
 impl Wm {
@@ -174,7 +188,132 @@ impl Wm {
             next_cascade: 0,
             tiles: Vec::new(),
             groups: Vec::new(),
+            screens: alloc::vec![Screen {
+                id: 0,
+                rect: Rect::new(0, 0, width, height),
+            }],
         }
+    }
+
+    /// The part of screen `i` windows use: the main one without the strip.
+    fn work_area(&self, i: usize) -> Rect {
+        match self.screens.get(i) {
+            Some(s) if i == 0 => Rect::new(s.rect.x, s.rect.y + STRIP, s.rect.w, s.rect.h - STRIP),
+            Some(s) => s.rect,
+            None => self.area,
+        }
+    }
+
+    /// Which screen (x, y) is on (the main one when on none).
+    pub fn screen_at(&self, x: i32, y: i32) -> usize {
+        self.screens
+            .iter()
+            .position(|s| s.rect.contains(x, y))
+            .unwrap_or(0)
+    }
+
+    /// The screen a frame is mostly on: the one holding its title bar's
+    /// middle.
+    pub fn screen_of(&self, r: Rect) -> usize {
+        self.screen_at(r.x + r.w / 2, r.y + TITLE / 2)
+    }
+
+    fn area_of(&self, r: Rect) -> Rect {
+        self.work_area(self.screen_of(r))
+    }
+
+    /// The screens changed (plugged in or out). Windows on a screen that
+    /// went away move to the main one, remembering where they were; those
+    /// whose screen came back go back to it, as they were.
+    pub fn set_screens(&mut self, screens: Vec<Screen>) -> Vec<Out> {
+        let mut out = Vec::new();
+        if screens.is_empty() {
+            return out;
+        }
+        let old = core::mem::replace(&mut self.screens, screens);
+        let main = self.screens[0].rect;
+        self.area = Rect::new(main.x, main.y + STRIP, main.w, main.h - STRIP);
+        for s in &old {
+            out.push(Out::Damage(s.rect));
+        }
+        for s in &self.screens {
+            out.push(Out::Damage(s.rect));
+        }
+        for i in 0..self.wins.len() {
+            let f = self.wins[i].frame;
+            let was = old
+                .iter()
+                .find(|s| s.rect.contains(f.x + f.w / 2, f.y + TITLE / 2))
+                .copied();
+            // Back home? (`home` holds the place on its own screen.)
+            if let Some((sid, r, place)) = self.wins[i].home
+                && let Some(s) = self.screens.iter().find(|s| s.id == sid)
+            {
+                let at = Rect::new(s.rect.x + r.x, s.rect.y + r.y, r.w, r.h);
+                self.wins[i].home = None;
+                self.wins[i].place = place;
+                self.set_frame(i, at, &mut out);
+                continue;
+            }
+            match was {
+                Some(s) if !self.screens.iter().any(|n| n.id == s.id) => {
+                    // Its screen went away: onto the main one.
+                    let mine = Rect::new(f.x - s.rect.x, f.y - s.rect.y, f.w, f.h);
+                    self.wins[i].home = Some((s.id, mine, self.wins[i].place));
+                    let a = self.area;
+                    let r = Rect::new(
+                        a.x + (f.x - s.rect.x).clamp(0, (a.w - f.w).max(0)),
+                        a.y + (f.y - s.rect.y).clamp(0, (a.h - f.h).max(0)),
+                        f.w.min(a.w),
+                        f.h.min(a.h),
+                    );
+                    if self.wins[i].place != Place::Free {
+                        self.wins[i].place = Place::Free;
+                    }
+                    self.set_frame(i, r, &mut out);
+                }
+                Some(s) => {
+                    // Its screen stayed but may have moved in the picture.
+                    let n = self.screens.iter().find(|n| n.id == s.id).unwrap().rect;
+                    let r = Rect::new(f.x - s.rect.x + n.x, f.y - s.rect.y + n.y, f.w, f.h);
+                    self.set_frame(i, r, &mut out);
+                }
+                None => {}
+            }
+        }
+        if self.tiling {
+            self.retile(&mut out);
+        }
+        out
+    }
+
+    /// Move window `id` to the next screen (`dir` 1) or the one before
+    /// (-1), at the same place on it.
+    pub fn to_screen(&mut self, id: u32, dir: i32) -> Vec<Out> {
+        let mut out = Vec::new();
+        let n = self.screens.len() as i32;
+        let Some(i) = self.index(id) else { return out };
+        if n < 2 || self.tiling {
+            return out;
+        }
+        let f = self.wins[i].frame;
+        let from = self.screen_of(f);
+        let to = (from as i32 + dir).rem_euclid(n) as usize;
+        let (a, b) = (self.work_area(from), self.work_area(to));
+        let r = match self.wins[i].place {
+            Place::Full => b,
+            Place::Left => Rect::new(b.x, b.y, b.w / 2, b.h),
+            Place::Right => Rect::new(b.x + b.w / 2, b.y, b.w - b.w / 2, b.h),
+            _ => Rect::new(
+                b.x + (f.x - a.x).clamp(0, (b.w - f.w).max(0)),
+                b.y + (f.y - a.y).clamp(0, (b.h - f.h).max(0)),
+                f.w.min(b.w),
+                f.h.min(b.h),
+            ),
+        };
+        self.wins[i].home = None;
+        self.set_frame(i, r, &mut out);
+        out
     }
 
     pub fn focused(&self) -> Option<u32> {
@@ -196,7 +335,7 @@ impl Wm {
     /// Keep a frame usable: within the area, at least the minimum size,
     /// its title bar reachable.
     fn fit(&self, mut r: Rect) -> Rect {
-        let a = self.area;
+        let a = self.area_of(r);
         r.w = r.w.clamp(MIN_W, a.w);
         r.h = r.h.clamp(MIN_H + TITLE, a.h);
         r.x = r.x.clamp(a.x - r.w + 80, a.right() - 80);
@@ -206,7 +345,7 @@ impl Wm {
 
     /// A new window with content `w` by `h`, in front.
     pub fn add(&mut self, id: u32, w: i32, h: i32) -> Vec<Out> {
-        let a = self.area;
+        let a = self.work_area(self.screen_at(self.pointer.0, self.pointer.1));
         let step = 28;
         let x = a.x + 60 + self.next_cascade * step;
         let y = a.y + 30 + self.next_cascade * step;
@@ -218,6 +357,7 @@ impl Wm {
             place: Place::Free,
             free: frame,
             group: None,
+            home: None,
         });
         self.tiles.push(id);
         let mut out = Vec::new();
@@ -269,7 +409,7 @@ impl Wm {
 
     /// What is at (`x`, `y`), front first.
     pub fn hit(&self, x: i32, y: i32) -> Hit {
-        if y < self.area.y {
+        if y < self.area.y && x >= self.area.x && x < self.area.right() {
             return Hit::Strip;
         }
         for w in self.wins.iter().rev() {
@@ -312,12 +452,15 @@ impl Wm {
 
     /// Where a window dragged with the mouse at (`x`, `y`) would snap.
     fn snap_target(&self, x: i32, y: i32) -> Option<(Place, Rect)> {
-        let a = self.area;
+        let a = self.work_area(self.screen_at(x, y));
+        // Between two screens the edge is a way across, not a snap.
+        let left_open = !self.screens.iter().any(|s| s.rect.contains(a.x - 1, y));
+        let right_open = !self.screens.iter().any(|s| s.rect.contains(a.right(), y));
         if y <= a.y {
             Some((Place::Full, a))
-        } else if x <= a.x + 1 {
+        } else if x <= a.x + 1 && left_open {
             Some((Place::Left, Rect::new(a.x, a.y, a.w / 2, a.h)))
-        } else if x >= a.right() - 2 {
+        } else if x >= a.right() - 2 && right_open {
             Some((
                 Place::Right,
                 Rect::new(a.x + a.w / 2, a.y, a.w - a.w / 2, a.h),
@@ -350,7 +493,7 @@ impl Wm {
         if self.tiling {
             return out;
         }
-        let a = self.area;
+        let a = self.area_of(self.wins[i].frame);
         if self.wins[i].place == Place::Free {
             self.wins[i].free = self.wins[i].frame;
         }

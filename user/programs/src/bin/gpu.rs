@@ -34,6 +34,8 @@ const RESOURCE_FLUSH: u32 = 0x0104;
 const TRANSFER_TO_HOST_2D: u32 = 0x0105;
 const ATTACH_BACKING: u32 = 0x0106;
 const OK_NODATA: u32 = 0x1100;
+/// In the device's configuration: the displays changed.
+const EVENT_DISPLAY: u32 = 1;
 const OK_DISPLAY_INFO: u32 = 0x1101;
 
 /// Pixels as 32-bit words 0x00RRGGBB, which in memory are B, G, R, X.
@@ -46,6 +48,19 @@ const RESP: u64 = HEADER_PAGE + 2048;
 const IOVA_CMD: u64 = IOVA_HEADER;
 const IOVA_RESP: u64 = IOVA_HEADER + 2048;
 
+/// The outputs shown, in order: (output, width, height).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct Outs {
+    n: usize,
+    o: [(u32, u32, u32); MAX_SCREENS],
+}
+
+impl Outs {
+    fn all(&self) -> &[(u32, u32, u32)] {
+        &self.o[..self.n]
+    }
+}
+
 struct Gpu {
     regs: Regs,
     q: Option<Queue>,
@@ -55,6 +70,9 @@ struct Gpu {
     height: u32,
     screen_bytes: u64,
     pages: u64,
+    outs: Outs,
+    /// Bits that came while waiting for the card, for the main loop.
+    later: u64,
 }
 
 impl Gpu {
@@ -84,31 +102,48 @@ impl Gpu {
                 say!("crashing on purpose (test)");
                 alaya_sys::crash();
             }
-            // Bits other than the interrupt (a new frame) are seen again
-            // by the main loop through the shared page.
+            // A new frame is seen again by the main loop through the
+            // shared page; a plug it must be told of.
+            self.later |= bits & PLUG_BIT;
         }
     }
 
     fn start(&mut self) -> Result<(), u64> {
         self.regs.reset(0)?;
         self.regs.msix(self.msi());
+        self.regs.config_interrupts();
         self.q = Some(self.regs.queue(0, RING_PAGE, IOVA_RING)?);
         self.regs.ready();
 
-        // How big is the screen?
-        Self::header(GET_DISPLAY_INFO);
-        if self.send(24, 24 + 16 * 24) != OK_DISPLAY_INFO {
+        // Which screens are there, and how big? Each output with a screen
+        // (or a pretend one, in tests) gets its place in one picture,
+        // side by side.
+        let outs = self.outputs()?;
+        if outs.n == 0 {
             return Err(why::DEVICE);
         }
-        let (w, h) = (r32(RESP + 24 + 8), r32(RESP + 24 + 12));
+        let w: u32 = outs.all().iter().map(|o| o.1).sum();
+        let h: u32 = outs.all().iter().map(|o| o.2).max().unwrap_or(0);
         if w == 0 || h == 0 || u64::from(w) * u64::from(h) * 4 > self.screen_bytes {
-            say!("the screen is {w} by {h}, which does not fit the screen memory");
+            say!("the screens are {w} by {h}, which does not fit the screen memory");
             return Err(why::DEVICE);
         }
         self.width = w;
         self.height = h;
         store(&self.page.width, u64::from(w));
         store(&self.page.height, u64::from(h));
+        let mut x = 0;
+        for (i, &(out, ow, oh)) in outs.all().iter().enumerate() {
+            let r = &self.page.rects[i];
+            store(&r[0], u64::from(x));
+            store(&r[1], 0);
+            store(&r[2], u64::from(ow));
+            store(&r[3], u64::from(oh));
+            store(&r[4], u64::from(out));
+            x += ow;
+        }
+        store(&self.page.screens, outs.n as u64);
+        self.outs = outs;
 
         // One picture of that size, kept in the client's screen memory.
         let b = Self::header(RESOURCE_CREATE_2D);
@@ -130,14 +165,70 @@ impl Gpu {
         if self.send(24 + 8 + 16 * self.pages as u32, 24) != OK_NODATA {
             return Err(why::DEVICE);
         }
-        let b = Self::header(SET_SCANOUT);
-        w32(b + 8, w);
-        w32(b + 12, h);
-        w32(b + 16, 0);
-        w32(b + 20, RESOURCE);
-        if self.send(24 + 24, 24) != OK_NODATA {
+        // Each output shows its own part of the picture.
+        let mut x = 0;
+        for &(out, ow, oh) in outs.all() {
+            let b = Self::header(SET_SCANOUT);
+            w32(b, x);
+            w32(b + 4, 0);
+            w32(b + 8, ow);
+            w32(b + 12, oh);
+            w32(b + 16, out);
+            w32(b + 20, RESOURCE);
+            if self.send(24 + 24, 24) != OK_NODATA {
+                return Err(why::DEVICE);
+            }
+            x += ow;
+        }
+        Ok(())
+    }
+
+    /// The outputs to show, in order: (output, width, height). An output
+    /// with a screen the card reports, or a pretend one (tests).
+    fn outputs(&mut self) -> Result<Outs, u64> {
+        Self::header(GET_DISPLAY_INFO);
+        if self.send(24, 24 + 16 * 24) != OK_DISPLAY_INFO {
             return Err(why::DEVICE);
         }
+        let pretend = load(&self.page.pretend);
+        let size = load(&self.page.pretend_size);
+        let mut outs = Outs::default();
+        // Only outputs the card has (a pretend screen needs one too).
+        let scanouts = if self.regs.device != 0 {
+            r32(self.regs.device + 8).clamp(1, 16)
+        } else {
+            1
+        };
+        for i in 0..scanouts {
+            let m = RESP + 24 + u64::from(i) * 24;
+            let (w, h, on) = (r32(m + 8), r32(m + 12), r32(m + 16) != 0);
+            let one = if on && w > 0 && h > 0 {
+                (i, w, h)
+            } else if pretend & 1 << i != 0 && size != 0 {
+                (i, (size >> 32) as u32, size as u32)
+            } else {
+                continue;
+            };
+            outs.o[outs.n] = one;
+            outs.n += 1;
+            if outs.n == MAX_SCREENS {
+                break;
+            }
+        }
+        Ok(outs)
+    }
+
+    /// The screens changed: show the picture again on the new set, and
+    /// tell the client.
+    fn replug(&mut self) -> Result<(), u64> {
+        self.start()?;
+        self.page.layout.fetch_add(1, Ordering::AcqRel);
+        say!(
+            "the screens are now {} ({} by {} in all)",
+            self.outs.n,
+            self.width,
+            self.height
+        );
         Ok(())
     }
 
@@ -223,6 +314,8 @@ fn main(info: &'static StartInfo) -> ! {
         height: 0,
         screen_bytes: pages * (2 << 20),
         pages,
+        outs: Outs::default(),
+        later: 0,
     };
     if let Err(e) = gpu.start() {
         fail(page, e);
@@ -248,10 +341,32 @@ fn main(info: &'static StartInfo) -> ! {
             let _ = alaya_sys::signal(client, SHOWN_BIT);
             continue;
         }
-        let bits = alaya_sys::wait(ntfn).unwrap_or(0);
+        let bits = if gpu.later != 0 {
+            core::mem::take(&mut gpu.later)
+        } else {
+            alaya_sys::wait(ntfn).unwrap_or(0)
+        };
         if bits & CRASH_BIT != 0 {
             say!("crashing on purpose (test)");
             alaya_sys::crash();
+        }
+        // A screen plugged in or out: the card sets its display event
+        // (or a test asks).
+        let event = gpu.regs.device != 0 && r32(gpu.regs.device) & EVENT_DISPLAY != 0;
+        if event {
+            w32(gpu.regs.device + 4, EVENT_DISPLAY);
+        }
+        if bits & PLUG_BIT != 0 || event {
+            let now = gpu.outputs().unwrap_or_else(|e| fail(page, e));
+            if bits & PLUG_BIT != 0 || now != gpu.outs {
+                if let Err(e) = gpu.replug() {
+                    fail(page, e);
+                }
+                if let Err(e) = gpu.flush(0, 0, gpu.width, gpu.height) {
+                    fail(page, e);
+                }
+                let _ = alaya_sys::signal(client, SCREENS_BIT);
+            }
         }
     }
 }

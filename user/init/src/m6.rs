@@ -93,6 +93,29 @@ pub(crate) fn input_page(d: &Dev) -> &'static InputPage {
 }
 
 impl Seat<'_> {
+    /// Test only: show pretend screens on the outputs in `mask`, each
+    /// `w` by `h` (none: `mask` 0), as if plugged in (milestone 7b).
+    pub(crate) fn plug(&self, mask: u64, w: u64, h: u64) -> bool {
+        let Some(d) = self.dev.iter().flatten().find(|d| d.image == "gpu") else {
+            return false;
+        };
+        let page = screen_page(d);
+        store(&page.pretend_size, w << 32 | h);
+        store(&page.pretend, mask);
+        alaya_sys::signal(d.ntfn, seat::PLUG_BIT).is_ok()
+    }
+
+    /// The screens the driver shows now, and its count of changes.
+    pub(crate) fn screens(&self) -> (u64, u64) {
+        match self.dev.iter().flatten().find(|d| d.image == "gpu") {
+            Some(d) => {
+                let page = screen_page(d);
+                (load(&page.screens), load(&page.layout))
+            }
+            None => (0, 0),
+        }
+    }
+
     /// Lock the device at `bdf` to its own memory and get it ready for a
     /// driver (not started yet).
     fn bind(&mut self, n: usize, bdf: u16, image: &'static str) {
@@ -313,23 +336,23 @@ pub fn run<'a>(
         next: first_free,
         stacks: 160,
     };
-    // 32 MiB for the drivers and the screen, from a block the earlier
-    // checks left alone if there is one.
+    // 64 MiB for the drivers and the screens (room for two, milestone
+    // 7b), from a block the earlier checks left alone if there is one.
     let h = k.slot();
     let free = info.untyped[..info.untyped_count as usize].iter().any(|b| {
         b.handle != big
-            && b.size_bits >= 25
-            && alaya_sys::retype(b.handle, Kind::Untyped, 25, 1, k.at(h)).is_ok()
+            && b.size_bits >= 26
+            && alaya_sys::retype(b.handle, Kind::Untyped, 26, 1, k.at(h)).is_ok()
     });
     if !free {
-        alaya_sys::retype(big, Kind::Untyped, 25, 1, k.at(h)).expect("32 MiB for the screen");
+        alaya_sys::retype(big, Kind::Untyped, 26, 1, k.at(h)).expect("64 MiB for the screens");
     }
     k.ut = h;
 
     // The screen memory first (big pages, aligned): 2 MiB pages mapped
     // into the first program, which draws the pictures for now.
     let mut screen = [0u64; seat::SCREEN_PAGES as usize];
-    let screen_pages = 2;
+    let screen_pages = seat::SCREEN_PAGES as usize;
     for (i, s) in screen.iter_mut().enumerate().take(screen_pages) {
         *s = k.make(Kind::Page, 21);
         alaya_sys::page_map(*s, info.space, SCREEN_AT + i as u64 * (2 << 20), map::WRITE).unwrap();

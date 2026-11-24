@@ -10,7 +10,7 @@ use crate::font::Font;
 use crate::login::{Attempt, Login, Look, NewPerson, Person, Setup, decode_person, encode_person};
 use crate::text::{Face, Fonts};
 use crate::widgets::{Key, Pointer, Role, TextEdit, Ui, us_key};
-use crate::wm::{Hit, Out, Place, STRIP, TITLE, Wm};
+use crate::wm::{Hit, Out, Place, STRIP, Screen, TITLE, Wm};
 
 const FIGTREE: &[u8] = include_bytes!("../../fonts/Figtree-Regular.ttf");
 const FIGTREE_SEMI: &[u8] = include_bytes!("../../fonts/Figtree-SemiBold.ttf");
@@ -533,6 +533,7 @@ fn picture_of_the_desktop() {
         buttons: true,
         question: None,
         picker: None,
+        screens: &[],
     };
     scene::draw(&mut cv, &mut f, &wm, &views, &desk, Rect::new(0, 0, w, h));
     let mut out = std::format!("P6\n{w} {h}\n255\n").into_bytes();
@@ -736,4 +737,48 @@ fn wrap_breaks_at_a_space_that_does_not_fit() {
     let lines = f.wrap(Face::Text, 14, s, max);
     let got: Vec<&str> = lines.iter().map(|&(a, z)| &s[a..z]).collect();
     assert_eq!(got, ["aaaa ", "aaaa ", "aa"]);
+}
+
+#[test]
+fn screens_come_and_go_and_windows_follow() {
+    let mut wm = Wm::new(1280, 800);
+    let main = Screen {
+        id: 0,
+        rect: Rect::new(0, 0, 1280, 800),
+    };
+    let two = Screen {
+        id: 1,
+        rect: Rect::new(1280, 0, 1024, 768),
+    };
+    wm.set_screens(vec![main, two]);
+    wm.add(1, 500, 300);
+    wm.add(2, 400, 300);
+    // To the second screen, at the same place on it.
+    wm.to_screen(2, 1);
+    let away = wm.get(2).unwrap().frame;
+    assert!(two.rect.contains(away.x, away.y), "{away:?}");
+    // Full screen there is that screen.
+    wm.place(2, Place::Full);
+    assert_eq!(wm.get(2).unwrap().frame, two.rect);
+    wm.place(2, Place::Free);
+    let away = wm.get(2).unwrap().frame;
+    let stay = wm.get(1).unwrap().frame;
+    // Unplugged: on the main screen, whole, below the strip.
+    wm.set_screens(vec![main]);
+    let f = wm.get(2).unwrap().frame;
+    assert!(
+        f.right() <= 1280 && f.bottom() <= 800 && f.y >= STRIP,
+        "{f:?}"
+    );
+    assert_eq!(
+        wm.get(1).unwrap().frame,
+        stay,
+        "a window on the main screen moved"
+    );
+    // Plugged in again: back where it was.
+    wm.set_screens(vec![main, two]);
+    assert_eq!(wm.get(2).unwrap().frame, away);
+    // The edge between two screens is a way across, not a snap.
+    assert_eq!(wm.screen_at(1279, 400), 0);
+    assert_eq!(wm.screen_at(1280, 400), 1);
 }

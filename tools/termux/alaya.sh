@@ -163,7 +163,7 @@ stick_devices() {
 # the disk. Keep in sync with SEAT_DEVICES in xtask.
 seat_devices() {
     printf '%s\n' \
-        -device virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800 \
+        -device virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800,max_outputs=2 \
         -device virtio-keyboard-pci,id=kbd0,disable-legacy=on,iommu_platform=on \
         -device virtio-tablet-pci,id=tablet0,disable-legacy=on,iommu_platform=on
 }

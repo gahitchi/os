@@ -832,15 +832,25 @@ pub mod seat {
     /// Test only: crash now.
     pub const CRASH_BIT: u64 = 4;
 
+    /// Test only: look at the screens again (a pretend screen was
+    /// plugged in or out).
+    pub const PLUG_BIT: u64 = 8;
+
     /// Bits on the client's notification.
     pub const SHOWN_BIT: u64 = 1;
     pub const INPUT_BIT: u64 = 2;
+    /// The screens changed: read them again from the shared page, and
+    /// draw everything.
+    pub const SCREENS_BIT: u64 = 4;
+
+    /// At most this many screens at once (milestone 7b).
+    pub const MAX_SCREENS: usize = 4;
 
     /// The screen memory: in the driver, and as the device sees it.
     pub const SCREEN: u64 = 0x5200_0000_0000;
     pub const IOVA_SCREEN: u64 = 0x4000_0000;
-    /// Screen memory comes in 2 MiB pages; at most this many (8 MiB, for
-    /// 1920 by 1080).
+    /// Screen memory comes in 2 MiB pages; at most this many (8 MiB: two
+    /// screens of 1280 by 800, or one of 1920 by 1080).
     pub const SCREEN_PAGES: u64 = 4;
     /// Args after the device page codes (same places as [`super::driver`]).
     pub const ARG_SCREEN_PAGES: usize = 15;
@@ -865,6 +875,18 @@ pub mod seat {
         pub dirty: [AtomicU64; 4],
         /// Time the last frame took in the driver, in microseconds.
         pub flush_us: AtomicU64,
+        /// The screens shown (milestone 7b), side by side in the picture:
+        /// how many, then for each: x, y, width, height in the picture,
+        /// and the output number on the card. `width` and `height` above
+        /// are the whole picture's.
+        pub screens: AtomicU64,
+        pub rects: [[AtomicU64; 5]; MAX_SCREENS],
+        /// Test only: outputs to show as if a screen were plugged into
+        /// them (bit per output), and their size (width << 32 | height).
+        pub pretend: AtomicU64,
+        pub pretend_size: AtomicU64,
+        /// Changes of screens so far (the client compares).
+        pub layout: AtomicU64,
     }
 
     /// Kinds of input device, as the driver finds out from its name.
@@ -1245,10 +1267,22 @@ pub mod desktop {
                 };
                 // `{super+x}` is the Alaya key (the Windows-logo key) with
                 // a key; `{ctrl+x}` likewise; a key may be named (`up`).
-                let code = if let Some(k) = name.strip_prefix("super+") {
-                    named(k).map(|(c, s)| (c, 4 | u8::from(s)))
-                } else if let Some(k) = name.strip_prefix("ctrl+") {
-                    named(k).map(|(c, s)| (c, 2 | u8::from(s)))
+                // Modifiers may chain: `{super+shift+right}`.
+                let mut k = name;
+                let mut mods = 0u8;
+                loop {
+                    if let Some(r) = k.strip_prefix("super+") {
+                        (k, mods) = (r, mods | 4);
+                    } else if let Some(r) = k.strip_prefix("ctrl+") {
+                        (k, mods) = (r, mods | 2);
+                    } else if let Some(r) = k.strip_prefix("shift+") {
+                        (k, mods) = (r, mods | 1);
+                    } else {
+                        break;
+                    }
+                }
+                let code = if mods != 0 {
+                    named(k).map(|(c, s)| (c, mods | u8::from(s)))
                 } else {
                     named(name).filter(|_| name.len() > 1).map(|(c, _)| (c, 0))
                 };
