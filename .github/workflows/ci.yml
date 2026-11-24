@@ -82,12 +82,15 @@ jobs:
       - name: Boot, KVM, BIOS, 1, 2 and all the runner's cores (TSC-deadline timer)
         run: |
           set -o pipefail
-          for n in 1 2 $(( $(nproc) < 8 ? $(nproc) : 8 )); do
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          for n in 1 2 $cores; do
             cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 3000 | tee boot.log
             grep -q "timer is the TSC-deadline timer" boot.log
           done
       - name: Boot, KVM, UEFI, all the runner's cores, 4 GiB (1 GiB pages)
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $(( $(nproc) < 8 ? $(nproc) : 8 )) --uefi --memory 4G --timeout 3000
+        run: |
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $cores --uefi --memory 4G --timeout 3000
 
       # Crash on purpose and check the fault reports.
       - name: Fault reports
