@@ -99,7 +99,7 @@ The numbers are in [`abi/src/lib.rs`](../abi/src/lib.rs); the wrappers in
 
 ## The first program
 
-`user/init` starts with its own table of 4096 slots (handle 1), one untyped
+`user/init` starts with its own table of 8192 slots (handle 1), one untyped
 capability per free memory block (from handle 2), and a page of boot
 information at a fixed address. In milestone 2 it is a test: it checks
 retype, copy, mint, move, delete and revoke, including a revoke of 16383
