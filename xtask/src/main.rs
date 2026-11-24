@@ -1361,26 +1361,38 @@ fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
                 "escape" => "esc".to_string(),
                 n if n.starts_with("super+") => {
                     let k = &n[6..];
-                    let code = match k {
-                        "up" | "down" | "left" | "right" | "tab" | "delete" => k.to_string(),
+                    let (code, shift) = match k {
+                        "up" | "down" | "left" | "right" | "tab" | "delete" => {
+                            (k.to_string(), false)
+                        }
                         _ => {
                             let c = k.chars().next().ok_or("super+ what?")?;
-                            qcode(c).ok_or(format!("no key for {c}"))?.0
+                            qcode(c).ok_or(format!("no key for {c}"))?
                         }
                     };
-                    press(q, &["meta_l", &code])?;
+                    if shift {
+                        press(q, &["meta_l", "shift", &code])?;
+                    } else {
+                        press(q, &["meta_l", &code])?;
+                    }
                     continue;
                 }
                 n if n.starts_with("ctrl+") => {
                     let k = &n[5..];
-                    let code = match k {
-                        "up" | "down" | "left" | "right" | "tab" | "delete" => k.to_string(),
+                    let (code, shift) = match k {
+                        "up" | "down" | "left" | "right" | "tab" | "delete" => {
+                            (k.to_string(), false)
+                        }
                         _ => {
                             let c = k.chars().next().ok_or("ctrl+ what?")?;
-                            qcode(c).ok_or(format!("no key for {c}"))?.0
+                            qcode(c).ok_or(format!("no key for {c}"))?
                         }
                     };
-                    press(q, &["ctrl", &code])?;
+                    if shift {
+                        press(q, &["ctrl", "shift", &code])?;
+                    } else {
+                        press(q, &["ctrl", &code])?;
+                    }
                     continue;
                 }
                 n => n.to_string(),

@@ -1441,7 +1441,12 @@ impl Server<'_> {
                 for (i, g) in l.iter().take(n).enumerate() {
                     let o = fs::GROUP_BYTES * i;
                     let flags = if g.task { fs::GROUP_TASK } else { 0 }
-                        | if g.paused { fs::GROUP_PAUSED } else { 0 };
+                        | if g.paused { fs::GROUP_PAUSED } else { 0 }
+                        | if s.finished(p, g.id)? {
+                            fs::GROUP_DONE
+                        } else {
+                            0
+                        };
                     put_words(
                         buf,
                         o,
@@ -1546,6 +1551,31 @@ impl Server<'_> {
                 alloc::vec![l.len() as u64]
             }
             fs::TASK_OF => alloc::vec![s.task_of(p, w[0])?.map_or(0, u64::from)],
+            fs::FINISH_PLAN => {
+                let l = s.finish_plan(p, w[0] as u32)?;
+                let buf = xfer(ch);
+                let n = l.len().min(fs::XFER_BYTES / fs::FINISH_BYTES);
+                for (i, x) in l.iter().take(n).enumerate() {
+                    put_words(
+                        buf,
+                        fs::FINISH_BYTES * i,
+                        &[x.fate as u64, x.file.0, x.other, u64::from(x.write)],
+                    );
+                }
+                alloc::vec![n as u64]
+            }
+            fs::FINISH => {
+                let n = (w[1] as usize).min(fs::XFER_BYTES / 8);
+                let archive: Vec<FileId> = (0..n).map(|i| FileId(word_at(xfer(ch), i))).collect();
+                let r = s.finish(p, app, w[0] as u32, &archive, now, &fs::app_label)?;
+                s.commit(now)?;
+                alloc::vec![r.0]
+            }
+            fs::FINISH_UNDO => {
+                s.finish_undo(p, app, w[0] as u32)?;
+                s.commit(now)?;
+                alloc::vec![]
+            }
             fs::STICK => {
                 let last = s.last_backup(p)?.map_or((0, 0), |(_, run, m)| (run, m));
                 match &self.stick {

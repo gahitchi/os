@@ -13,7 +13,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_apps::store::{self as st, GroupRow, SinceRow};
+use alaya_apps::store::{self as st, FinishRow, GroupRow, SinceRow};
 use alaya_programs::desktop::{self as dk, event, role};
 use alaya_programs::files as fs;
 use alaya_sys::say;
@@ -49,6 +49,8 @@ pub(crate) enum GStage {
     },
     /// Writing the group's note (the person's own words).
     Note(String),
+    /// Finish: each line, its name, and whether it goes to the archive.
+    Finish(Vec<(FinishRow, String, bool)>),
 }
 
 /// The colours new groups take, in turn.
@@ -103,10 +105,12 @@ impl Desk {
 
     /// The labels next to the dock (in the look that shows them).
     pub(crate) fn place_chips(&mut self) {
-        let n = self.groups.len().min(CHIPS);
+        // A finished group has no label (Finish can be undone).
+        let n = self.groups.iter().filter(|g| !g.done).count().min(CHIPS);
         self.wm.groups = if self.look.groups() {
             self.groups
                 .iter()
+                .filter(|g| !g.done)
                 .take(n)
                 .enumerate()
                 .map(|(i, g)| {
@@ -298,6 +302,7 @@ impl Desk {
             Some(GStage::Brief { receipt: None, .. }) => 5,
             Some(GStage::Brief { .. }) => 6,
             Some(GStage::Note(_)) => 7,
+            Some(GStage::Finish(_)) => 8,
         }
     }
 
@@ -316,6 +321,7 @@ impl Desk {
         let rows = match &g.stage {
             GStage::Look(l) => l.len(),
             GStage::Confirm(l) => l.len(),
+            GStage::Finish(l) => l.len(),
             GStage::Name(..) | GStage::Brief { .. } | GStage::Note(_) => 0,
             GStage::Choose(..) => self.groups.len(),
         };
@@ -386,6 +392,29 @@ impl Desk {
                     g.stage = GStage::Note(note);
                 }
             }
+            (GStage::Look(_), Key::Char('f' | 'F')) => {
+                let plan = self.finish_lines(id);
+                if let Some(g) = &mut self.gscreen {
+                    g.chosen = 0;
+                    g.stage = GStage::Finish(plan);
+                }
+            }
+            (GStage::Finish(l), Key::Char(' ')) => {
+                if let Some(x) = l.get_mut(g.chosen)
+                    && matches!(x.0.fate, fs::fate::KEEP | fs::fate::ARCHIVE)
+                {
+                    x.2 = !x.2;
+                }
+            }
+            (GStage::Finish(_), Key::Escape | Key::Backspace) => {
+                let files = self.group_contents(id);
+                self.gscreen = Some(GroupScreen {
+                    id,
+                    chosen: 0,
+                    stage: GStage::Look(files),
+                });
+            }
+            (GStage::Finish(_), Key::Enter) => return self.group_ok(),
             (GStage::Look(_), Key::Char('r' | 'R')) => {
                 g.stage = GStage::Name(current, false);
             }
@@ -497,8 +526,73 @@ impl Desk {
                 }
             },
             GStage::Note(text) => self.save_note(g.id, &text),
+            GStage::Finish(lines) => {
+                let archive: Vec<u64> = lines.iter().filter(|x| x.2).map(|x| x.0.file).collect();
+                self.finish(g.id, &archive, true);
+            }
         }
         self.damage_all();
+    }
+
+    /// The Finish screen's lines: Alaya's suggestion, which the person
+    /// changes with Space.
+    fn finish_lines(&self, id: u32) -> Vec<(FinishRow, String, bool)> {
+        let Some(s) = self.mine() else {
+            return Vec::new();
+        };
+        s.finish_plan(id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| {
+                let name = s.name_of(r.file, 0).unwrap_or_default();
+                (r, name, r.fate == fs::fate::ARCHIVE)
+            })
+            .collect()
+    }
+
+    /// Finish group `id` (on the undo list when `record`).
+    pub(crate) fn finish(&mut self, id: u32, archive: &[u64], record: bool) {
+        let Some(s) = self.mine() else { return };
+        let name = self.group_row(id).map_or(String::new(), |g| g.name.clone());
+        match s.finish(id, archive) {
+            Ok(receipt) => {
+                let rname = s.name_of(receipt, 0).unwrap_or_default();
+                say!(
+                    "finished {name}: {} archived, the receipt is {rname}",
+                    archive.len()
+                );
+                if record {
+                    let mut l = alloc::vec![label::FINISH, id as u8];
+                    l.extend(name.bytes().take(fs::LABEL - 2));
+                    self.record(act::GROUP, &l);
+                }
+                if self.current_group == Some(id) {
+                    self.current_group = None;
+                }
+                self.groups = s.groups().unwrap_or_default();
+                self.place_chips();
+                self.say_note(alloc::format!(
+                    "Finished {name}. Your receipt: {rname} · Alaya key + Z brings it all back"
+                ));
+            }
+            Err(e) => {
+                say!("{name} was not finished: {e}");
+                self.say_note(alloc::format!("{} could not be finished", capital(&name)));
+            }
+        }
+    }
+
+    /// Undo Finish: everything comes back.
+    fn unfinish(&mut self, id: u32) {
+        let Some(s) = self.mine() else { return };
+        match s.finish_undo(id) {
+            Ok(()) => {
+                say!("finish undone: group {id} is back as it was");
+                self.groups = s.groups().unwrap_or_default();
+                self.place_chips();
+            }
+            Err(e) => say!("finish was not undone: {e}"),
+        }
     }
 
     /// Put file `f` in group `id` (or take it out); on the undo list when
@@ -618,6 +712,21 @@ impl Desk {
                 self.file_in_group(id, f, &name, add == redo, false);
                 true
             }
+            Some(&label::FINISH) if l.len() >= 2 => {
+                let id = u32::from(l[1]);
+                if redo {
+                    let archive: Vec<u64> = self
+                        .finish_lines(id)
+                        .into_iter()
+                        .filter(|x| x.2)
+                        .map(|x| x.0.file)
+                        .collect();
+                    self.finish(id, &archive, false);
+                } else {
+                    self.unfinish(id);
+                }
+                true
+            }
             Some(&label::TASK) if l.len() >= 4 => {
                 let code = if redo { l[3] } else { l[2] };
                 self.set_flags(u32::from(l[1]), code & 1 != 0, code & 2 != 0, false);
@@ -639,6 +748,7 @@ impl Desk {
                     color: 0,
                     task: false,
                     paused: false,
+                    done: false,
                     made: 0,
                     left: 0,
                 });
@@ -651,10 +761,10 @@ impl Desk {
                     },
                     hint: String::from(if r.task {
                         "Apps opened in it see these files and nothing else. \
-                         P: pause or go on · T: a loose group again · R: rename · Delete: take out"
+                         P: pause or go on · T: a loose group again · F: finish · Delete: take out"
                     } else {
                         "A label only: no app sees anything more. \
-                         T: make it a task · N: new group · R: rename · Delete: take out"
+                         T: make it a task · N: new group · R: rename · F: finish · Delete: take out"
                     }),
                     rows: files
                         .iter()
@@ -682,6 +792,38 @@ impl Desk {
                     empty: "Nothing in it yet.",
                 }
             }
+            GStage::Finish(lines) => JobView {
+                title: alloc::format!("Finish {name}?"),
+                hint: alloc::format!(
+                    "Temporary things go to Archive/{name}, never deleted. Space: keep or archive"
+                ),
+                rows: lines
+                    .iter()
+                    .map(|(r, n, archive)| match r.fate {
+                        fs::fate::ELSEWHERE => {
+                            let other = self
+                                .group_row(r.other as u32)
+                                .map_or("another group", |g| g.name.as_str());
+                            alloc::format!("Still used in {other}   ·   {n}")
+                        }
+                        fs::fate::HAND_BACK => alloc::format!(
+                            "Hand back   ·   {} could {} {n}",
+                            st::app_name(r.other),
+                            if r.write { "change" } else { "read" }
+                        ),
+                        _ if *archive => alloc::format!("Archive   ·   {n}"),
+                        _ => alloc::format!("Keep   ·   {n}"),
+                    })
+                    .collect(),
+                mark: !lines.is_empty(),
+                foot: String::from(
+                    "Alaya writes a work receipt from its own records. One undo brings it all back.",
+                ),
+                ok: "Finish",
+                no: "Not now",
+                field: None,
+                empty: "Nothing in it: Finish only writes the receipt.",
+            },
             GStage::Confirm(rows) => JobView {
                 title: alloc::format!("Make {name} a protected task?"),
                 hint: String::from(

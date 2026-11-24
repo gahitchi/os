@@ -100,5 +100,27 @@ The look (Everyday, Everything, Play, Create, Build) is chosen in
 Settings and changes only what is on screen; every protection works the
 same. A few hints show once, the first time they help, and never again.
 
+## Finish, and the work receipt
+
+F on a group's screen shows Finish: **keep** (results stay where they
+are), **archive** (temporary things move to `Archive/<group>`, never
+deleted; Space changes Alaya's suggestion), **still used in** another
+group (always stays), and **hand back** (what apps were handed of the
+group's files). Enter finishes, and Alaya key + Z brings it all back.
+
+Finish leaves a **work receipt**, `<group> receipt.txt`, written by the
+store from its own records: each result's version and last change, what
+it was made from, what was archived and handed back. The receipt is
+"made from" those exact versions, so it turns "needs a look" when one of
+them changes.
+
+When pasting, Ctrl+V pastes a reference (the document remembers the
+exact version it came from and "needs a look" when it changes);
+Ctrl+Shift+V pastes a plain copy.
+
+Check 102 finishes a group with a result, a temporary file, a file also
+in another group and a handed-over permission, reads the receipt,
+changes a result (the receipt turns "needs a look"), and undoes it all.
+
 Waiting for the laptop: the "resume at least 25 % faster than reopening
 by hand" gate needs a person and a stopwatch.

@@ -910,6 +910,7 @@ impl Store {
                     id: w(0) as u32,
                     task: w(1) & fs::GROUP_TASK != 0,
                     paused: w(1) & fs::GROUP_PAUSED != 0,
+                    done: w(1) & fs::GROUP_DONE != 0,
                     color: w(2) as u32,
                     made: w(3),
                     left: w(4),
@@ -961,6 +962,39 @@ impl Store {
         Ok((0..r[1] as usize)
             .map(|i| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap()))
             .collect())
+    }
+
+    /// What Finish would do with group `id`.
+    pub fn finish_plan(&self, id: u32) -> Result<Vec<FinishRow>, Status> {
+        let r = self.call(fs::FINISH_PLAN, &[u64::from(id)])?;
+        let b = xfer();
+        Ok((0..r[1] as usize)
+            .map(|i| {
+                let o = fs::FINISH_BYTES * i;
+                let w =
+                    |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+                FinishRow {
+                    fate: w(0),
+                    file: w(1),
+                    other: w(2),
+                    write: w(3) != 0,
+                }
+            })
+            .collect())
+    }
+
+    /// Finish group `id`, archiving `archive`: → the work receipt.
+    pub fn finish(&self, id: u32, archive: &[u64]) -> Result<u64, Status> {
+        let n = archive.len().min(fs::XFER_BYTES / 8);
+        for (i, f) in archive.iter().take(n).enumerate() {
+            xfer()[8 * i..8 * i + 8].copy_from_slice(&f.to_le_bytes());
+        }
+        Ok(self.call(fs::FINISH, &[u64::from(id), n as u64])?[1])
+    }
+
+    /// Everything Finish did to group `id` comes back.
+    pub fn finish_undo(&self, id: u32) -> Result<(), Status> {
+        self.call(fs::FINISH_UNDO, &[u64::from(id)]).map(|_| ())
     }
 
     /// Open `app` in a protected task (or in none).
@@ -1057,8 +1091,21 @@ pub struct GroupRow {
     pub color: u32,
     pub task: bool,
     pub paused: bool,
+    /// Finished (Finish can be undone).
+    pub done: bool,
     pub made: u64,
     pub left: u64,
+}
+
+/// One line of the Finish screen.
+#[derive(Clone, Copy, Debug)]
+pub struct FinishRow {
+    /// `fs::fate`.
+    pub fate: u64,
+    pub file: u64,
+    /// The other group (elsewhere) or the app (hand back).
+    pub other: u64,
+    pub write: bool,
 }
 
 /// What changed in a source since a result was made from it.
@@ -1091,19 +1138,7 @@ fn words(key: &[u8; 32]) -> [u64; 4] {
 
 /// The name people know an app by.
 pub fn app_name(app: u64) -> &'static str {
-    use alaya_programs::desktop::role;
-    match app {
-        a if a == fs::app_id(role::EDITOR) => "the text editor",
-        a if a == fs::app_id(role::FILES) => "the file browser",
-        a if a == fs::app_id(role::CHART) => "the chart maker",
-        a if a == fs::app_id(role::SETTINGS) => "Settings",
-        a if a == fs::app_id(role::BACK) => "the timeline",
-        a if a == fs::app_id(role::HELPER) => "the tidy-up helper",
-        a if a == fs::app_id(role::HOSTILE) => "the hostile test helper",
-        fs::DESKTOP_APP => "the desktop",
-        fs::INIT_APP => "Alaya's checks",
-        _ => "another app",
-    }
+    fs::app_label(app)
 }
 
 /// Labels on the undo list: a letter for what was done, then a name.
@@ -1121,6 +1156,8 @@ pub mod label {
     /// A group became a task, or paused: the group, the flags before and
     /// after (1 task, 2 paused), then its name.
     pub const TASK: u8 = b't';
+    /// A group was finished: the group, then its name.
+    pub const FINISH: u8 = b'f';
 }
 
 /// A label for the undo list: what (a [`label`] letter) and the name.
@@ -1158,6 +1195,7 @@ pub fn describe(label: &[u8]) -> String {
             alloc::format!("put {} in a group", rest(7))
         }
         Some(&label::IN_GROUP) => alloc::format!("take {} out of a group", rest(7)),
+        Some(&label::FINISH) => alloc::format!("finish {}", rest(2)),
         Some(&label::TASK) => match (label.get(2).copied(), label.get(3).copied()) {
             (_, Some(3)) => alloc::format!("pause {}", rest(4)),
             (Some(3), Some(1)) => alloc::format!("go on with {}", rest(4)),

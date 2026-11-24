@@ -29,6 +29,7 @@ pub use alaya_crypto as crypto;
 pub mod again;
 pub mod backup;
 pub mod disk;
+pub mod finish;
 pub mod format;
 pub mod grants;
 pub mod groups;

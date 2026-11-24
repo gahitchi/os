@@ -12,22 +12,22 @@ use crate::m3::sleep_until;
 use crate::m6b::{Files, Session, ask};
 
 /// The stranger app of milestone 7's checks.
-const STRANGER: u64 = fs::app_id(77);
+pub(crate) const STRANGER: u64 = fs::app_id(77);
 const SLOW: u64 = 30_000;
 
 impl Files {
-    fn name_in(&self, name: &str) {
+    pub(crate) fn name_in(&self, name: &str) {
         self.buf()[..name.len()].copy_from_slice(name.as_bytes());
     }
 
-    fn new_in(&self, dir: u64, name: &str, folder: bool) -> u64 {
+    pub(crate) fn new_in(&self, dir: u64, name: &str, folder: bool) -> u64 {
         self.name_in(name);
         let r = self.call(fs::CREATE, &[dir, folder as u64, name.len() as u64]);
         assert!(r[0] == st::OK, "could not make {name}");
         r[1]
     }
 
-    fn new_group(&self, name: &str) -> u64 {
+    pub(crate) fn new_group(&self, name: &str) -> u64 {
         self.name_in(name);
         let r = self.call(fs::GROUP_NEW, &[0x5b_4b_8a, name.len() as u64]);
         assert!(r[0] == st::OK, "could not make the group {name}");
@@ -35,7 +35,7 @@ impl Files {
     }
 
     /// A group's flags (1 task, 2 paused), if it is there.
-    fn group_flags(&self, id: u64) -> Option<u64> {
+    pub(crate) fn group_flags(&self, id: u64) -> Option<u64> {
         let r = self.call(fs::GROUPS, &[]);
         if r[0] != st::OK {
             return None;
@@ -48,7 +48,7 @@ impl Files {
         })
     }
 
-    fn in_group(&self, id: u64, f: u64) -> bool {
+    pub(crate) fn in_group(&self, id: u64, f: u64) -> bool {
         let r = self.call(fs::GROUP_FILES, &[id]);
         let b = self.buf();
         r[0] == st::OK
@@ -56,7 +56,7 @@ impl Files {
                 .any(|i| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap()) == f)
     }
 
-    fn reads(&self, f: u64) -> bool {
+    pub(crate) fn reads(&self, f: u64) -> bool {
         self.call(fs::READ, &[f, 0, 8])[0] == st::OK
     }
 }

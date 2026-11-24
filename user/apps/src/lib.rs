@@ -229,7 +229,11 @@ impl Window {
                         continue;
                     }
                     match us_key(r[2] as u16, r[4] != 0) {
-                        Some(Key::Char(c)) if r[5] != 0 => Event::Shortcut(c.to_ascii_lowercase()),
+                        // Ctrl with a letter; Ctrl+Shift+V alone keeps its capital
+                        // (paste a plain copy).
+                        Some(Key::Char(c)) if r[5] != 0 => {
+                            Event::Shortcut(if c == 'V' { c } else { c.to_ascii_lowercase() })
+                        }
                         Some(k) => Event::Key(k),
                         None => continue,
                     }

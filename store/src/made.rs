@@ -158,6 +158,19 @@ impl<D: Disk> Store<D> {
         result: FileId,
         sources: &[Source],
     ) -> Result<(), Error> {
+        self.made_from_with(p, app, result, sources, false)
+    }
+
+    /// The store itself wrote `result` (a work receipt) naming these
+    /// exact versions: it vouches for them, as it does for a paste.
+    pub(crate) fn made_from_with(
+        &mut self,
+        p: Person,
+        app: App,
+        result: FileId,
+        sources: &[Source],
+        trusted: bool,
+    ) -> Result<(), Error> {
         self.ok()?;
         if result.class() != Class::Documents
             || sources.is_empty()
@@ -179,9 +192,10 @@ impl<D: Disk> Store<D> {
         let whole: Vec<u64> = sources
             .iter()
             .map(|s| {
-                if b.seen
-                    .get(&(app, s.file))
-                    .is_some_and(|x| x.version == s.version && x.edits == s.edits && x.whole())
+                if trusted
+                    || b.seen
+                        .get(&(app, s.file))
+                        .is_some_and(|x| x.version == s.version && x.edits == s.edits && x.whole())
                 {
                     WHOLE
                 } else if b.pasted.contains(&(app, s.file, s.version, s.edits)) {

@@ -241,13 +241,13 @@ impl<D: Disk> Store<D> {
         Ok(out)
     }
 
-    fn get_rec(&mut self, p: Person, k: Key) -> Result<Option<[u8; 40]>, Error> {
+    pub(crate) fn get_rec(&mut self, p: Person, k: Key) -> Result<Option<[u8; 40]>, Error> {
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&p).ok_or(Error::Locked)?;
         b.trees[Class::Apps as usize].get(dev, &b.keys, k)
     }
 
-    fn put_rec(&mut self, p: Person, k: Key, v: [u8; 40]) -> Result<(), Error> {
+    pub(crate) fn put_rec(&mut self, p: Person, k: Key, v: [u8; 40]) -> Result<(), Error> {
         self.room(2, false)?;
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&p).ok_or(Error::Locked)?;
@@ -256,7 +256,7 @@ impl<D: Disk> Store<D> {
         Ok(())
     }
 
-    fn del_rec(&mut self, p: Person, k: Key) -> Result<(), Error> {
+    pub(crate) fn del_rec(&mut self, p: Person, k: Key) -> Result<(), Error> {
         let Store { dev, branches, .. } = self;
         let b = branches.get_mut(&p).ok_or(Error::Locked)?;
         let gone = b.trees[Class::Apps as usize]

@@ -191,10 +191,15 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                         to - from
                     );
                 }
-                Event::Shortcut('v') => {
+                Event::Shortcut(v @ ('v' | 'V')) => {
+                    // Ctrl+V pastes a reference: the document notes the
+                    // exact version it came from, and "needs a look" when
+                    // that changes. Ctrl+Shift+V pastes a plain copy.
+                    let copy = *v == 'V';
                     if let Ok((data, src)) = store.paste()
                         && !data.is_empty()
                     {
+                        let src = src.filter(|_| !copy);
                         let text = String::from_utf8_lossy(&data).into_owned();
                         edit.text.insert_str(edit.cursor, &text);
                         edit.cursor += text.len();
@@ -205,18 +210,21 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                         {
                             used.push(v);
                         }
-                        note = String::from(if src.is_some() {
-                            "Pasted. Saving notes where it came from."
-                        } else {
-                            "Pasted."
+                        note = String::from(match (src.is_some(), copy) {
+                            (true, _) => {
+                                "Pasted with a link to where it came from. \
+                                 Ctrl+Shift+V pastes a plain copy."
+                            }
+                            (false, true) => "Pasted a plain copy: it won't follow its source.",
+                            _ => "Pasted.",
                         });
                         say!(
                             "pasted {} bytes{}",
                             data.len(),
-                            if src.is_some() {
-                                " from a saved document"
-                            } else {
-                                ""
+                            match (src.is_some(), copy) {
+                                (true, _) => " from a saved document, as a reference",
+                                (false, true) => " as a plain copy",
+                                _ => "",
                             }
                         );
                     }

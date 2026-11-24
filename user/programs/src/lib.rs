@@ -642,6 +642,25 @@ pub mod files {
     /// pages: kind (1 changed, 2 needs a look), file, moment, time, app,
     /// what, source, count. Each is a ledger record or a mark: its receipt.
     pub const SINCE_LEFT: u64 = 80;
+    /// Finish (milestone 7a, step 3; Alaya's own programs only).
+    /// FINISH_PLAN: group → n; entries of [`FINISH_BYTES`] in the
+    /// transfer pages: fate (0 keep, 1 archive, 2 elsewhere, 3 hand back),
+    /// file, other (the other group, or the app), write.
+    pub const FINISH_PLAN: u64 = 81;
+    /// FINISH: group, n (the files to archive in the transfer pages) →
+    /// the work receipt.
+    pub const FINISH: u64 = 82;
+    /// FINISH_UNDO: group. Everything Finish did comes back.
+    pub const FINISH_UNDO: u64 = 83;
+    pub const FINISH_BYTES: usize = 32;
+    pub mod fate {
+        pub const KEEP: u64 = 0;
+        pub const ARCHIVE: u64 = 1;
+        pub const ELSEWHERE: u64 = 2;
+        pub const HAND_BACK: u64 = 3;
+    }
+    /// In GROUPS' flags: the group was finished.
+    pub const GROUP_DONE: u64 = 4;
     pub const NOTE_MAX: usize = 160;
     pub const SINCE_BYTES: usize = 64;
     pub const GROUP_BYTES: usize = 56;
@@ -726,6 +745,22 @@ pub mod files {
     pub const INIT_APP: u64 = 2;
     pub const fn app_id(role: u64) -> u64 {
         0x100 + role
+    }
+    /// The name people know an app by.
+    pub fn app_label(app: u64) -> &'static str {
+        use super::desktop::role;
+        match app {
+            a if a == app_id(role::EDITOR) => "the text editor",
+            a if a == app_id(role::FILES) => "the file browser",
+            a if a == app_id(role::CHART) => "the chart maker",
+            a if a == app_id(role::SETTINGS) => "Settings",
+            a if a == app_id(role::BACK) => "the timeline",
+            a if a == app_id(role::HELPER) => "the tidy-up helper",
+            a if a == app_id(role::HOSTILE) => "the hostile test helper",
+            DESKTOP_APP => "the desktop",
+            INIT_APP => "Alaya's checks",
+            _ => "another app",
+        }
     }
     pub const fn app_channel(role: u64) -> u64 {
         1 + role
