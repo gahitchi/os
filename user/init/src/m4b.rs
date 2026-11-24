@@ -1091,7 +1091,9 @@ fn start_stick(
     };
     // The stick is for backups: a smaller share of the processor.
     let keeper_sc = sc(k, 500, 1000);
-    let clock_sc = sc(k, 50, 5000);
+    // Its clock wakes it 20 times a second, not 200: a stick that is
+    // mostly idle should cost the other cores nothing.
+    let clock_sc = sc(k, 50, 50_000);
     let driver_sc = [sc(k, 500, 1000), sc(k, 500, 1000)];
     let cfg_copy = k.slot();
     alaya_sys::copy(k.at(cfg_copy), k.at(cfg), rights::ALL).unwrap();
