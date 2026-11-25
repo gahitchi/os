@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! How the compositor draws the screen: the wallpaper, the windows with
 //! their frames and shadows, the snap preview, the dock, the top strip that
 //! only Alaya draws, and the pointer. Only the part that changed is drawn
@@ -15,8 +15,9 @@ pub struct WindowView<'a> {
     pub title: &'a str,
     /// The app's picture: pixels, width, height, stride.
     pub pixels: Option<(&'a [u32], i32, i32, i32)>,
-    /// The app stopped answering (drawn dimmed, with a note).
-    pub stuck: bool,
+    /// Drawn dimmed, with this note: the app stopped answering, or its
+    /// task is paused.
+    pub stuck: Option<&'a str>,
     /// The loose group it is in: its label and colour.
     pub group: Option<(&'a str, Color)>,
 }
@@ -46,6 +47,270 @@ pub struct Desktop<'a> {
     pub locked: bool,
     /// The real PIN box is open: this person's picture shows in the strip.
     pub trusted: Option<usize>,
+    /// The going-back buttons in the strip ("Undo", "What happened?").
+    pub buttons: bool,
+    /// A question only Alaya asks (drawn over the windows).
+    pub question: Option<&'a Question<'a>>,
+    /// The Open or Save window Alaya draws for an app (milestone 7,
+    /// step 2): what you pick is all the app gets.
+    pub picker: Option<&'a Picker<'a>>,
+    /// The screens in the picture, main one first (milestone 7b): the
+    /// strip, the dock and Alaya's own screens go on the main one. Empty:
+    /// the whole canvas is one screen.
+    pub screens: &'a [Rect],
+}
+
+/// The Open or Save window, and the search box: Alaya, not an app,
+/// shows the person's documents and hands over only the one picked, for
+/// as long as the person says.
+pub struct Picker<'a> {
+    /// "The text editor wants to open a document".
+    pub title: &'a str,
+    /// The line under the title.
+    pub hint: &'a str,
+    pub rows: &'a [&'a str],
+    pub chosen: usize,
+    /// Show which row is chosen.
+    pub mark: bool,
+    /// What is typed, and its label ("Name", "Find").
+    pub field: Option<(&'a str, &'a str)>,
+    /// The line at the bottom ("Keeps it: ...").
+    pub foot: &'a str,
+    /// What shows when there are no rows.
+    pub empty: &'a str,
+    pub ok: &'a str,
+    /// The other button ("Cancel").
+    pub no: &'a str,
+}
+
+/// Where the picker is drawn on a screen `w` by `h`, and its buttons
+/// (hand over, cancel).
+pub fn picker_rect(w: i32, h: i32) -> Rect {
+    Rect::new((w - 520) / 2, (h - 400) / 2, 520, 400)
+}
+
+pub fn picker_buttons(w: i32, h: i32) -> (Rect, Rect) {
+    let r = picker_rect(w, h);
+    (
+        Rect::new(r.right() - 330, r.bottom() - 52, 150, 32),
+        Rect::new(r.right() - 168, r.bottom() - 52, 150, 32),
+    )
+}
+
+/// The rows shown at once, and the first one shown when `chosen` is.
+pub const PICKER_ROWS: usize = 8;
+pub fn picker_first(chosen: usize) -> usize {
+    chosen.saturating_sub(PICKER_ROWS - 1)
+}
+
+/// The row under a point, if any.
+pub fn picker_row_at(w: i32, h: i32, x: i32, y: i32, first: usize) -> Option<usize> {
+    let r = picker_rect(w, h);
+    let top = r.y + 84;
+    if x < r.x + 16 || x >= r.right() - 16 || y < top || y >= top + 26 * PICKER_ROWS as i32 {
+        return None;
+    }
+    Some(first + ((y - top) / 26) as usize)
+}
+
+fn draw_picker(cv: &mut Canvas, fonts: &mut Fonts, p: &Picker, sw: i32, sh: i32) {
+    let r = picker_rect(sw, sh);
+    cv.shadow(r, 12, 16);
+    cv.round_rect(r, 12, theme::WIN);
+    cv.round_frame(r, 12, theme::LINE);
+    let (asc, _) = fonts.metrics(Face::Strong, 16);
+    fonts.draw(
+        cv,
+        Face::Strong,
+        16,
+        r.x + 22,
+        r.y + 20 + asc,
+        p.title,
+        theme::INK,
+    );
+    let (a2, _) = fonts.metrics(Face::Text, 12);
+    fonts.draw(
+        cv,
+        Face::Text,
+        12,
+        r.x + 22,
+        r.y + 50 + a2,
+        p.hint,
+        theme::MUTED,
+    );
+    let top = r.y + 84;
+    let first = picker_first(p.chosen);
+    let (a3, l3) = fonts.metrics(Face::Text, 13);
+    if p.rows.is_empty() {
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            r.x + 26,
+            top + 6 + a3,
+            p.empty,
+            theme::MUTED,
+        );
+    }
+    for (i, row) in p.rows.iter().enumerate().skip(first).take(PICKER_ROWS) {
+        let y = top + (i - first) as i32 * 26;
+        let line = Rect::new(r.x + 16, y, r.w - 32, 24);
+        if i == p.chosen && p.mark {
+            cv.round_rect(line, 6, theme::ACCENT);
+        }
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            line.x + 10,
+            line.y + (line.h - l3) / 2 + a3,
+            row,
+            if i == p.chosen && p.mark {
+                theme::ACCENT_INK
+            } else {
+                theme::INK
+            },
+        );
+    }
+    let mut y = top + 26 * PICKER_ROWS as i32 + 8;
+    if let Some((label, text)) = p.field {
+        let field = Rect::new(r.x + 16, y, r.w - 32, 28);
+        cv.round_rect(field, 6, theme::CHROME);
+        cv.round_frame(field, 6, theme::ACCENT);
+        let shown = alloc::format!("{label}: {text}|");
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            field.x + 10,
+            field.y + (28 - l3) / 2 + a3,
+            &shown,
+            theme::INK,
+        );
+        y += 34;
+    }
+    fonts.draw(cv, Face::Strong, 12, r.x + 22, y + a2, p.foot, theme::PAST);
+    let (ok, no) = picker_buttons(sw, sh);
+    for (b, name, primary) in [(ok, p.ok, true), (no, p.no, false)] {
+        cv.round_rect(
+            b,
+            7,
+            if primary {
+                theme::ACCENT
+            } else {
+                theme::CHROME
+            },
+        );
+        cv.round_frame(b, 7, if primary { theme::ACCENT } else { theme::LINE });
+        let tw = fonts.width(Face::Strong, 13, name);
+        let (a4, l4) = fonts.metrics(Face::Strong, 13);
+        fonts.draw(
+            cv,
+            Face::Strong,
+            13,
+            b.x + (b.w - tw) / 2,
+            b.y + (b.h - l4) / 2 + a4,
+            name,
+            if primary {
+                theme::ACCENT_INK
+            } else {
+                theme::INK
+            },
+        );
+    }
+}
+
+/// A question Alaya asks before it does something (rule B6: something
+/// else changed it since; undo anyway?).
+pub struct Question<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub yes: &'a str,
+    pub no: &'a str,
+}
+
+/// The strip's buttons: Undo, What happened? and Search.
+pub fn strip_buttons() -> [Rect; 3] {
+    [
+        Rect::new(96, 5, 68, 24),
+        Rect::new(172, 5, 128, 24),
+        Rect::new(308, 5, 72, 24),
+    ]
+}
+
+/// The names on the strip's buttons.
+pub const STRIP_BUTTONS: [&str; 3] = ["Undo", "What happened?", "Search"];
+
+/// Where a question is drawn on a screen `w` by `h`, and its two buttons
+/// (yes, no).
+pub fn question_rect(w: i32, h: i32) -> Rect {
+    Rect::new((w - 460) / 2, (h - 210) / 2, 460, 210)
+}
+
+pub fn question_buttons(w: i32, h: i32) -> (Rect, Rect) {
+    let q = question_rect(w, h);
+    (
+        Rect::new(q.right() - 330, q.bottom() - 52, 150, 32),
+        Rect::new(q.right() - 168, q.bottom() - 52, 150, 32),
+    )
+}
+
+fn draw_question(cv: &mut Canvas, fonts: &mut Fonts, q: &Question, sw: i32, sh: i32) {
+    let r = question_rect(sw, sh);
+    cv.shadow(r, 12, 16);
+    cv.round_rect(r, 12, theme::WIN);
+    cv.round_frame(r, 12, theme::LINE);
+    let (asc, _) = fonts.metrics(Face::Strong, 16);
+    fonts.draw(
+        cv,
+        Face::Strong,
+        16,
+        r.x + 22,
+        r.y + 20 + asc,
+        q.title,
+        theme::INK,
+    );
+    let (a2, l2) = fonts.metrics(Face::Text, 13);
+    let lines = fonts.wrap(Face::Text, 13, q.body, r.w - 44);
+    for (i, (a, b)) in lines.iter().take(5).enumerate() {
+        fonts.draw(
+            cv,
+            Face::Text,
+            13,
+            r.x + 22,
+            r.y + 54 + i as i32 * (l2 + 2) + a2,
+            q.body[*a..*b].trim_end(),
+            theme::MUTED,
+        );
+    }
+    let (yes, no) = question_buttons(sw, sh);
+    for (b, name, primary) in [(yes, q.yes, true), (no, q.no, false)] {
+        cv.round_rect(
+            b,
+            7,
+            if primary {
+                theme::ACCENT
+            } else {
+                theme::CHROME
+            },
+        );
+        cv.round_frame(b, 7, if primary { theme::ACCENT } else { theme::LINE });
+        let tw = fonts.width(Face::Strong, 13, name);
+        let (a3, l3) = fonts.metrics(Face::Strong, 13);
+        fonts.draw(
+            cv,
+            Face::Strong,
+            13,
+            b.x + (b.w - tw) / 2,
+            b.y + (b.h - l3) / 2 + a3,
+            name,
+            if primary {
+                theme::ACCENT_INK
+            } else {
+                theme::INK
+            },
+        );
+    }
 }
 
 /// The group labels' rectangles, left of the dock.
@@ -173,7 +438,7 @@ fn draw_window(
         Some((px, pw, ph, stride)) => cv.blit(px, pw, ph, stride, c.x, c.y),
         None => cv.fill(c, theme::WIN),
     }
-    if v.stuck {
+    if let Some(note) = v.stuck {
         cv.fill_alpha(c, 0xff_ff_ff, 140);
         let (asc, _) = fonts.metrics(Face::Text, 14);
         fonts.draw(
@@ -182,7 +447,7 @@ fn draw_window(
             14,
             c.x + 16,
             c.y + 16 + asc,
-            "Not answering. Alaya is restarting it.",
+            note,
             theme::MUTED,
         );
     }
@@ -205,13 +470,26 @@ pub fn draw<'a>(
     desk: &Desktop,
     clip: Rect,
 ) {
-    let (sw, sh) = (cv.width, cv.height);
+    let main = desk
+        .screens
+        .first()
+        .copied()
+        .unwrap_or(Rect::new(0, 0, cv.width, cv.height));
+    let (sw, sh) = (main.w, main.h);
     let old = cv.set_clip(clip);
+    if desk.screens.len() > 1 {
+        // Screens of different heights leave parts of the picture no
+        // screen shows.
+        cv.fill(Rect::new(0, 0, cv.width, cv.height), 0);
+    }
     cv.gradient(
         Rect::new(0, STRIP, sw, sh - STRIP),
         theme::WALL_TOP,
         theme::WALL_BOTTOM,
     );
+    for s in desk.screens.iter().skip(1) {
+        cv.gradient(*s, theme::WALL_TOP, theme::WALL_BOTTOM);
+    }
     let front = wm.focused();
     for w in wm.wins.iter().filter(|_| !desk.locked) {
         if !w.frame.grow(crate::wm::SHADOW).intersect(clip).is_empty() {
@@ -307,6 +585,23 @@ pub fn draw<'a>(
             theme::BAR_INK,
         );
     }
+    if desk.buttons && !desk.locked {
+        for (r, name) in strip_buttons().iter().zip(STRIP_BUTTONS) {
+            cv.round_rect(*r, 6, theme::CHROME);
+            cv.round_frame(*r, 6, theme::LINE);
+            let tw = fonts.width(Face::Strong, 12, name);
+            let (a2, l2) = fonts.metrics(Face::Strong, 12);
+            fonts.draw(
+                cv,
+                Face::Strong,
+                12,
+                r.x + (r.w - tw) / 2,
+                r.y + (r.h - l2) / 2 + a2,
+                name,
+                theme::BAR_INK,
+            );
+        }
+    }
     let cw = fonts.width(Face::Text, 14, desk.clock);
     fonts.draw(
         cv,
@@ -329,6 +624,12 @@ pub fn draw<'a>(
             desk.status,
             theme::MUTED,
         );
+    }
+    if let Some(p) = desk.picker.filter(|_| !desk.locked) {
+        draw_picker(cv, fonts, p, sw, sh);
+    }
+    if let Some(q) = desk.question.filter(|_| !desk.locked) {
+        draw_question(cv, fonts, q, sw, sh);
     }
     if desk.show_pointer {
         let (px, py) = wm.pointer;

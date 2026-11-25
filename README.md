@@ -13,6 +13,27 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 8 (in progress): apps that are not built in.** Apps come as
+signed bundles you install and approve line by line; updates can never take
+more on their own, go on trial, and slip back by themselves when clearly
+slower; a rehearsal runs a new app on a copy of your files first. An app can
+get an answer instead of your file ("the total of column 2": one number,
+never the document), a full-screen game freezes what runs in the
+background, notes from a task wait for you in that task, and the editor
+hands a document to another app at the same line. How it works:
+[`docs/apps.md`](docs/apps.md) and [`docs/sdk.md`](docs/sdk.md).
+
+**Milestone 7, step 1: going back.** One undo for the whole computer:
+the Alaya key plus Z, or the Undo button in the top strip, undoes your last
+action anywhere (a deleted file, a setting, a closed window), and asks first
+if something else changed it since. "What happened?" lists changes in
+plain words with an undo on each line; the timeline shows your documents
+as they were at any kept moment, brings one back and names versions; the
+file browser tells each file's story. Underneath, the store gives every
+file its own lock key (so a forgotten file can never be read again) and
+learns side branches (checks 76 to 84). How it works:
+[`docs/going-back.md`](docs/going-back.md).
+
 **Milestone 6, step 4 (6c): "is this still up to date?"** The first show
 of living validity, something no other system does. The chart maker tells
 Alaya what its picture and summary were made from; the store checks that
@@ -103,11 +124,11 @@ Milestone 2 (capabilities and memory) is described in
 ### On a PC (Linux)
 
 Needs Rust (the version in `rust-toolchain.toml` is installed automatically by
-rustup), `git`, `make`, a C compiler, `xorriso` and `qemu-system-x86_64`. On
+rustup), `git`, `make`, a C compiler, `clang` (for Alaya's own C library), `xorriso` and `qemu-system-x86_64`. On
 Debian or Ubuntu:
 
 ```sh
-sudo apt install build-essential git xorriso qemu-system-x86 ovmf
+sudo apt install build-essential git xorriso clang qemu-system-x86 ovmf
 cargo xtask run              # build the image and boot it, serial on this terminal
 cargo xtask test --cpus 8    # boot and check every core came up
 cargo xtask run --uefi       # boot with UEFI firmware instead of BIOS

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! A program's heap, for programs that want `alloc` (`Vec`, `Box`,
 //! `BTreeMap`): a first-fit list of free ranges over pages the program
 //! maps for it, with neighbours joined again when freed. One lock, so

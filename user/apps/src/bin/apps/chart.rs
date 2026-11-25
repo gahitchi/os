@@ -46,7 +46,13 @@ fn parse(text: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
-fn draw_chart(cv: &mut Canvas, fonts: &mut Fonts, r: Rect, bars: &[(String, u32)]) {
+fn draw_chart(
+    cv: &mut Canvas,
+    fonts: &mut Fonts,
+    r: Rect,
+    bars: &[(String, u32)],
+    focus: Option<usize>,
+) {
     cv.fill(r, theme::WIN);
     let top = bars.iter().map(|b| b.1).max().unwrap_or(0).max(1);
     let base = r.bottom() - 28;
@@ -71,7 +77,12 @@ fn draw_chart(cv: &mut Canvas, fonts: &mut Fonts, r: Rect, bars: &[(String, u32)
     for (i, (label, v)) in bars.iter().enumerate() {
         let x = r.x + 8 + i as i32 * slot + (slot - bw) / 2;
         let bh = ((base - r.y - 24) as i64 * i64::from(*v) / i64::from(top)) as i32;
-        cv.round_rect(Rect::new(x, base - bh, bw, bh + 4), 4, theme::ACCENT);
+        let color = if focus == Some(i) {
+            theme::INK
+        } else {
+            theme::ACCENT
+        };
+        cv.round_rect(Rect::new(x, base - bh, bw, bh + 4), 4, color);
         cv.fill(Rect::new(x, base, bw, 1), theme::LINE);
         let t = format!("{v}");
         let tw = fonts.width(Face::Strong, 12, &t);
@@ -115,7 +126,7 @@ fn picture(fonts: &mut Fonts, bars: &[(String, u32)]) -> Vec<u8> {
     let mut px = vec![0u32; (PIC_W * PIC_H) as usize];
     {
         let mut cv = Canvas::new(&mut px, PIC_W, PIC_H, PIC_W).expect("picture");
-        draw_chart(&mut cv, fonts, Rect::new(0, 0, PIC_W, PIC_H), bars);
+        draw_chart(&mut cv, fonts, Rect::new(0, 0, PIC_W, PIC_H), bars, None);
     }
     let mut out = format!("P6\n{PIC_W} {PIC_H}\n255\n").into_bytes();
     out.reserve(px.len() * 3);
@@ -139,6 +150,10 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut seen: Option<Version> = None;
     let mut last_look = 0;
     let mut note = String::new();
+    // A document handed over (live handoff), and the line it was at.
+    let mut source: Option<u64> = None;
+    let mut at_line: Option<usize> = None;
+    let mut focus: Option<usize> = None;
     loop {
         let mut keys = Vec::new();
         let mut save = false;
@@ -146,6 +161,26 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             match e {
                 Event::Key(k) => keys.push(k),
                 Event::Shortcut('s') => save = true,
+                // Make again (living validity): look at the numbers as
+                // they are now, then save the picture and summary again.
+                Event::MakeAgain(_) => {
+                    save = true;
+                    last_look = 0;
+                    say!("asked to make it again");
+                }
+                // Live handoff: chart the document handed over, with the
+                // line the other app was at marked.
+                Event::HandedOff { file, place, from } => {
+                    source = Some(file);
+                    last_look = 0;
+                    seen = None;
+                    at_line = Some(place as usize);
+                    say!(
+                        "continues a document from {} at line {}",
+                        alaya_apps::store::app_name(alaya_programs::files::app_id(from)),
+                        place + 1
+                    );
+                }
                 Event::Close => crate::closed(&win),
                 _ => {}
             }
@@ -153,13 +188,22 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         let now = rt::now_ms();
         if last_look == 0 || now - last_look >= 2000 {
             last_look = now;
-            if let Ok(f) = store.lookup(docs, NUMBERS)
+            if let Ok(f) = source.map_or_else(|| store.lookup(docs, NUMBERS), Ok)
                 && let Ok(v) = store.version(f)
                 && Some(v) != seen
                 && let Ok((b, v)) = store.read_versioned(f)
             {
                 seen = Some(v);
-                bars = parse(&String::from_utf8_lossy(&b));
+                let text = String::from_utf8_lossy(&b);
+                bars = parse(&text);
+                // The bar of the line handed over: the numbers before it.
+                focus = at_line.map(|l| {
+                    let before: String = text.lines().take(l).flat_map(|x| [x, "\n"]).collect();
+                    parse(&before).len()
+                });
+                if let Some(i) = focus {
+                    say!("marks bar {} of {}", i + 1, bars.len());
+                }
                 say!(
                     "drew {} bars from {} version {}",
                     bars.len(),
@@ -179,12 +223,14 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
             save |= pressed;
             ui.text(14, h - 28, Face::Text, 12, &note, theme::MUTED);
             ui.finish();
+            win.tell(&ui.tree);
             win.pointer.released = false;
             draw_chart(
                 &mut cv,
                 &mut fonts,
                 Rect::new(12, 48, w - 24, h - 86),
                 &bars,
+                focus,
             );
         }
         if save && let Some(src) = seen {

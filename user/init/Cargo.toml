@@ -17,3 +17,4 @@ bench = false
 alaya-sys = { path = "../sys" }
 alaya-programs = { path = "../programs" }
 alaya-crypto = { path = "../../crypto" }
+alaya-bundle = { path = "../../bundle" }

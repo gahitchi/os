@@ -8,3 +8,5 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+alaya-bundle = { path = "../bundle" }
+alaya-crypto = { path = "../crypto" }

@@ -225,5 +225,7 @@ is what the host tests do at every write.
 - The machine key is a test key until the login (milestone 6) and the TPM.
 - Scrambling is in software. Hardware AES comes later (on the PC the
   kernel does not save the vector registers for programs yet).
-- One undo, the timeline, grants with time, named versions and forgetting
-  files for good are milestone 7; they are built on this store.
+- One undo, the timeline, named versions, a lock key for every file and
+  side branches came in milestone 7, step 1:
+  [`going-back.md`](going-back.md). Grants with time and forgetting files
+  for good (its screen) are step 2.

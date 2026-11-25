@@ -17,6 +17,8 @@
 
 #![no_std]
 
+pub mod ed25519;
+
 /// The AES S-box.
 const SBOX: [u8; 256] = {
     let mut s = [0u8; 256];
@@ -369,6 +371,50 @@ impl Keys {
     /// A full fingerprint of anything else (the front page).
     pub fn mac(&self, parts: &[&[u8]]) -> [u8; 32] {
         self.mac.mac(parts)
+    }
+
+    /// Scramble (or unscramble: it is its own inverse) a short field, such
+    /// as a file's name, with a key stream that depends on `tweak`. A field
+    /// is only ever scrambled once for each tweak (the store uses the
+    /// field's place, which a new value never shares with an old one
+    /// under the same key unless the value is the same too).
+    pub fn scramble_field(&self, tweak: &[&[u8]], data: &mut [u8]) {
+        let mut parts: [&[u8]; 4] = [b"field", &[], &[], &[]];
+        for (i, t) in tweak.iter().take(3).enumerate() {
+            parts[1 + i] = t;
+        }
+        let iv = self.mac.mac(&parts[..1 + tweak.len().min(3)]);
+        self.aes.ctr(iv[..16].try_into().unwrap(), data);
+    }
+}
+
+/// A small generator of secret random numbers (HMAC-DRBG style, NIST SP
+/// 800-90A with SHA-256, without the reseed counter): what it gives is as
+/// good as the randomness stirred in.
+#[derive(Clone)]
+pub struct Rng {
+    state: [u8; 32],
+}
+
+impl Rng {
+    pub fn new(seed: &[u8]) -> Rng {
+        Rng {
+            state: Hmac::new(b"alaya rng").mac(&[seed]),
+        }
+    }
+
+    /// Mix in more randomness.
+    pub fn stir(&mut self, extra: &[u8]) {
+        self.state = Hmac::new(&self.state).mac(&[b"stir", extra]);
+    }
+
+    /// 32 fresh random bytes. The state moves on, so earlier outputs
+    /// cannot be worked out from a later state.
+    pub fn next(&mut self, context: &[u8]) -> [u8; 32] {
+        let h = Hmac::new(&self.state);
+        let out = h.mac(&[b"out", context]);
+        self.state = h.mac(&[b"next"]);
+        out
     }
 }
 

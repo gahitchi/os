@@ -17,6 +17,7 @@ use alaya_sys::abi::{BOOT_INFO_MAGIC, BootInfo, boot_flags, call, op};
 use alaya_sys::{At, Error, Kind, rights};
 
 mod fuzz;
+mod installed;
 mod m3;
 mod m4;
 mod m4b;
@@ -25,6 +26,19 @@ mod m5;
 mod m6;
 mod m6b;
 mod m6c;
+mod m7;
+mod m7b;
+mod m7c;
+mod m7d;
+mod m7e;
+mod m7f;
+mod m7g;
+mod m7h;
+mod m8a;
+mod m8b;
+mod m8c;
+mod m8d;
+mod m8e;
 
 alaya_sys::start_code!(main);
 
@@ -100,6 +114,9 @@ impl Slots {
 extern "C" fn main(info: &'static BootInfo) -> ! {
     say!("hello from user mode");
     assert!(info.magic == BOOT_INFO_MAGIC, "bad boot information");
+    // Its milliseconds were counted at a guessed 1 GHz until now (wrong on
+    // ARM, whose clock runs at 62.5 MHz in QEMU).
+    alaya_sys::rt::set_clock_hz(info.clock_hz);
     let root = info.table;
     let mut slots = Slots {
         table: root,

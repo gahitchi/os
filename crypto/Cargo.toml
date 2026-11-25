@@ -1,6 +1,6 @@
 [package]
 name = "alaya-crypto"
-description = "Alaya's own scrambling and fingerprints: AES-256, SHA-256, HMAC-SHA-256 and the slow PIN step; no memory allocation"
+description = "Alaya's own scrambling, fingerprints and signatures: AES-256, SHA-256, HMAC-SHA-256, the slow PIN step, SHA-512 and Ed25519; no memory allocation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

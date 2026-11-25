@@ -205,6 +205,12 @@ impl Regs {
         w16(self.common + C_MSIX_CONFIG, NO_VECTOR);
     }
 
+    /// Configuration changes interrupt too, through MSI-X entry 0 (the
+    /// screen driver: a screen plugged in or out).
+    pub fn config_interrupts(&self) {
+        w16(self.common + C_MSIX_CONFIG, 0);
+    }
+
     /// Set up queue `index` in the ring page at `va` (device address
     /// `iova`), interrupting through MSI-X entry 0.
     pub fn queue(&self, index: u16, va: u64, iova: u64) -> Result<Queue, u64> {

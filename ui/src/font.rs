@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! Alaya's own reader for TrueType font files, and the rasteriser that
 //! turns a letter's outline into soft-edged pixels.
 //!

@@ -5,6 +5,8 @@
 //! Host tools needed: git, make, a C compiler (to build Limine's small
 //! installer), xorriso, and qemu-system-x86_64.
 
+mod bundles;
+
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -139,7 +141,7 @@ options:
   --cpus <n>        number of virtual cores (default 1)
   --uefi            boot with UEFI firmware (OVMF) instead of BIOS
   --accel <a>       kvm, tcg or auto (default auto: KVM when /dev/kvm is usable)
-  --memory <size>   guest memory, QEMU syntax (default 512M)
+  --memory <size>   guest memory, QEMU syntax (default 1G)
   --display <kind>  QEMU display for run (gtk, sdl, vnc=:0, none); default:
                     QEMU's own window for run, none for tests
   --vnc             run: show the screen over VNC on port 5900 (phones)
@@ -177,6 +179,8 @@ struct Options {
     plug: Option<u32>,
     /// QEMU's window: `None` lets `run` open one and keeps tests without.
     display: Option<String>,
+    /// Start with an empty backup stick (the boot test does).
+    fresh_stick: bool,
 }
 
 fn main() -> ExitCode {
@@ -197,12 +201,13 @@ fn main() -> ExitCode {
         timeout: 300,
         image: None,
         accel: "auto".into(),
-        memory: "512M".into(),
+        memory: "1G".into(),
         fault: None,
         fuzz: None,
         long: false,
         plug: None,
         display: None,
+        fresh_stick: false,
     };
     let mut timeout_set = false;
     while let Some(arg) = args.next() {
@@ -270,8 +275,7 @@ fn main() -> ExitCode {
         opts.timeout = secs + 180;
     }
     if opts.arch == Arch::Aarch64 {
-        // ARM machines start from UEFI firmware; there is no BIOS. The
-        // firmware keeps more of the memory for itself than a PC's.
+        // ARM machines start from UEFI firmware; there is no BIOS.
         opts.uefi = true;
     }
     if opts.long && !timeout_set {
@@ -295,7 +299,10 @@ fn main() -> ExitCode {
         }
         "run" => run_image(&opts).and_then(|image| run(&image, &opts)),
         "test" if opts.plug.is_some() => image_for(&opts).and_then(|image| plug(&image, &opts)),
-        "test" => image_for(&opts).and_then(|image| test(&image, &opts)),
+        "test" => {
+            opts.fresh_stick = true;
+            image_for(&opts).and_then(|image| test(&image, &opts))
+        }
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -367,7 +374,7 @@ const FONTS: [&str; 4] = [
     "Figtree-Regular.ttf",
     "Figtree-SemiBold.ttf",
     "IBMPlexMono-Regular.ttf",
-    "NotoSans-Regular.ttf",
+    "NotoSans-Alaya.ttf",
 ];
 
 /// Build the first program and the programs it starts. They live in the
@@ -432,6 +439,45 @@ fn disk_image() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The backup stick (milestone 7): a second virtual disk, shown to Alaya
+/// the way a USB stick will be (real USB comes in milestone 11). The boot
+/// test starts each run with an empty one.
+const STICK_BYTES: u64 = 64 << 20;
+
+fn stick_image(fresh: bool) -> Result<PathBuf, String> {
+    let path = root().join("build").join("stick.img");
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    if fresh {
+        let _ = fs::remove_file(&path);
+    }
+    let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if len < STICK_BYTES {
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("stick image: {e}"))?;
+        f.set_len(STICK_BYTES)
+            .map_err(|e| format!("stick image: {e}"))?;
+    }
+    Ok(path)
+}
+
+/// The stick's QEMU arguments: after every other device, so the disk
+/// comes first on the bus.
+fn stick_args(opts: &Options) -> Result<Vec<String>, String> {
+    Ok(vec![
+        "-drive".into(),
+        format!(
+            "file={},if=none,id=stick0,format=raw",
+            stick_image(opts.fresh_stick)?.display()
+        ),
+        "-device".into(),
+        "virtio-blk-pci,drive=stick0,disable-legacy=on,iommu_platform=on".into(),
+    ])
+}
+
 /// Code generation flags for programs (the kernel's are in
 /// `.cargo/config.toml`).
 const USER_RUSTFLAGS: &str = "-C relocation-model=static";
@@ -463,7 +509,48 @@ fn limine() -> Result<PathBuf, String> {
 
 /// Build the bootable ISO. `cmdline` makes a test variant whose kernel
 /// command line is set, kept apart from the normal image.
+/// The C interface's header lists exactly the functions `c.rs` has
+/// (milestone 8, step 3).
+fn check_c_interface() -> Result<(), String> {
+    let dir = root().join("user").join("apps");
+    let read = |p: PathBuf| fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()));
+    let names = |text: &str, before: &str| -> Vec<String> {
+        let mut v: Vec<String> = text
+            .lines()
+            .filter_map(|l| {
+                let at = l.find("alaya_")?;
+                let rest = &l[at..];
+                let end = rest.find('(')?;
+                (l[..at].trim_end().ends_with(before) || before.is_empty())
+                    .then(|| rest[..end].to_string())
+            })
+            .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let header = read(dir.join("include").join("alaya.h"))?;
+    let rust = read(dir.join("src").join("c.rs"))?;
+    let h = names(
+        &header
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('*') && !l.trim_start().starts_with("/*"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "",
+    );
+    let r = names(&rust, "fn");
+    if h != r {
+        return Err(format!(
+            "alaya.h and c.rs differ: the header has {h:?}, c.rs has {r:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathBuf, String> {
+    check_c_interface()?;
     let kernel = build_kernel(arch, release)?;
     let init = build_init(arch, release)?;
     let limine = limine()?;
@@ -488,6 +575,14 @@ fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathB
         )?;
         conf.push_str(&format!("    module_path: boot():/boot/{name}\n"));
     }
+    // The example apps (milestone 8), signed, in one module.
+    let postcards = fs::read(user_binary(arch, release, "postcards"))
+        .map_err(|e| format!("read postcards: {e}"))?;
+    let postcards = bundles::loaded_only(&postcards)?;
+    let examples = bundles::pack(&bundles::postcards(&postcards))?;
+    fs::write(iso_root.join("boot/example-apps"), examples)
+        .map_err(|e| format!("write example-apps: {e}"))?;
+    conf.push_str("    module_path: boot():/boot/example-apps\n");
     // Alaya's letters (decision 105), in the order the desktop expects.
     for name in FONTS {
         copy(
@@ -639,7 +734,7 @@ fn display_args(opts: &Options, serial: &str) -> Vec<String> {
 /// like the disk. The mouse is a "tablet": it reports where the pointer
 /// is, so it follows the host's pointer exactly.
 const SEAT_DEVICES: [&str; 3] = [
-    "virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800",
+    "virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800,max_outputs=2",
     "virtio-keyboard-pci,id=kbd0,disable-legacy=on,iommu_platform=on",
     "virtio-tablet-pci,id=tablet0,disable-legacy=on,iommu_platform=on",
 ];
@@ -677,6 +772,7 @@ fn qemu(image: &Path, opts: &Options, serial: &str) -> Result<Command, String> {
         "virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on",
     ])
     .args(SEAT_DEVICES.iter().flat_map(|d| ["-device", d]))
+    .args(stick_args(opts)?)
     .arg("-cdrom")
     .arg(image);
     if use_kvm(opts)? {
@@ -742,7 +838,8 @@ fn qemu_arm(image: &Path, opts: &Options, serial: &str) -> Result<Command, Strin
             image.display()
         ))
         .args(["-device", "virtio-scsi-pci,id=scsi0"])
-        .args(["-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0"]);
+        .args(["-device", "scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0"])
+        .args(stick_args(opts)?);
     let firmware = aavmf()?;
     // Firmware images built for flash must be padded to 64 MiB; the plain
     // QEMU_EFI.fd works with -bios.
@@ -951,6 +1048,41 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
                 if line.contains(TYPED_MARKER) {
                     typed = true;
                 }
+                // The timeline's speed gate (milestone 7): under 100 ms a
+                // moment, measured on real speed (KVM). Plain emulation
+                // runs many times slower, so there the number is shown.
+                if let Some(rest) = line.split(TIMELINE_MARKER).nth(1)
+                    && let Some(us) = rest
+                        .split(" at most ")
+                        .nth(1)
+                        .and_then(|r| r.split(' ').next())
+                        .and_then(|n| n.parse::<u64>().ok())
+                {
+                    // Real speed means KVM with a host core for every
+                    // core Alaya has: with more, the host pauses Alaya's
+                    // cores (one may hold the kernel lock), which measures
+                    // the host, not Alaya. Emulated, a moment must still
+                    // open within two seconds.
+                    let own_cores = opts.cpus <= host_cpus();
+                    let limit = if accel == "KVM" { 100_000 } else { 2_000_000 };
+                    if own_cores && us >= limit {
+                        break Err(format!(
+                            "the timeline's gate: a moment took {us} us (must be under {} ms)",
+                            limit / 1000
+                        ));
+                    }
+                    println!(
+                        "  * timeline gate: {} ms a moment at most ({})",
+                        us / 1000,
+                        if !own_cores {
+                            "more cores than the host has: not checked, the gate needs one host core each"
+                        } else if accel == "KVM" {
+                            "under 100 ms: passed"
+                        } else {
+                            "emulated: under 2 s, passed; the 100 ms gate is checked with KVM"
+                        }
+                    );
+                }
                 if line.contains(DESKTOP_SKIPPED_MARKER) {
                     break Err("the drag never reached the desktop".into());
                 }
@@ -1041,6 +1173,12 @@ const DRAG_MARKER: &str = "init: desktop: drag from";
 const DESKTOP_SKIPPED_MARKER: &str = "init: desktop: nobody dragged";
 const DESKTOP_DRAWN_MARKER: &str = "init: desktop: drawn after a screen driver crash";
 const KEYS_MARKER: &str = "init: keys: ";
+/// How many cores the host has (for the timeline's gate).
+fn host_cpus() -> u32 {
+    thread::available_parallelism().map_or(1, |n| n.get() as u32)
+}
+
+const TIMELINE_MARKER: &str = "init: timeline: each of";
 const SCREENSHOT_MARKER: &str = "init: screenshot ";
 /// After its checks the first program looks after drivers and apps.
 const SERVING_MARKER: &str = "init: looking after the drivers and the apps";
@@ -1263,10 +1401,43 @@ fn type_keys(q: &mut Qmp, spec: &str) -> Result<(), String> {
                 "enter" => "ret".to_string(),
                 "backspace" => "backspace".to_string(),
                 "escape" => "esc".to_string(),
-                n if n.starts_with("ctrl+") => {
-                    let k = n[5..].chars().next().ok_or("ctrl+ what?")?;
-                    let (code, _) = qcode(k).ok_or(format!("no key for {k}"))?;
-                    press(q, &["ctrl", &code])?;
+                "compose" => "compose".to_string(),
+                "space" => "spc".to_string(),
+                n if n.starts_with("super+")
+                    || n.starts_with("ctrl+")
+                    || n.starts_with("shift+") =>
+                {
+                    // Modifiers may chain: `{super+shift+right}`.
+                    let mut k = n;
+                    let mut held: Vec<&str> = Vec::new();
+                    loop {
+                        if let Some(r) = k.strip_prefix("super+") {
+                            (k, held) = (r, [held, vec!["meta_l"]].concat());
+                        } else if let Some(r) = k.strip_prefix("ctrl+") {
+                            (k, held) = (r, [held, vec!["ctrl"]].concat());
+                        } else if let Some(r) = k.strip_prefix("shift+") {
+                            (k, held) = (r, [held, vec!["shift"]].concat());
+                        } else {
+                            break;
+                        }
+                    }
+                    let (code, shift) = match k {
+                        "up" | "down" | "left" | "right" | "tab" | "delete" => {
+                            (k.to_string(), false)
+                        }
+                        "enter" => ("ret".to_string(), false),
+                        "space" => ("spc".to_string(), false),
+                        "escape" => ("esc".to_string(), false),
+                        _ => {
+                            let c = k.chars().next().ok_or("a modifier with what?")?;
+                            qcode(c).ok_or(format!("no key for {c}"))?
+                        }
+                    };
+                    if shift && !held.contains(&"shift") {
+                        held.push("shift");
+                    }
+                    held.push(&code);
+                    press(q, &held)?;
                     continue;
                 }
                 n => n.to_string(),

@@ -139,11 +139,31 @@ disk_image() {
     echo "$disk"
 }
 
+# The backup stick (milestone 7): a second virtual disk, shown to Alaya
+# the way a USB stick will be. 'alaya.sh test' starts with an empty one.
+stick_image() {
+    local stick="$DIR/stick.img"
+    if [ "${FRESH_STICK:-0}" = 1 ]; then
+        rm -f "$stick"
+    fi
+    if [ ! -f "$stick" ] || [ "$(wc -c <"$stick")" -lt 67108864 ]; then
+        mkdir -p "$DIR"
+        truncate -s 64M "$stick"
+    fi
+    echo "$stick"
+}
+
+stick_devices() {
+    printf '%s\n' \
+        -drive "file=$(stick_image),if=none,id=stick0,format=raw" \
+        -device virtio-blk-pci,drive=stick0,disable-legacy=on,iommu_platform=on
+}
+
 # The screen card, keyboard and mouse (milestone 6), behind the IOMMU like
 # the disk. Keep in sync with SEAT_DEVICES in xtask.
 seat_devices() {
     printf '%s\n' \
-        -device virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800 \
+        -device virtio-gpu-pci,id=gpu0,disable-legacy=on,iommu_platform=on,xres=1280,yres=800,max_outputs=2 \
         -device virtio-keyboard-pci,id=kbd0,disable-legacy=on,iommu_platform=on \
         -device virtio-tablet-pci,id=tablet0,disable-legacy=on,iommu_platform=on
 }
@@ -157,13 +177,14 @@ qemu_args() {
         fi
         # QEMU's generic ARM board: GICv3 with its message translator, the
         # SMMUv3 device memory guard, and the virtual disk.
-        printf '%s\n' -machine virt,gic-version=3,iommu=smmuv3 -m 512M -smp "$CPUS" -no-reboot \
+        printf '%s\n' -machine virt,gic-version=3,iommu=smmuv3 -m 1G -smp "$CPUS" -no-reboot \
             -display none -monitor none -bios "$(arm_firmware)" \
             -drive "file=$(disk_image),if=none,id=disk0,format=raw" \
             -device virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on \
             $(seat_devices) \
             -drive "file=$1,if=none,id=cd0,format=raw,readonly=on" \
-            -device virtio-scsi-pci,id=scsi0 -device scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0
+            -device virtio-scsi-pci,id=scsi0 -device scsi-cd,drive=cd0,bus=scsi0.0,bootindex=0 \
+            $(stick_devices)
         return
     fi
     if [ "$ACCEL" = kvm ]; then
@@ -176,12 +197,13 @@ qemu_args() {
     # checks use (milestone 4).
     local disk
     disk=$(disk_image)
-    printf '%s\n' -machine q35 -m 512M -smp "$CPUS" -no-reboot -vga none \
+    printf '%s\n' -machine q35 -m 1G -smp "$CPUS" -no-reboot -vga none \
         -display none -monitor none \
         -device intel-iommu,aw-bits=48,intremap=off \
         -drive "file=$disk,if=none,id=disk0,format=raw" \
         -device virtio-blk-pci,drive=disk0,disable-legacy=on,iommu_platform=on \
         $(seat_devices) \
+        $(stick_devices) \
         -cdrom "$1"
 }
 
@@ -197,7 +219,7 @@ run() {
 test_boot() {
     local image="$1" log
     log=$(mktemp "${TMPDIR:-/tmp}/alaya-serial.XXXXXX")
-    mapfile -t args < <(qemu_args "$image")
+    mapfile -t args < <(FRESH_STICK=1 qemu_args "$image")
     say "boot test on $CPUS core(s) with $(accel_name), timeout ${TIMEOUT}s"
     "$QEMU" "${args[@]}" -serial "file:$log" </dev/null &
     local pid=$! result=timeout start=$SECONDS

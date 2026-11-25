@@ -24,7 +24,7 @@ jobs:
       - name: Install host tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 xorriso ovmf
+          sudo apt-get install -y -qq qemu-system-x86 xorriso ovmf clang
 
       - name: Allow KVM
         run: |
@@ -46,13 +46,13 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --package alaya-kernel --target x86_64-unknown-none -- -D warnings
-          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-store --package alaya-ui --all-targets -- -D warnings
+          cargo clippy --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-bundle --package alaya-store --package alaya-ui --all-targets -- -D warnings
           RUSTFLAGS="-C relocation-model=static" cargo clippy --package alaya-init --package alaya-sys --package alaya-programs --package alaya-apps \
             --target x86_64-unknown-none --target-dir target/user -- -D warnings
           cargo clippy --package xtask -- -D warnings
 
       - name: Host tests (capability code, time budgets, toolkit)
-        run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-ui
+        run: cargo test --package alaya-abi --package alaya-cap --package alaya-sched --package alaya-crypto --package alaya-bundle --package alaya-ui
 
       # The store (milestone 5): crypto test vectors, a power cut at every
       # disk write and flush, damaged blocks, and what recording reads costs.
@@ -65,24 +65,32 @@ jobs:
       # Plain emulation (TCG), as on a phone: xAPIC and the APIC one-shot
       # timer, since QEMU cannot emulate the TSC-deadline timer.
       - name: Boot, TCG, BIOS, 1 core
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 1
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 1 --timeout 900
       - name: Boot, TCG, BIOS, 2 cores
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2 --timeout 900
       - name: Boot, TCG, BIOS, 8 cores
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 8
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 8 --timeout 900
       - name: Boot, TCG, UEFI, 2 cores
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2 --uefi
+        run: cargo xtask test --image build/alaya-x86_64.iso --accel tcg --cpus 2 --uefi --timeout 900
 
       # KVM with the host CPU, as on a PC: x2APIC and the TSC-deadline timer.
-      - name: Boot, KVM, BIOS, 1, 2 and 8 cores (TSC-deadline timer)
+      # At most as many cores as the runner has: with more, the host
+      # takes cores away from Alaya while they hold the kernel lock and
+      # every other core waits (a 2-minute boot took 40 minutes on 8 cores
+      # over a 4-core runner). The 8-core logic is still checked in TCG
+      # above, where no core is taken away.
+      - name: Boot, KVM, BIOS, 1, 2 and all the runner's cores (TSC-deadline timer)
         run: |
           set -o pipefail
-          for n in 1 2 8; do
-            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n | tee boot.log
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          for n in 1 2 $cores; do
+            cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $n --timeout 3000 | tee boot.log
             grep -q "timer is the TSC-deadline timer" boot.log
           done
-      - name: Boot, KVM, UEFI, 8 cores, 4 GiB (1 GiB pages)
-        run: cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus 8 --uefi --memory 4G
+      - name: Boot, KVM, UEFI, all the runner's cores, 4 GiB (1 GiB pages)
+        run: |
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          cargo xtask test --image build/alaya-x86_64.iso --accel kvm --cpus $cores --uefi --memory 4G --timeout 3000
 
       # Crash on purpose and check the fault reports.
       - name: Fault reports
@@ -98,16 +106,22 @@ jobs:
 
       # The kernel fuzzer: threads on every core make random system calls
       # on a sandbox; the kernel must not crash and must still work after.
-      - name: Kernel fuzzer, TCG, 4 cores, 60 s
-        run: cargo xtask test --accel tcg --cpus 4 --fuzz 60
-      - name: Kernel fuzzer, KVM, 8 cores, 120 s
-        run: cargo xtask test --accel kvm --cpus 8 --fuzz 120
+      # (Decision 149: KVM gets at most the runner's own cores; 8 cores are
+      # fuzzed under plain emulation, where no core is taken away.)
+      - name: Kernel fuzzer, TCG, 8 cores, 60 s
+        run: cargo xtask test --accel tcg --cpus 8 --fuzz 60 --timeout 1200
+      - name: Kernel fuzzer, KVM, all the runner's cores, 120 s
+        run: |
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          cargo xtask test --accel kvm --cpus $cores --fuzz 120 --timeout 900
 
       # Milestone 4: the driver is killed at random for 10 minutes while the
       # test app uses the disk; no wrong answer may reach it. Milestone 5:
       # the store is stopped dead at 200 exact points inside saves.
-      - name: Driver chaos, KVM, 8 cores, 10 minutes
-        run: cargo xtask test --accel kvm --cpus 8 --long
+      - name: Driver chaos, KVM, all the runner's cores, 10 minutes
+        run: |
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          cargo xtask test --accel kvm --cpus $cores --long
 
       # Milestone 5 (the long run above also stops the store dead 200 times
       # inside saves): real "pull the plug" runs, QEMU killed at random
@@ -153,7 +167,7 @@ jobs:
       - name: Install host tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-arm qemu-efi-aarch64 xorriso
+          sudo apt-get install -y -qq qemu-system-arm qemu-efi-aarch64 xorriso clang
 
       - name: Allow KVM (when the machine has it)
         run: |
@@ -185,7 +199,7 @@ jobs:
             cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --accel tcg --cpus $n --timeout 900
           done
       - name: Boot, KVM if available, 8 cores
-        run: cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus 8 --timeout 900
+        run: cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus 8 --timeout 7000
 
       - name: Fault reports
         run: |
@@ -195,7 +209,7 @@ jobs:
           cargo xtask test --arch aarch64 --accel tcg --cpus 4 --fault other-core-page
 
       - name: Kernel fuzzer, 4 cores, 60 s
-        run: cargo xtask test --arch aarch64 --accel tcg --cpus 4 --fuzz 60 --timeout 900
+        run: cargo xtask test --arch aarch64 --accel tcg --cpus 4 --fuzz 60 --timeout 900 --memory 1G
 
       - name: Pull the plug, 2 cores, 10 boots
         run: cargo xtask test --arch aarch64 --cpus 2 --plug 10 --timeout 900

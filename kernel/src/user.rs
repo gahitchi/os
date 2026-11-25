@@ -38,7 +38,7 @@ use crate::obj::{self, SLOT_SPACE, SLOT_TABLE, SPACE_META, Sc, Tcb, internal, st
 use crate::{kprintln, limine, percpu, sched, sync, time};
 
 /// The first program's table has 4096 slots.
-pub const ROOT_BITS: u8 = 12;
+pub const ROOT_BITS: u8 = 13;
 
 /// Page-table memory for the first program's address space.
 const POOL_BITS: u8 = 20;

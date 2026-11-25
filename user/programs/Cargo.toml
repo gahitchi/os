@@ -39,6 +39,7 @@ bench = false
 [dependencies]
 alaya-sys = { path = "../sys" }
 alaya-store = { path = "../../store" }
+alaya-crypto = { path = "../../crypto" }
 
 [[bin]]
 name = "store"

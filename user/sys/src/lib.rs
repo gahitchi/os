@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! System calls for Alaya programs: thin wrappers over the system call
 //! instruction (`syscall` on a PC, `svc` on ARM), following the register
 //! layout in `alaya-abi` and [`arch`].

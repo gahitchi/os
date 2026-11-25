@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The pieces apps are built from: labels, buttons, text boxes and lists,
 //! drawn in Alaya's look (the mock-up of decision 86).
 //!
@@ -62,6 +62,137 @@ pub struct Node {
     /// For text boxes: the text; for list items: "selected" or empty.
     pub value: String,
     pub focused: bool,
+}
+
+impl Role {
+    pub fn code(self) -> u8 {
+        match self {
+            Role::Label => 1,
+            Role::Button => 2,
+            Role::TextBox => 3,
+            Role::List => 4,
+            Role::ListItem => 5,
+            Role::Group => 6,
+        }
+    }
+
+    pub fn from_code(c: u8) -> Option<Role> {
+        Some(match c {
+            1 => Role::Label,
+            2 => Role::Button,
+            3 => Role::TextBox,
+            4 => Role::List,
+            5 => Role::ListItem,
+            6 => Role::Group,
+            _ => return None,
+        })
+    }
+
+    /// The word the screen reader says for it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Role::Label => "text",
+            Role::Button => "button",
+            Role::TextBox => "text box",
+            Role::List => "list",
+            Role::ListItem => "item",
+            Role::Group => "group",
+        }
+    }
+}
+
+/// The tree as bytes, for the screen reader (milestone 7b): for each
+/// node its role, whether it has the keyboard, and its name and value
+/// (each cut to 255 bytes). At most `max` bytes; places are left out.
+pub fn encode_tree(tree: &[Node], max: usize) -> Vec<u8> {
+    fn cut(s: &str) -> &str {
+        let mut n = s.len().min(255);
+        while !s.is_char_boundary(n) {
+            n -= 1;
+        }
+        &s[..n]
+    }
+    let mut b = Vec::new();
+    for n in tree {
+        let (name, value) = (cut(&n.name), cut(&n.value));
+        if b.len() + 4 + name.len() + value.len() > max {
+            break;
+        }
+        b.extend([
+            n.role.code(),
+            n.focused as u8,
+            name.len() as u8,
+            value.len() as u8,
+        ]);
+        b.extend(name.as_bytes());
+        b.extend(value.as_bytes());
+    }
+    b
+}
+
+/// The tree back from [`encode_tree`]'s bytes (what does not read as a
+/// tree ends it: the bytes come from an app).
+pub fn decode_tree(mut b: &[u8]) -> Vec<Node> {
+    let mut out = Vec::new();
+    while b.len() >= 4 {
+        let (Some(role), f, nl, vl) = (
+            Role::from_code(b[0]),
+            b[1] != 0,
+            b[2] as usize,
+            b[3] as usize,
+        ) else {
+            break;
+        };
+        let Some(rest) = b.get(4..4 + nl + vl) else {
+            break;
+        };
+        let (Ok(name), Ok(value)) = (
+            core::str::from_utf8(&rest[..nl]),
+            core::str::from_utf8(&rest[nl..]),
+        ) else {
+            break;
+        };
+        out.push(Node {
+            role,
+            name: String::from(name),
+            rect: Rect::default(),
+            value: String::from(value),
+            focused: f,
+        });
+        b = &b[4 + nl + vl..];
+    }
+    out
+}
+
+/// What the screen reader says for a window's tree: the piece that has
+/// the keyboard, its role, and its state (for a list, the chosen row; for
+/// a text box, the start of its text). `None` when nothing has it.
+pub fn say_focused(tree: &[Node]) -> Option<(Role, String)> {
+    let i = tree.iter().position(|n| n.focused)?;
+    let n = &tree[i];
+    let mut s = alloc::format!("{}, {}", n.name, n.role.word());
+    match n.role {
+        Role::List => {
+            let rows = tree[i + 1..]
+                .iter()
+                .take_while(|x| x.role == Role::ListItem);
+            let count = rows.clone().count();
+            s.push_str(&alloc::format!(", {count} items"));
+            if let Some(r) = rows.clone().find(|x| x.value.starts_with("selected")) {
+                s.push_str(&alloc::format!(", chosen: {}", r.name));
+            }
+        }
+        Role::TextBox => {
+            let t: String = n.value.chars().take(40).collect();
+            if t.is_empty() {
+                s.push_str(", empty");
+            } else {
+                s.push_str(&alloc::format!(", says: {t}"));
+            }
+        }
+        _ => {}
+    }
+    Some((n.role, s))
 }
 
 /// Keys the toolkit understands, already turned into meaning.
@@ -305,6 +436,10 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
         self.cv.round_rect(r, 7, bg);
         self.cv
             .round_frame(r, 7, if focused { theme::ACCENT } else { line });
+        if focused {
+            // The keyboard ring: always visible, outside the piece.
+            self.cv.round_frame(r.grow(2), 9, theme::ACCENT);
+        }
         let (asc, lh) = self.fonts.metrics(Face::Strong, TEXT_PX);
         let ty = y + (30 - lh) / 2 + asc;
         self.fonts
@@ -372,6 +507,9 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
         self.cv.round_rect(r, 6, theme::WIN);
         self.cv
             .round_frame(r, 6, if focused { theme::ACCENT } else { theme::LINE });
+        if focused {
+            self.cv.round_frame(r.grow(2), 8, theme::ACCENT);
+        }
         let old = self.cv.set_clip(r.grow(-2));
         let visible = ((r.h - 16) / lh.max(1)).max(1) as usize;
         let (cl, _) = edit.position();
@@ -422,6 +560,9 @@ impl<'c, 'p, 'f, 'd> Ui<'c, 'p, 'f, 'd> {
         self.cv.round_rect(r, 6, theme::WIN);
         self.cv
             .round_frame(r, 6, if focused { theme::ACCENT } else { theme::LINE });
+        if focused {
+            self.cv.round_frame(r.grow(2), 8, theme::ACCENT);
+        }
         self.node(Role::List, name, r, "", focused);
         let old = self.cv.set_clip(r.grow(-1));
         let row_h = 30;

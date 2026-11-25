@@ -30,6 +30,13 @@
 (*   page itself was damaged).                                             *)
 (* - The state it opens is exactly a state that was committed.             *)
 (*                                                                         *)
+(* Milestone 7 adds wiping (forget, decision 62): blocks that held file   *)
+(* keys are overwritten with junk when they are freed, ScrubDefer commits *)
+(* after they were given up. TLC checks that this never breaks the above, *)
+(* and that once a commit doing it is promised, none of those blocks     *)
+(* still holds what it held (KeysWiped). Wiping one commit early breaks  *)
+(* opening after a bad front page (EarlyScrub.cfg must fail).             *)
+(*                                                                         *)
 (* And that the model has teeth: reusing given-up blocks after one commit *)
 (* instead of two leaves nothing to open after a bad front page            *)
 (* (EarlyReuse.cfg), and writing the front page without flushing the      *)
@@ -43,7 +50,8 @@ CONSTANTS
     MaxGen,     \* commits to explore
     Defer,      \* blocks given up in commit g are reused from g + Defer
     MaxDamage,  \* bad spots on front pages
-    Flush       \* flush the blocks before writing the front page
+    Flush,      \* flush the blocks before writing the front page
+    ScrubDefer  \* given-up blocks are wiped this many commits later
 
 VARIABLES
     states,     \* states[g]: the set of <<block, birth>> of commit g
@@ -57,10 +65,17 @@ VARIABLES
     toWrite,    \* blocks of the commit being made, not written yet
     damage,     \* bad spots used
     broken,     \* opening found nothing to open
-    lost        \* opening lost a promised commit
+    lost,       \* opening lost a promised commit
+    gaveUp,     \* <<block, birth, commit>> given up and not yet wiped
+    wiping,     \* the part of gaveUp the commit being made wipes
+    real,       \* the commit being made writes blocks (not an open's bump)
+    wiped       \* <<block, birth>> whose wiping was promised
 
 vars == <<states, released, disk, cache, front, frontCache, gen, phase,
-          toWrite, damage, broken, lost>>
+          toWrite, damage, broken, lost, gaveUp, wiping, real, wiped>>
+
+\* What a wiped block holds: no commit's birth.
+Junk == MaxGen + 10
 
 Gens == 0..(MaxGen + 4)
 
@@ -89,6 +104,10 @@ Init ==
     /\ damage = 0
     /\ broken = FALSE
     /\ lost = FALSE
+    /\ gaveUp = {}
+    /\ wiping = {}
+    /\ real = FALSE
+    /\ wiped = {}
 
 \* Start commit gen + 1: replace a non-empty part of the state.
 Begin ==
@@ -101,9 +120,17 @@ Begin ==
               /\ states' = [states EXCEPT ![n] =
                                (states[gen] \ R) \cup {<<b, n>> : b \in N}]
               /\ released' = [released EXCEPT ![n] = BlocksOf(R)]
-              /\ toWrite' = {<<b, n>> : b \in N}
+              \* Wipe what was given up ScrubDefer commits ago, unless
+              \* this commit reuses the block anyway.
+              /\ LET due == {p \in gaveUp : p[3] + ScrubDefer <= n}
+                     junk == {<<p[1], Junk>> : p \in {q \in due : q[1] \notin N}}
+                 IN /\ toWrite' = {<<b, n>> : b \in N} \cup junk
+                    /\ wiping' = due
+              /\ gaveUp' = gaveUp \cup {<<p[1], p[2], n>> : p \in R}
     /\ phase' = "write"
-    /\ UNCHANGED <<disk, cache, front, frontCache, gen, damage, broken, lost>>
+    /\ real' = TRUE
+    /\ UNCHANGED <<disk, cache, front, frontCache, gen, damage, broken, lost,
+                   wiped>>
 
 Write ==
     /\ phase = "write"
@@ -111,7 +138,7 @@ Write ==
          /\ cache' = cache \cup {p}
          /\ toWrite' = toWrite \ {p}
     /\ UNCHANGED <<states, released, disk, front, frontCache, gen, phase,
-                   damage, broken, lost>>
+                   damage, broken, lost, gaveUp, wiping, real, wiped>>
 
 ApplyCache(d, C) == [b \in Blocks |->
     IF \E p \in C : p[1] = b THEN (CHOOSE p \in C : p[1] = b)[2] ELSE d[b]]
@@ -124,7 +151,8 @@ WriteFront ==
     /\ cache' = IF Flush THEN {} ELSE cache
     /\ frontCache' = [gen |-> gen + 1, ok |-> TRUE, slot |-> (gen + 1) % 2]
     /\ phase' = "frontflush"
-    /\ UNCHANGED <<states, released, front, gen, toWrite, damage, broken, lost>>
+    /\ UNCHANGED <<states, released, front, gen, toWrite, damage, broken, lost,
+                   gaveUp, wiping, real, wiped>>
 
 FlushFront ==
     /\ phase = "frontflush"
@@ -135,6 +163,11 @@ FlushFront ==
     /\ frontCache' = None
     /\ gen' = frontCache.gen
     /\ phase' = "idle"
+    \* A promised commit has wiped (or reused) what it was due to.
+    /\ gaveUp' = IF real THEN gaveUp \ wiping ELSE gaveUp
+    /\ wiped' = IF real THEN wiped \cup {<<p[1], p[2]>> : p \in wiping} ELSE wiped
+    /\ wiping' = {}
+    /\ real' = FALSE
     /\ UNCHANGED <<states, released, toWrite, damage, broken, lost>>
 
 Whole(f, d) == f.ok /\ states[f.gen] # {} /\ \A p \in states[f.gen] : d[p[1]] = p[2]
@@ -193,7 +226,7 @@ Cut ==
                /\ lost' = (good # {} /\ at < gen /\ states[at] # states[gen]
                              /\ ~(hurt /\ opened # newest))
                /\ IF good = {}
-                     THEN /\ UNCHANGED <<states, released, gen>>
+                     THEN /\ UNCHANGED <<states, released, gen, gaveUp>>
                           /\ frontCache' = None
                           /\ phase' = "idle"
                      ELSE /\ states' = [g \in Gens |->
@@ -201,12 +234,16 @@ Cut ==
                           \* What dead commits gave up is not given up.
                           /\ released' = [g \in Gens |->
                                 IF g > at THEN {} ELSE released[g]]
+                          /\ gaveUp' = {p \in gaveUp : p[3] <= at}
                           /\ gen' = at
                           /\ frontCache' = [gen |-> n, ok |-> TRUE, slot |-> n % 2]
                           /\ phase' = "frontflush"
          /\ damage' = damage + (IF hurt THEN 1 ELSE 0)
     /\ cache' = {}
     /\ toWrite' = {}
+    /\ wiping' = {}
+    /\ real' = FALSE
+    /\ UNCHANGED wiped
 
 Next == Begin \/ Write \/ WriteFront \/ FlushFront \/ (~broken /\ Cut)
 
@@ -224,4 +261,8 @@ NoLostCommit == ~lost
 
 \* Every state of a commit has Size distinct blocks.
 StatesWellFormed == Cardinality(BlocksOf(states[gen])) = Size
+
+\* Once wiping a block was promised, the disk no longer holds what it held
+\* (it holds junk, or a later commit's block).
+KeysWiped == \A p \in wiped : disk[p[1]] # p[2]
 =============================================================================

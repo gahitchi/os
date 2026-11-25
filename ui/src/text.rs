@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! Text: Alaya's letters (decision 105), with a fallback font for
 //! alphabets the main one lacks, and a cache of drawn glyphs.
 //!
@@ -118,6 +118,11 @@ impl<'a> Fonts<'a> {
 
     /// The width of `s` in pixels.
     pub fn width(&self, face: Face, px: u32, s: &str) -> i32 {
+        if crate::script::needs_work(s) {
+            // Joined Arabic is narrower than its letters one by one.
+            let v = crate::script::visual(s);
+            return v.chars().map(|c| self.advance(face, px, c)).sum();
+        }
         s.chars().map(|c| self.advance(face, px, c)).sum()
     }
 
@@ -151,8 +156,20 @@ impl<'a> Fonts<'a> {
         s: &str,
         c: Color,
     ) -> i32 {
+        // Right-to-left text: joined, in the order it is seen.
+        let seen;
+        let s = if crate::script::needs_work(s) {
+            seen = crate::script::visual(s);
+            seen.as_str()
+        } else {
+            s
+        };
         let mut pen = x;
         let clip = cv.clip();
+        // On a scaled canvas the letters are drawn at the pixel size, each
+        // where its point position falls, so text measures the same.
+        let ppx = (px as i32 * cv.scale() / 100).max(1) as u32;
+        let base = cv.px_of(y);
         for ch in s.chars() {
             if pen > clip.x + clip.w {
                 break;
@@ -160,8 +177,9 @@ impl<'a> Fonts<'a> {
             let adv = self.advance(face, px, ch);
             match self.lookup(face, ch) {
                 Some((i, g)) => {
-                    let b = self.bitmap(i, g, px);
-                    cv.glyph(b, pen + b.left, y + b.top, c);
+                    let at = cv.px_of(pen);
+                    let b = self.bitmap(i, g, ppx);
+                    cv.glyph(b, at + b.left, base + b.top, c);
                 }
                 None if ch == ' ' || ch.is_control() => {}
                 None => {

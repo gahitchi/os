@@ -58,6 +58,8 @@ struct App {
     store: u64,
     fault: u64,
     starts: u64,
+    /// Its main thread, to freeze it while its task is paused.
+    thread: u64,
 }
 
 /// Everything the first program keeps running after its checks.
@@ -66,8 +68,16 @@ pub(crate) struct Session<'a> {
     pub(crate) ep: u64,
     session_ntfn: u64,
     sizes: [u64; 4],
-    apps: [App; role::COUNT as usize + 1],
-    person: u64,
+    apps: [App; role::LAST as usize + 1],
+    pub(crate) person: u64,
+    /// The machine's own files (installed apps' records), once asked for.
+    machine: Option<Files>,
+    /// Whether the area bundles are read into is mapped.
+    load_mapped: bool,
+    /// Whether the last installed app started had a store handle.
+    pub(crate) store_given: Option<bool>,
+    /// Apps the desktop asked to start, seen while waiting.
+    asked: core::cell::Cell<u64>,
     gpu: usize,
     keyboard: usize,
     pointer: usize,
@@ -116,6 +126,66 @@ impl Files {
     pub(crate) fn root(&self, class: u64) -> u64 {
         self.call(fs::ROOT, &[class])[1]
     }
+
+    /// Up to `out.len()` bytes (at most one transfer) from `off`.
+    pub(crate) fn read_at(&self, f: u64, off: u64, out: &mut [u8]) -> Option<usize> {
+        let n = out.len().min(fs::XFER_BYTES);
+        let r = self.call(fs::READ, &[f, off, n as u64]);
+        if r[0] != st::OK {
+            return None;
+        }
+        let got = (r[1] as usize).min(n);
+        out[..got].copy_from_slice(&self.buf()[..got]);
+        Some(got)
+    }
+
+    pub(crate) fn size(&self, f: u64) -> Option<u64> {
+        let r = self.call(fs::STAT, &[f]);
+        (r[0] == st::OK).then_some(r[1])
+    }
+
+    /// Where `name` is among the documents (not folders) in `dir`, in
+    /// name order: its row in Alaya's Open window.
+    pub(crate) fn place_in_docs(&self, dir: u64, name: &[u8]) -> usize {
+        let r = self.call(fs::LIST, &[dir]);
+        if r[0] != st::OK {
+            return 0;
+        }
+        let mut names = [[0u8; 32]; 64];
+        let mut lens = [0usize; 64];
+        let mut files = [0u64; 64];
+        let n = (r[1] as usize).min(64);
+        for i in 0..n {
+            let o = 48 * i;
+            let b = self.buf();
+            let w = |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+            files[i] = w(0);
+            lens[i] = (w(1) as usize).min(32);
+            names[i][..lens[i]].copy_from_slice(&b[o + 16..o + 16 + lens[i]]);
+        }
+        (0..n)
+            .filter(|&i| {
+                let st = self.call(fs::STAT, &[files[i]]);
+                st[0] == st::OK && st[3] == 0 && names[i][..lens[i]] < *name
+            })
+            .count()
+    }
+}
+
+/// "{home}", `downs` times "{down}", then "{enter}": a row of Alaya's
+/// Open window, picked.
+pub(crate) fn key_list(buf: &mut [u8; 256], downs: usize) -> &str {
+    let mut n = 0;
+    let mut add = |s: &[u8]| {
+        buf[n..n + s.len()].copy_from_slice(s);
+        n += s.len();
+    };
+    add(b"{home}");
+    for _ in 0..downs {
+        add(b"{down}");
+    }
+    add(b"{enter}");
+    core::str::from_utf8(&buf[..n]).unwrap_or("")
 }
 
 /// The editor's return point as the store has it: cursor and the text's
@@ -164,8 +234,14 @@ impl<'a> Session<'a> {
             if mods & 2 != 0 {
                 press(29, 1);
             }
+            if mods & 4 != 0 {
+                press(125, 1);
+            }
             press(code, 1);
             press(code, 0);
+            if mods & 4 != 0 {
+                press(125, 0);
+            }
             if mods & 2 != 0 {
                 press(29, 0);
             }
@@ -177,7 +253,7 @@ impl<'a> Session<'a> {
     }
 
     /// Drag with the left button from one place to another.
-    fn drag(&self, from: (u64, u64), to: (u64, u64), done: impl Fn() -> bool) -> bool {
+    pub(crate) fn drag(&self, from: (u64, u64), to: (u64, u64), done: impl Fn() -> bool) -> bool {
         say!(
             "desktop: drag from {} {} to {} {}",
             from.0,
@@ -185,7 +261,8 @@ impl<'a> Session<'a> {
             to.0,
             to.1
         );
-        if HOST.load(SeqCst) && sleep_until(10_000, &done) {
+        // Long: a second click is not always harmless (an undo button).
+        if HOST.load(SeqCst) && sleep_until(30_000, &done) {
             return true;
         }
         let (w, h) = self.size();
@@ -227,6 +304,26 @@ impl<'a> Session<'a> {
         (load(&sp.width), load(&sp.height))
     }
 
+    /// Start the apps the desktop asked for meanwhile (the dock, an undo
+    /// that opens a window again); `serve` does this after the checks.
+    pub(crate) fn start_asked(&mut self) -> u64 {
+        let bits = self.asked_bits();
+        self.asked.set(0);
+        for r in 1..=role::LAST {
+            if bits & (1 << r) != 0 {
+                self.start_app(r);
+            }
+        }
+        bits
+    }
+
+    /// What the desktop asked for so far (kept for `start_asked`).
+    pub(crate) fn asked_bits(&self) -> u64 {
+        let bits = self.asked.get() | alaya_sys::poll(self.session_ntfn).unwrap_or(0);
+        self.asked.set(bits);
+        bits
+    }
+
     pub(crate) fn session(&self) -> [u64; 6] {
         ask(self.ep, dk::SESSION, &[])
     }
@@ -242,6 +339,21 @@ impl<'a> Session<'a> {
     pub fn start_app(&mut self, r: u64) {
         let i = r as usize;
         let info = self.s.k.info;
+        // An installed app: its record and bundle, checked again.
+        let ready = if role::installed(r) {
+            match self.installed_ready(r - role::INSTALLED) {
+                Ok(x) => Some(x),
+                Err(e) => {
+                    say!("installed app {} not started: {e}", r - role::INSTALLED);
+                    // A copy still running ends too: it may not run.
+                    self.end_app(r);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let files = ready.as_ref().is_none_or(|x| x.files());
         if self.apps[i].ut == 0 {
             let big = info.untyped[..info.untyped_count as usize]
                 .iter()
@@ -290,14 +402,22 @@ impl<'a> Session<'a> {
             shared.push(p);
         }
         let ch = fs::app_channel(r);
-        for p in 0..fs::XFER_PAGES {
+        // Without the files line, no way to the store at all.
+        for p in 0..fs::XFER_PAGES * u64::from(files) {
             let h = XFER_PAGES[(ch * fs::XFER_PAGES + p) as usize].load(SeqCst);
             shared.push((h, dk::XFER + p * 4096, map::WRITE));
         }
-        let mut args = [0u64; 8];
+        let mut args = [0u64; 9];
         args[dk::ARG_ROLE] = r;
         args[dk::ARG_CHANNEL] = ch;
         args[dk::ARG_FONTS..dk::ARG_FONTS + 4].copy_from_slice(&self.sizes);
+        if let Some(x) = &ready {
+            args[dk::ARG_VERSION] = u64::from(x.version);
+            args[dk::ARG_MAY] = u64::from(x.granted);
+            args[dk::ARG_STARTED] = alaya_sys::clock();
+            // The desktop times it, for the Experience Guardian.
+            ask(self.ep, dk::STARTING, &[r, u64::from(x.version)]);
+        }
         let app_sc = sc(k, 1000, 1000);
         let clock = sc(k, 50, 10_000);
         let mut parent = Parent {
@@ -313,13 +433,34 @@ impl<'a> Session<'a> {
             role::EDITOR => "editor",
             role::FILES => "files",
             role::CHART => "chart",
+            role::BACK => "back",
+            role::HELPER => "helper",
+            role::HOSTILE => "hostile",
+            role::TERMINAL => "terminal",
+            role::GAME => "glowroot",
+            _ if ready.is_some() => "installed",
             _ => "settings",
         };
-        program::start(
+        let image = match &ready {
+            Some(x) => x.program(),
+            None => module(info, "apps"),
+        };
+        let store = if files { a.store } else { program::NOTHING };
+        if let Some(x) = &ready {
+            let n = x.name.iter().position(|&c| c == 0).unwrap_or(32);
+            say!(
+                "starting {} {} (place {}), files {}",
+                core::str::from_utf8(&x.name[..n]).unwrap_or("?"),
+                x.version,
+                r - role::INSTALLED,
+                if files { "allowed" } else { "not allowed" }
+            );
+        }
+        let started = program::start(
             &mut parent,
             &Spec {
                 name,
-                image: module(info, "apps"),
+                image,
                 untyped: a.ut,
                 table_bits: 10,
                 own_bits: 23,
@@ -327,7 +468,7 @@ impl<'a> Session<'a> {
                 sc: app_sc,
                 clock_sc: clock,
                 fault: a.fault,
-                given: &[a.desktop, a.ntfn, a.store],
+                given: &[a.desktop, a.ntfn, store],
                 shared: shared.as_slice(),
                 args: &args,
                 clock_hz: info.clock_hz,
@@ -335,7 +476,97 @@ impl<'a> Session<'a> {
             },
         )
         .expect("start an app");
+        if ready.is_some() {
+            // Its store slot really is empty when files were unticked.
+            let given = alaya_sys::inspect(alaya_sys::At {
+                table: started.table,
+                index: alaya_sys::abi::start::FIRST_GIVEN + dk::APP_G_STORE,
+            })
+            .is_ok_and(|i| !i.is(Kind::Empty));
+            say!(
+                "installed app {}: store handle {}",
+                r - role::INSTALLED,
+                if given { "given" } else { "absent" }
+            );
+            self.store_given = Some(given);
+        }
         self.apps[i].starts += 1;
+        self.apps[i].thread = started.thread;
+    }
+
+    /// The installed app in `slot`, read and checked for the person.
+    fn installed_ready(&mut self, slot: u64) -> Result<crate::installed::Ready, &'static str> {
+        if self.person == 0 {
+            return Err("nobody is logged in");
+        }
+        let space = self.s.k.info.space;
+        crate::installed::map_area(&mut self.s.k, space, &mut self.load_mapped);
+        if self.machine.is_none() {
+            self.machine = Some(self.files_of(fs::MACHINE_PERSON));
+        }
+        let m = self.machine.as_ref().unwrap();
+        crate::installed::load(m, self.person, slot)
+    }
+
+    /// Whether a copy of the app of role `r` is running.
+    pub(crate) fn app_running(&self, r: u64) -> bool {
+        self.apps[r as usize].thread != 0
+    }
+
+    /// End the running copy of the app of role `r`, if any: all it has
+    /// is taken back, and nothing of it runs.
+    pub(crate) fn end_app(&mut self, r: u64) {
+        let a = self.apps[r as usize];
+        if a.ut == 0 || a.thread == 0 {
+            return;
+        }
+        let k = &mut self.s.k;
+        let _ = alaya_sys::revoke(k.at(a.ut));
+        for x in a.slots..a.slots + APP_SLOTS {
+            let _ = alaya_sys::delete(k.at(x));
+        }
+        self.apps[r as usize].thread = 0;
+        say!("app {r} ended");
+    }
+
+    /// A paused task's app is frozen, not closed (rule B3): its thread
+    /// stops where it is, and starts again when the task goes on.
+    pub(crate) fn pause_bits(&mut self, bits: u64, r: u64) {
+        let t = self.apps[r as usize].thread;
+        if t == 0 {
+            return;
+        }
+        if bits & (1 << (dk::PAUSE_SHIFT + r)) != 0 {
+            while alaya_sys::thread_stop(t).is_err() {}
+            say!("app {r} is frozen with its task");
+        }
+        if bits & (1 << (dk::GO_ON_SHIFT + r)) != 0 {
+            let _ = alaya_sys::thread_start(t);
+            say!("app {r} goes on");
+        }
+        if bits & (1 << (dk::END_SHIFT + r)) != 0 {
+            self.end_app(r);
+        }
+    }
+
+    /// The checks run before [`Session::serve`]: act on the desktop's
+    /// pause bits now, and leave every other bit for later.
+    pub(crate) fn pause_now(&mut self) {
+        let bits = self.asked_bits();
+        for r in 1..=role::LAST {
+            self.pause_bits(bits, r);
+        }
+        self.asked.set(
+            bits & !(0xffff << dk::PAUSE_SHIFT)
+                & !(0xffff << dk::GO_ON_SHIFT)
+                & !(0x7fff << dk::END_SHIFT),
+        );
+    }
+
+    /// Role `r`'s app is frozen (its thread stopped).
+    pub(crate) fn frozen(&self, r: u64) -> bool {
+        let t = self.apps[r as usize].thread;
+        t != 0 && alaya_sys::thread_read(t).is_ok_and(|s| s[3] == alaya_sys::abi::state::STOPPED)
     }
 
     pub(crate) fn wait_window(&self, r: u64) -> u64 {
@@ -368,10 +599,11 @@ impl<'a> Session<'a> {
                 if self.person == 0 {
                     continue;
                 }
-                for r in 1..=role::COUNT {
+                for r in 1..=role::LAST {
                     if m.badge & (1 << r) != 0 {
                         self.start_app(r);
                     }
+                    self.pause_bits(m.badge, r);
                 }
                 continue;
             }
@@ -383,7 +615,7 @@ impl<'a> Session<'a> {
                     say!("a driver stopped; starting it again");
                     self.s.start(b as usize - 1);
                 }
-                b if b > APP_FAULT && b <= APP_FAULT + role::COUNT => {
+                b if b > APP_FAULT && b <= APP_FAULT + role::LAST => {
                     say!("app {} stopped; starting it again", b - APP_FAULT);
                     self.start_app(b - APP_FAULT);
                 }
@@ -407,13 +639,16 @@ pub(crate) fn run<'a>(
         .unwrap()
         .handle;
     let desk_ut = carve(&mut s.k, big, 26, "64 MiB for the desktop");
+    // Window pictures get a block of their own: each window place keeps
+    // 4 MiB, and with installed apps (milestone 8) 32 MiB ran out.
+    let pictures_ut = carve(&mut s.k, big, 26, "64 MiB for window pictures");
 
     // The fonts, copied once into pages every app shares read only.
     let names = [
         "Figtree-Regular.ttf",
         "Figtree-SemiBold.ttf",
         "IBMPlexMono-Regular.ttf",
-        "NotoSans-Regular.ttf",
+        "NotoSans-Alaya.ttf",
     ];
     let font_pages = alloc_free::take_ro(0);
     let mut sizes = [0u64; 4];
@@ -466,11 +701,12 @@ pub(crate) fn run<'a>(
     let ep = s.k.make(Kind::Endpoint, 0);
     let session_ntfn = s.k.make(Kind::Notification, 0);
     let store_ep = STORE_EP.load(SeqCst);
-    let mut given = [0u64; dk::G_STORE_PERSON as usize + fs::MAX_PEOPLE as usize];
+    let mut given = [0u64; dk::G_PICTURES as usize + 1];
     given[dk::G_EP as usize] = ep;
     given[dk::G_SCREEN as usize] = g.ntfn;
     given[dk::G_SEAT as usize] = s.client;
     given[dk::G_SESSION as usize] = session_ntfn;
+    given[dk::G_PICTURES as usize] = pictures_ut | program::GIVE;
     for (i, person) in core::iter::once(fs::MACHINE_PERSON)
         .chain(1..=fs::MAX_PEOPLE)
         .enumerate()
@@ -545,8 +781,12 @@ pub(crate) fn run<'a>(
         ep,
         session_ntfn,
         sizes,
-        apps: [App::default(); role::COUNT as usize + 1],
+        apps: [App::default(); role::LAST as usize + 1],
+        machine: None,
+        load_mapped: false,
+        store_given: None,
         person: 0,
+        asked: core::cell::Cell::new(0),
         gpu,
         keyboard,
         pointer,
@@ -613,7 +853,7 @@ pub(crate) fn run<'a>(
     let mut buf = [0u8; 512];
     let me = x.files();
     let typed = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, n)| n == 30);
-    x.keys("hi", || typed(&mut [0u8; 512]), 8000);
+    x.keys("hi", || typed(&mut [0u8; 512]), 30_000);
     assert!(typed(&mut buf), "the typed keys never reached the editor");
 
     // Tiling on and off.
@@ -689,7 +929,7 @@ pub(crate) fn run<'a>(
     );
     let grew = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, n)| n == 36);
     assert!(
-        x.keys("{left}{left} more ", || grew(&mut [0u8; 512]), 8000),
+        x.keys("{left}{left} more ", || grew(&mut [0u8; 512]), 30_000),
         "the editor did not keep its return point"
     );
     let (cursor, len) = return_point(&me, &mut buf).unwrap();
@@ -702,7 +942,7 @@ pub(crate) fn run<'a>(
     // One more letter: it lands at the cursor the editor had.
     let more = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, n)| n == len + 1);
     assert!(
-        x.keys("!", || more(&mut [0u8; 512]), 8000),
+        x.keys("!", || more(&mut [0u8; 512]), 30_000),
         "the editor did not come back"
     );
     let (c2, _) = return_point(&me, &mut buf).unwrap();
@@ -739,7 +979,7 @@ pub(crate) fn run<'a>(
     // The chart maker reads its numbers about a second after it starts.
     sleep_until(1500, || false);
     assert!(
-        x.keys("{enter}", picture, 10_000),
+        x.keys("{enter}", picture, 30_000),
         "the chart maker saved no picture"
     );
     let mut head = [0u8; 16];
@@ -808,7 +1048,7 @@ pub(crate) fn run<'a>(
     ask(ep, dk::RAISE, &[set]);
     let basics = || ask(ep, dk::SESSION, &[])[3] == 0;
     assert!(
-        x.keys("{enter}", basics, 8000),
+        x.keys("{enter}", basics, 30_000),
         "Settings did not change the look"
     );
     assert!(
@@ -828,12 +1068,25 @@ pub(crate) fn run<'a>(
     let n = return_point(&me, &mut buf).unwrap().1;
     let after = |b: &mut [u8]| return_point(&me, b).is_some_and(|(_, m)| m == n + 1);
     assert!(
-        x.keys("?", || after(&mut [0u8; 512]), 8000),
+        x.keys("?", || after(&mut [0u8; 512]), 30_000),
         "keys stopped after the keyboard driver came back"
     );
     pass("the keyboard driver crashes under the desktop; typing carries on");
     let _ = (x.pointer, x.keyboard);
     crate::m6c::run(&mut x, pass);
+    crate::m7::run(&mut x, pass);
+    crate::m7b::run(&mut x, pass);
+    crate::m7c::run(&mut x, pass);
+    crate::m7d::run(&mut x, pass);
+    crate::m7e::run(&mut x, pass);
+    crate::m7f::run(&mut x, pass);
+    crate::m7g::run(&mut x, pass);
+    crate::m7h::run(&mut x, pass);
+    crate::m8a::run(&mut x, pass);
+    crate::m8b::run(&mut x, pass);
+    crate::m8c::run(&mut x, pass);
+    crate::m8d::run(&mut x, pass);
+    crate::m8e::run(&mut x, pass);
     x
 }
 
@@ -846,12 +1099,23 @@ impl Session<'_> {
     /// The first program's own badge on the store, as the person logged
     /// in, on channel 0 (the checks of milestone 5 are over).
     pub(crate) fn files(&mut self) -> Files {
+        let p = self.person;
+        self.files_of(p)
+    }
+
+    /// The same, as person `p` (the checks of milestone 7 make another).
+    pub(crate) fn files_of(&mut self, p: u64) -> Files {
+        self.files_as(p, fs::INIT_APP)
+    }
+
+    /// The same, as app `app` (milestone 7's checks play a stranger app).
+    pub(crate) fn files_as(&mut self, p: u64, app: u64) -> Files {
         let h = self.s.k.slot();
         alaya_sys::mint(
             self.s.k.at(h),
             self.s.k.at(STORE_EP.load(SeqCst)),
             rights::ALL,
-            fs::badge(self.person, fs::INIT_APP, 0),
+            fs::badge(p, app, 0),
         )
         .unwrap();
         Files { ep: h }

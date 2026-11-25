@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The small runtime of a started program: its entry point, printing with
 //! its name in front, a crash on panic (so whoever looks after it notices),
 //! its own memory, threads and a clock.
@@ -20,6 +20,12 @@ pub fn init(info: &StartInfo) {
     unsafe { (&mut *core::ptr::addr_of_mut!(NAME))[..n].copy_from_slice(&info.name[..n]) };
     NAME_LEN.store(n as u64, Ordering::Relaxed);
     CLOCK_HZ.store(info.clock_hz.max(1), Ordering::Relaxed);
+}
+
+/// Set the clock's ticks per second, for a program started without
+/// [`StartInfo`] (the first program gets the kernel's boot information).
+pub fn set_clock_hz(hz: u64) {
+    CLOCK_HZ.store(hz.max(1), Ordering::Relaxed);
 }
 
 /// The program's name.

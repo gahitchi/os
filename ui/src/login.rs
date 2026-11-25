@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The first setup and the login screen (milestone 6b), which only the
 //! desktop draws.
 //!
@@ -65,43 +65,81 @@ pub fn draw_picture(cv: &mut Canvas, r: Rect, i: usize) {
     }
 }
 
-/// What Alaya will be used for (decision 90, first version): two looks.
+/// What Alaya will be used for (decision 90; milestone 7a, step 3): a
+/// look only changes what is on screen. Every protection works the same
+/// in each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Look {
     /// Files, the text editor and settings; nothing else on screen.
-    Basics,
-    /// Every app in the dock, and the loose group labels.
+    Everyday,
+    /// Every app in the dock, and the group labels.
     Everything,
+    /// Games first: a quiet dock, and only "now" ever shows at once.
+    Play,
+    /// Writing and making: the editor, the chart maker, files, groups.
+    Create,
+    /// Making software: every app and the group labels (the terminal
+    /// comes with milestone 8).
+    Build,
 }
 
 impl Look {
+    pub const ALL: [Look; 5] = [
+        Look::Everyday,
+        Look::Everything,
+        Look::Play,
+        Look::Create,
+        Look::Build,
+    ];
+
     pub fn code(self) -> u8 {
         match self {
-            Look::Basics => 0,
+            Look::Everyday => 0,
             Look::Everything => 1,
+            Look::Play => 2,
+            Look::Create => 3,
+            Look::Build => 4,
         }
     }
 
     pub fn from_code(c: u8) -> Look {
-        if c == 1 {
-            Look::Everything
-        } else {
-            Look::Basics
-        }
+        Look::ALL
+            .iter()
+            .copied()
+            .find(|l| l.code() == c)
+            .unwrap_or(Look::Everyday)
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Look::Basics => "Just the basics",
-            Look::Everything => "Everything on",
+            Look::Everyday => "Everyday",
+            Look::Everything => "Everything",
+            Look::Play => "Play",
+            Look::Create => "Create",
+            Look::Build => "Build",
         }
     }
 
     pub fn about(self) -> &'static str {
         match self {
-            Look::Basics => "Files, writing and settings.",
+            Look::Everyday => "Files, writing and settings.",
             Look::Everything => "All the apps, and window groups.",
+            Look::Play => "Games first: only what is urgent shows at once.",
+            Look::Create => "Writing, charts and files, with groups.",
+            Look::Build => "Everything, for making software.",
         }
+    }
+
+    /// The group labels show next to the dock.
+    pub fn groups(self) -> bool {
+        matches!(self, Look::Everything | Look::Create | Look::Build)
+    }
+
+    /// The next look (Right) or the one before (Left).
+    pub fn step(self, right: bool) -> Look {
+        let i = Look::ALL.iter().position(|l| *l == self).unwrap_or(0);
+        let n = Look::ALL.len();
+        Look::ALL[if right { (i + 1) % n } else { (i + n - 1) % n }]
     }
 }
 
@@ -147,7 +185,7 @@ struct SetupLayout {
     pin: Rect,
     again: Rect,
     pictures: [Rect; 8],
-    looks: [Rect; 2],
+    looks: [Rect; 5],
     start: Rect,
 }
 
@@ -164,7 +202,7 @@ impl Setup {
             pin: TextEdit::default(),
             again: TextEdit::default(),
             picture: 0,
-            look: Look::Basics,
+            look: Look::Everyday,
             focus: 0,
             error: None,
         }
@@ -182,10 +220,10 @@ impl Setup {
             pin: Rect::new(x, p.y + 186, (w - 16) / 2, 36),
             again: Rect::new(x + (w + 16) / 2, p.y + 186, (w - 16) / 2, 36),
             pictures,
-            looks: [
-                Rect::new(x, p.y + 386, (w - 16) / 2, 64),
-                Rect::new(x + (w + 16) / 2, p.y + 386, (w - 16) / 2, 64),
-            ],
+            looks: core::array::from_fn(|i| {
+                let tw = (w - 4 * 8) / 5;
+                Rect::new(x + i as i32 * (tw + 8), p.y + 386, tw, 64)
+            }),
             start: Rect::new(p.right() - 32 - 120, p.bottom() - 52, 120, 34),
         }
     }
@@ -241,11 +279,7 @@ impl Setup {
                 None
             }
             Key::Left | Key::Right if self.focus == 4 => {
-                self.look = if k == Key::Right {
-                    Look::Everything
-                } else {
-                    Look::Basics
-                };
+                self.look = self.look.step(k == Key::Right);
                 None
             }
             _ => {
@@ -278,11 +312,7 @@ impl Setup {
             self.picture = i;
         } else if let Some(i) = l.looks.iter().position(|r| r.contains(x, y)) {
             self.focus = 4;
-            self.look = if i == 0 {
-                Look::Basics
-            } else {
-                Look::Everything
-            };
+            self.look = Look::ALL[i.min(Look::ALL.len() - 1)];
         } else if l.start.contains(x, y) {
             return self.finish();
         }
@@ -352,7 +382,7 @@ impl Setup {
             "What will you use Alaya for? You can change it in Settings.",
             theme::INK,
         );
-        for (i, look) in [Look::Basics, Look::Everything].iter().enumerate() {
+        for (i, look) in Look::ALL.iter().enumerate() {
             let r = l.looks[i];
             let on = *look == self.look;
             cv.round_rect(r, 8, if on { theme::ACCENT_SOFT } else { theme::WIN });
@@ -372,19 +402,16 @@ impl Setup {
                 look.name(),
                 theme::INK,
             );
-            let old = cv.set_clip(cv.clip().intersect(r.grow(-4)));
-            let (asc, _) = fonts.metrics(Face::Text, 12);
-            fonts.draw(
-                cv,
-                Face::Text,
-                12,
-                r.x + 12,
-                r.y + 36 + asc,
-                look.about(),
-                theme::MUTED,
-            );
-            cv.set_clip(old);
         }
+        let r = l.looks[0];
+        small(
+            cv,
+            fonts,
+            x,
+            r.bottom() + 8,
+            self.look.about(),
+            theme::MUTED,
+        );
         if let Some(e) = self.error {
             small(cv, fonts, x, l.start.y + 8, e, theme::NOW);
         }

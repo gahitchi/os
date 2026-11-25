@@ -42,6 +42,14 @@ pub static STORE_BUFS: [AtomicU64; k::BUF_SLOTS as usize] =
 pub static KEEPER_EP: AtomicU64 = AtomicU64::new(0);
 /// The first program's control copy of the keeper's endpoint.
 pub static KEEPER_CTL: AtomicU64 = AtomicU64::new(0);
+/// The second virtual disk, shown as the backup stick (milestone 7): its
+/// keeper's endpoint (0: there is none) and the store's buffer pages for
+/// it.
+pub static STICK_EP: AtomicU64 = AtomicU64::new(0);
+pub static STICK_BUFS: [AtomicU64; k::BUF_SLOTS as usize] =
+    [const { AtomicU64::new(0) }; k::BUF_SLOTS as usize];
+/// The stick's buffer pages, as the first program holds them.
+const STICK_BUFS_AT: u64 = 0x2e00_0000_0000;
 
 /// Priorities: the first program is at 200.
 const KEEPER_PRIORITY: u64 = 180;
@@ -444,6 +452,7 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     assert!(info.ecam_base != 0, "no PCI configuration space");
     assert!(info.iommu != 0, "the IOMMU is off");
     let mut disk = None;
+    let mut stick = None;
     let mut seen = 0;
     let bus = info.ecam_bus_start as u16;
     for dev in 0..32u16 {
@@ -455,7 +464,12 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
             if vendor != 0xffff {
                 seen += 1;
                 if vendor == 0x1af4 && device == 0x1042 {
-                    disk = Some(bdf);
+                    // The first is the disk; a second is the stick.
+                    match disk {
+                        None => disk = Some(bdf),
+                        Some(_) if stick.is_none() => stick = Some(bdf),
+                        Some(_) => {}
+                    }
                 }
             }
             unmap_config(&mut k, h);
@@ -693,6 +707,13 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
     .unwrap();
     let _ = keeper;
     k.next = parent.slots.next;
+
+    // The backup stick, if there is one: a keeper of its own, so the
+    // stick's driver can crash without touching the disk (milestone 7).
+    if let Some(sbdf) = stick {
+        let nimages = nimg - STORE_BUFS.len();
+        start_stick(&mut k, info, big, sbdf, reg, &image_pages[..nimages], sizes);
+    }
 
     // Start the disk test app.
     let reg_app = badged(&mut k, reg, APP);
@@ -986,4 +1007,154 @@ pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str
         t.ok.load(SeqCst)
     );
     k.next
+}
+
+/// Find, lock and start the backup stick's keeper (the second virtio
+/// disk): like the disk's, with its own I/O space, interrupt, drivers and
+/// buffer pages for the store.
+fn start_stick(
+    k: &mut Kit,
+    info: &BootInfo,
+    big: u64,
+    bdf: u16,
+    reg: u64,
+    images: &[(u64, u64, u64)],
+    sizes: [u64; 2],
+) {
+    let cfg = map_config(k, info.ecam_base, bdf);
+    let mut codes = [0u64; 12];
+    let ncodes = virtio_pages(&mut codes);
+    let mut bars = [0u64; 6];
+    for (i, b) in bars.iter_mut().enumerate() {
+        *b = bar_address(i as u64);
+    }
+    alaya_sys::page_unmap(cfg).unwrap();
+    let mut dev_pages = [0u64; 12];
+    for i in 0..ncodes {
+        let (bar, page) = (codes[i] >> 16, codes[i] & 0xffff);
+        if bars[bar as usize] == 0 {
+            say!("the stick's BAR {bar} is not memory: no stick");
+            return;
+        }
+        let h = k.slot();
+        alaya_sys::device_page(
+            info.device_control,
+            bars[bar as usize] + page * 4096,
+            12,
+            k.at(h),
+        )
+        .unwrap();
+        dev_pages[i] = h;
+    }
+    // Its keeper's memory: 16 MiB, from a block nothing else uses if
+    // there is one.
+    let ut = k.slot();
+    let free = info.untyped[..info.untyped_count as usize].iter().any(|b| {
+        b.handle != big
+            && b.size_bits >= 24
+            && alaya_sys::retype(b.handle, Kind::Untyped, 24, 1, k.at(ut)).is_ok()
+    });
+    if !free && alaya_sys::retype(big, Kind::Untyped, 24, 1, k.at(ut)).is_err() {
+        say!("no memory for the stick's keeper: no stick");
+        return;
+    }
+    let io = k.make(Kind::IoSpace, 13);
+    let io_pool = k.make(Kind::Untyped, 16);
+    alaya_sys::iospace_assign(io, io_pool).unwrap();
+    alaya_sys::device_bind(info.device_control, io, bdf).unwrap();
+    let irq = k.slot();
+    alaya_sys::irq_get(info.irq_control, 0, k.at(irq)).unwrap();
+    let mut shared = [(0u64, 0u64, 0u64); 160];
+    shared[..images.len()].copy_from_slice(images);
+    let mut n = images.len();
+    for (i, b) in STICK_BUFS.iter().enumerate() {
+        let h = k.page_at(info.space, STICK_BUFS_AT + i as u64 * 4096, map::WRITE);
+        b.store(h, SeqCst);
+        shared[n] = (h, k::CLIENT_BUF + i as u64 * 4096, map::WRITE);
+        n += 1;
+    }
+    let ep = k.make(Kind::Endpoint, 0);
+    let reg_keeper = k.slot();
+    alaya_sys::mint(k.at(reg_keeper), k.at(reg), rights::ALL, KEEPER).unwrap();
+    let sc = |k: &mut Kit, budget: u64, period: u64| {
+        let s = k.make(Kind::SchedContext, 8);
+        alaya_sys::sc_configure(
+            info.sched_control,
+            s,
+            budget,
+            period,
+            alaya_sys::abi::core_type::ANY,
+            0,
+        )
+        .unwrap();
+        s
+    };
+    // The stick is for backups: a smaller share of the processor.
+    let keeper_sc = sc(k, 500, 1000);
+    // Its clock wakes it 20 times a second, not 200: a stick that is
+    // mostly idle should cost the other cores nothing.
+    let clock_sc = sc(k, 50, 50_000);
+    let driver_sc = [sc(k, 500, 1000), sc(k, 500, 1000)];
+    let cfg_copy = k.slot();
+    alaya_sys::copy(k.at(cfg_copy), k.at(cfg), rights::ALL).unwrap();
+    let fixed = [
+        ep,
+        io,
+        irq,
+        reg_keeper,
+        driver_sc[0],
+        driver_sc[1],
+        cfg_copy,
+    ];
+    let mut given = [0u64; 20];
+    given[..fixed.len()].copy_from_slice(&fixed);
+    given[fixed.len()..fixed.len() + ncodes].copy_from_slice(&dev_pages[..ncodes]);
+    let mut args = [0u64; 16];
+    args[k::ARG_BDF] = u64::from(bdf);
+    args[k::ARG_IMAGES] = 2;
+    args[k::ARG_IMAGE_SIZE] = sizes[0];
+    args[k::ARG_IMAGE_SIZE + 1] = sizes[1];
+    args[k::ARG_DEV_PAGES] = ncodes as u64;
+    args[k::ARG_DEV_CODES..k::ARG_DEV_CODES + ncodes].copy_from_slice(&codes[..ncodes]);
+    let mut parent = Parent {
+        space: info.space,
+        scratch: SCRATCH,
+        slots: Slots {
+            table: info.table,
+            next: k.next,
+            end: 1 << info.table_bits,
+        },
+    };
+    let started = program::start(
+        &mut parent,
+        &Spec {
+            name: "stick keeper",
+            image: module(info, "keeper"),
+            untyped: ut,
+            table_bits: 10,
+            own_bits: 23,
+            priority: KEEPER_PRIORITY,
+            sc: keeper_sc,
+            clock_sc,
+            fault: 0,
+            given: &given[..fixed.len() + ncodes],
+            shared: &shared[..n],
+            args: &args[..k::ARG_DEV_CODES + ncodes],
+            clock_hz: info.clock_hz,
+            cores: info.cores,
+        },
+    );
+    k.next = parent.slots.next;
+    match started {
+        Ok(_) => {
+            STICK_EP.store(ep, SeqCst);
+            say!(
+                "the backup stick is {:02x}:{:02x}.{}, with a keeper of its own",
+                bdf >> 8,
+                (bdf >> 3) & 31,
+                bdf & 7
+            );
+        }
+        Err(e) => say!("the stick's keeper did not start: {e:?}"),
+    }
 }
