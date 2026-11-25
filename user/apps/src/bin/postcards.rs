@@ -61,13 +61,16 @@ fn main(info: &'static StartInfo) -> ! {
         // A deliberately slow version, for the checks.
         // (The clock signals once a second.)
         let t0 = rt::now_ms();
-        let began = info.args[dk::ARG_STARTED];
-        let before = if began != 0 && began <= t0 {
-            t0 - began
+        let (began, now) = (info.args[dk::ARG_STARTED], alaya_sys::clock());
+        let hz = info.clock_hz.max(1);
+        let before = if began != 0 && began <= now {
+            ((now - began) as u128 * 1000 / hz as u128) as u64
         } else {
             0
         };
-        let wait = 2 * before + SLOW_MS;
+        // At most a minute more, whatever the numbers say.
+        let wait = 2 * before.min(30_000) + SLOW_MS;
+        say!("postcards {version}: slow on purpose, {wait} ms ({before} ms before it ran)");
         while rt::now_ms() - t0 < wait {
             let _ = alaya_sys::wait(ntfn);
         }

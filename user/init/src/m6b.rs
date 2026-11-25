@@ -414,7 +414,7 @@ impl<'a> Session<'a> {
         if let Some(x) = &ready {
             args[dk::ARG_VERSION] = u64::from(x.version);
             args[dk::ARG_MAY] = u64::from(x.granted);
-            args[dk::ARG_STARTED] = alaya_sys::rt::now_ms();
+            args[dk::ARG_STARTED] = alaya_sys::clock();
             // The desktop times it, for the Experience Guardian.
             ask(self.ep, dk::STARTING, &[r, u64::from(x.version)]);
         }

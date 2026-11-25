@@ -114,6 +114,9 @@ impl Slots {
 extern "C" fn main(info: &'static BootInfo) -> ! {
     say!("hello from user mode");
     assert!(info.magic == BOOT_INFO_MAGIC, "bad boot information");
+    // Its milliseconds were counted at a guessed 1 GHz until now (wrong on
+    // ARM, whose clock runs at 62.5 MHz in QEMU).
+    alaya_sys::rt::set_clock_hz(info.clock_hz);
     let root = info.table;
     let mut slots = Slots {
         table: root,

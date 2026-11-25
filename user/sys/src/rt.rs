@@ -22,6 +22,12 @@ pub fn init(info: &StartInfo) {
     CLOCK_HZ.store(info.clock_hz.max(1), Ordering::Relaxed);
 }
 
+/// Set the clock's ticks per second, for a program started without
+/// [`StartInfo`] (the first program gets the kernel's boot information).
+pub fn set_clock_hz(hz: u64) {
+    CLOCK_HZ.store(hz.max(1), Ordering::Relaxed);
+}
+
 /// The program's name.
 pub fn name() -> &'static str {
     let n = NAME_LEN.load(Ordering::Relaxed) as usize;
