@@ -117,5 +117,5 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 122: game mode: with the editor full screen, Postcards 3 running with no window is frozen and an update offered meanwhile waits; leaving full screen, it goes on and the update comes.
 - 123: a note from the editor, held while you are elsewhere, comes forward when you go into the editor's group.
 - 124: live handoff: the editor hands a document it holds to the chart maker at line 3 after Alaya asks; "Stay here" hands nothing, and a document it does not hold cannot be handed.
-- 125: the terminal runs C tools on Alaya's own C library: hello, the library's self test, and wc on a document that fails until the person picks it in the Open window, then counts it; every command is kept in the terminal's log.
+- 125: the terminal runs C tools on Alaya's own C library: hello and the library's self test; wc counts a document outside tasks; inside a protected task only the task's files, until "all" and the person's "Open all" ("Only the task" keeps the wall); one undo closes them again.
 - 126: Glowroot, a game in C on the SDL subset, saves twice; every save is kept in Saved games, the older one comes back from the game's save list and is saved as the newest without losing the others; another app can take neither the folder nor its history; full screen turns game mode on.

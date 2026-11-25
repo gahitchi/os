@@ -57,9 +57,9 @@ The same header also has `alaya_store_lookup`, `alaya_store_remove` and
 - `unistd.h` and `fcntl.h`: `open`, `read`, `write`, `lseek`, `close`.
 
 Files are whole documents, read when opened and written back when closed:
-`name` or `/docs/name` is a document the person handed the app, and
+`name` or `/docs/name` is one of the documents the app may use, and
 `/app/name` is one of the app's own files. Anything else is "not found". A
-C program can reach exactly what its app was granted, nothing more. What a
+C program can reach exactly what its app may reach, nothing more. What a
 program prints goes to the app (the terminal shows it); `exit` and `abort`
 end the program, not the app.
 
@@ -67,11 +67,15 @@ end the program, not the app.
 
 The terminal (in the Build look's dock) runs small C tools on that library:
 `hello`, `echo`, `cat`, `wc`, `ls`, `cp` and `selftest`, which checks the
-library itself. `pick` opens the Open window, so the person can hand the
-terminal a document before a tool reads it; `help` lists everything, `clear`
-empties the screen. Every command, what it printed and how it ended
-(`[exit N]`) is kept in the terminal's own file `terminal.log`. Boot check
-125 types into it.
+library itself. Like a terminal anywhere, it sees all of your documents
+(decision 40), never another person's, and reading a private file still
+counts. Inside a protected task it sees only the task's files; `all` asks
+you to open everything to it until it closes ("Open all" or "Only the
+task"), and one undo closes them again (decision 71). `pick` hands it one
+document through the Open window; `help` lists everything, `clear` empties
+the screen. Every command, what it printed and how it ended (`[exit N]`) is
+kept in the terminal's own file `terminal.log`. Boot check 125 types into
+it.
 
 ## Windows from C and the SDL subset
 

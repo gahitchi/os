@@ -367,6 +367,13 @@ impl Window {
         call(self.ep, dk::PICK, &[self.id, 2, question, 0])[0] == dk::OK
     }
 
+    /// Inside a protected task, ask the person to open all of their
+    /// documents to this app (the terminal only; decision 71): true when
+    /// Alaya asks; false when it is in no task and sees them already.
+    pub fn ask_all_files(&self) -> bool {
+        call(self.ep, dk::ALL_FILES, &[self.id])[0] == dk::OK
+    }
+
     /// Hand the document this app holds to the app with role `to`, at
     /// `place` (a line, from 0): live handoff. Alaya asks the person
     /// first; the other app gets an [`Event::HandedOff`].

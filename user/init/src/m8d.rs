@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Milestone 8 checks, step four: the old world. C programs on Alaya's
-//! own C library, run by the terminal, which sees only what it is handed.
+//! own C library, run by the terminal, which sees the person's documents,
+//! and inside a protected task only the task's (decisions 40 and 71).
 
 use alaya_programs::desktop::{self as dk, role};
-use alaya_programs::files::{self as fs, APPS, DOCS};
+use alaya_programs::files::{self as fs, APPS, DOCS, st};
 
 use crate::m3::sleep_until;
-use crate::m6b::{Files, Session, ask, key_list};
+use crate::m6b::{Files, Session, ask};
 
 const SLOW: u64 = 30_000;
 
@@ -63,35 +64,86 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         tail.ends_with("[exit 0]\n") && !tail.contains("FAILED"),
         "the C library failed its self test:\n{tail}"
     );
-    // Not handed over: not there.
-    assert!(
-        x.keys(
-            "wc numbers.txt{enter}",
-            || log_ends(&term, "[exit 1]\n"),
-            SLOW
-        ),
-        "wc read a document the terminal was not handed"
-    );
-    // Handed over in Alaya's Open window, then counted.
-    let picking = || ask(ep, dk::STATE, &[])[5] >> 62 & 1 != 0;
-    assert!(x.keys("pick{enter}", picking, SLOW), "no Open window");
-    let at = me.place_in_docs(docs, b"numbers.txt");
-    let mut keys = [0u8; 256];
-    let spec = key_list(&mut keys, at.min(60));
-    assert!(x.keys(spec, || !picking(), SLOW));
+    // Outside any task it sees the person's documents, like a terminal
+    // anywhere (decision 40).
     assert!(
         x.keys(
             "wc numbers.txt{enter}",
             || log_ends(&term, " numbers.txt\n[exit 0]\n"),
             SLOW
         ),
-        "wc did not count the handed document"
+        "wc did not count a document outside tasks"
     );
     assert!(
         sleep_until(SLOW, || log_has(&term, "$ wc numbers.txt\n")),
         "no record"
     );
+    // Inside a protected task: only the task's files (decision 71).
+    let notes = me.new_in(docs, "task-notes.txt", false);
+    let g = me.new_group("Terminal work");
+    assert!(me.call(fs::GROUP_ADD, &[g, notes])[0] == st::OK);
+    me.name_in("Terminal work");
+    assert!(me.call(fs::GROUP_SET, &[g, fs::GROUP_TASK, 0x5b_4b_8a, 0, 13])[0] == st::OK);
+    let app = fs::app_id(role::TERMINAL);
+    assert!(me.call(fs::OPEN_IN_TASK, &[app, g])[0] == st::OK);
+    assert!(
+        x.keys(
+            "wc numbers.txt{enter}",
+            || log_ends(&term, "[exit 1]\n"),
+            SLOW
+        ),
+        "the terminal reached a file outside its task"
+    );
+    assert!(
+        x.keys(
+            "wc task-notes.txt{enter}",
+            || log_ends(&term, " task-notes.txt\n[exit 0]\n"),
+            SLOW
+        ),
+        "the terminal could not reach its task's file"
+    );
+    // "all": Alaya asks; "Only the task" keeps the wall.
+    let asking = || ask(ep, dk::STATE, &[])[5] & 1 != 0;
+    assert!(x.keys("all{enter}", asking, SLOW), "Alaya did not ask");
+    assert!(x.keys("{escape}", || !asking(), SLOW));
+    assert!(
+        term.lookup(docs, "numbers.txt").is_none(),
+        "the wall fell without a yes"
+    );
+    // "Open all": everything, until it closes; one undo closes it again.
+    assert!(
+        x.keys("all{enter}", asking, SLOW),
+        "Alaya did not ask again"
+    );
+    assert!(
+        x.keys(
+            "{enter}",
+            || term.lookup(docs, "numbers.txt").is_some(),
+            SLOW
+        ),
+        "Open all did not open the person's files"
+    );
+    assert!(
+        x.keys(
+            "wc numbers.txt{enter}",
+            || log_ends(&term, " numbers.txt\n[exit 0]\n"),
+            SLOW
+        ),
+        "wc did not count once all files were open"
+    );
+    assert!(
+        x.keys(
+            "{super+z}",
+            || term.lookup(docs, "numbers.txt").is_none(),
+            SLOW
+        ),
+        "undo did not close the files again"
+    );
+    // Out of the task again.
+    assert!(me.call(fs::OPEN_IN_TASK, &[app, 0])[0] == st::OK);
+    assert!(me.call(fs::GROUP_REMOVE, &[g])[0] == st::OK);
+    assert!(term.lookup(docs, "numbers.txt").is_some());
     pass(
-        "C programs on Alaya's own C library run in the terminal: its self test passes, and wc counts a document only once it is handed over",
+        "C programs on Alaya's own C library run in the terminal: its self test passes; it sees your documents, inside a task only the task's until you open all, and one undo closes them again",
     );
 }

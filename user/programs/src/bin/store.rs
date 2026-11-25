@@ -14,6 +14,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use alaya_programs::desktop::role;
 use alaya_programs::files::{self as fs, st};
 use alaya_programs::{keeper as k, status};
 use alaya_store::again::ReadThen;
@@ -245,6 +246,7 @@ fn main(info: &'static StartInfo) -> ! {
         clips: Vec::new(),
         quiet: None,
         put_off: 0,
+        all_files: Vec::new(),
     };
     let mut msg = alaya_sys::msg_call(
         call::RECV,
@@ -391,6 +393,9 @@ struct Server<'a> {
     /// are put off (seconds), and how many were.
     quiet: Option<u64>,
     put_off: u64,
+    /// Terminals inside a task the person opened to all their files
+    /// (decision 71): (person, app), until the app closes.
+    all_files: Vec<(u64, u64)>,
 }
 
 /// Bytes to stir the key generator with, and whether the processor's
@@ -480,9 +485,21 @@ impl Server<'_> {
             let files = self.replay[i].2.clone();
             return self.replay_guard(label, p, ch, w, &files);
         }
+        // The terminal sees all of the person's documents outside tasks
+        // (decision 40), and inside one once the person opened it to all
+        // (decision 71). Never another person's; reading a private one
+        // still marks it.
+        let full = app == fs::app_id(role::TERMINAL)
+            && (self.all_files.contains(&(p, app)) || self.store.task_of(p, app)?.is_none());
         let s = &mut *self.store;
         let docs = |f: u64| FileId(f).class() == Class::Documents;
-        let need = |s: &mut Store<KeeperDisk>, f: u64, write: bool| need(s, p, app, f, write, now);
+        let need = |s: &mut Store<KeeperDisk>, f: u64, write: bool| {
+            if full {
+                Ok(Access::Current(true))
+            } else {
+                need(s, p, app, f, write, now)
+            }
+        };
         match label {
             fs::ROOT
             | fs::SAVE
@@ -575,7 +592,7 @@ impl Server<'_> {
                 let mut l = s.list(p, FileId(w[0]))?;
                 let mut keep = Vec::with_capacity(l.len());
                 for (name, f) in l.drain(..) {
-                    if s.access(p, app, f, now)? != Access::No {
+                    if full || s.access(p, app, f, now)? != Access::No {
                         keep.push((name, f));
                     }
                 }
@@ -1137,6 +1154,16 @@ impl Server<'_> {
                 }
                 alloc::vec![code, files.len() as u64]
             }
+            fs::ALL_FILES => {
+                if app != fs::DESKTOP_APP && app != fs::INIT_APP {
+                    return Err(Error::BadRequest);
+                }
+                self.all_files.retain(|r| *r != (p, w[0]));
+                if w[1] != 0 {
+                    self.all_files.push((p, w[0]));
+                }
+                alloc::vec![]
+            }
             fs::SAVED_GAMES => {
                 // Saved games (decision 161): one folder for all games in
                 // the documents, made by Alaya; in it, each game's own.
@@ -1281,6 +1308,7 @@ impl Server<'_> {
                     return Err(Error::BadRequest);
                 }
                 self.replay.retain(|r| !(r.0 == p && r.1 == w[0]));
+                self.all_files.retain(|r| *r != (p, w[0]));
                 alloc::vec![s.app_closed(p, w[0])?]
             }
             fs::RUN_AGAIN => {
@@ -1402,7 +1430,6 @@ impl Server<'_> {
                 }
             }
             fs::RECOVERY_KEY => {
-                use alaya_programs::desktop::role;
                 if ![fs::DESKTOP_APP, fs::INIT_APP, fs::app_id(role::SETTINGS)].contains(&app) {
                     return Err(Error::BadRequest);
                 }
@@ -1746,7 +1773,6 @@ impl Server<'_> {
 /// browser, Settings and "What happened?"). Numbers below are Alaya's own
 /// programs: the desktop, the first program and its store checks.
 fn restricted(app: u64) -> bool {
-    use alaya_programs::desktop::role;
     app >= fs::app_id(0)
         && ![
             fs::app_id(role::FILES),

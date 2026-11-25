@@ -698,6 +698,12 @@ impl Store {
         Ok(self.call(fs::QUIET, &[on as u64])?[1])
     }
 
+    /// Open all of the person's documents to the terminal inside its
+    /// task, or close them again (the desktop only; decision 71).
+    pub fn all_files(&self, app: u64, on: bool) -> Result<(), Status> {
+        self.call(fs::ALL_FILES, &[app, on as u64]).map(|_| ())
+    }
+
     /// This game's folder for its saves, `Saved games/<game>` in the
     /// documents (decision 161): made the first time, its own.
     pub fn saved_games(&self, game: &str) -> Result<u64, Status> {
@@ -1300,6 +1306,9 @@ pub mod label {
     /// Experience Guardian: its place, then its name. Undo and redo both
     /// swap the two versions kept.
     pub const UPDATE: u8 = b'u';
+    /// The terminal was opened to all files inside its task (decision
+    /// 71): its role, then its name. Undo closes them again.
+    pub const ALL_FILES: u8 = b'a';
 }
 
 /// A label for the undo list: what (a [`label`] letter) and the name.
@@ -1341,6 +1350,7 @@ pub fn describe(label: &[u8]) -> String {
         Some(&label::INSTALL) => alloc::format!("install {}", rest(2)),
         Some(&label::REMOVE) => alloc::format!("remove {}", rest(2)),
         Some(&label::UPDATE) => alloc::format!("update {}", rest(2)),
+        Some(&label::ALL_FILES) => alloc::format!("open all your files to {}", rest(2)),
         Some(&label::TASK) => match (label.get(2).copied(), label.get(3).copied()) {
             (_, Some(3)) => alloc::format!("pause {}", rest(4)),
             (Some(3), Some(1)) => alloc::format!("go on with {}", rest(4)),

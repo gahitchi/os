@@ -3,14 +3,16 @@
 //! small C programs built on Alaya's own C library (`user/libc`), run
 //! inside this program like a toolbox.
 //!
-//! It sees only what it is handed, like any app (decision 71): "pick"
-//! asks Alaya's Open window for a document, and from then on tools can
-//! use it by name. In a protected task it sees the task's files. Each
-//! command and what it printed is also kept in its own file
-//! `terminal.log`, so you (and the checks) can read it back.
+//! It sees all of the person's documents, like a terminal anywhere
+//! (decision 40), and never another person's; reading a private one
+//! still counts. Inside a protected task it sees only the task's files,
+//! until "all" asks the person to open everything to it (decision 71).
+//! "pick" hands it one document through Alaya's Open window. Each command
+//! and what it printed is also kept in its own file `terminal.log`, so
+//! you (and the checks) can read it back.
 //!
 //! Tools: hello, echo, cat, wc, ls, cp, selftest. Built in: help, pick,
-//! clear.
+//! all, clear.
 
 use alloc::format;
 use alloc::string::String;
@@ -97,7 +99,9 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let log = store.root(APPS).and_then(|a| store.open(a, LOG)).ok();
     let mut lines: Vec<String> = alloc::vec![
         String::from("Alaya terminal. Tools: hello echo cat wc ls cp selftest."),
-        String::from("It sees only what you hand it: type \"pick\" to choose a document."),
+        String::from(
+            "It sees your documents; inside a task only the task's (\"all\" asks for more)."
+        ),
     ];
     let mut input = String::new();
     loop {
@@ -135,10 +139,17 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 None => {}
                 Some("help") => {
                     out = String::from(
-                        "hello, echo WORDS, cat FILES, wc FILES, ls, cp FROM TO, selftest; pick, clear\n",
+                        "hello, echo WORDS, cat FILES, wc FILES, ls, cp FROM TO, selftest; pick, all, clear\n",
                     )
                 }
                 Some("clear") => lines.clear(),
+                Some("all") => {
+                    out = String::from(if win.ask_all_files() {
+                        "Alaya asks you first: all your files, or only the task's.\n"
+                    } else {
+                        "The terminal already sees all your documents (it is in no task).\n"
+                    })
+                }
                 Some("pick") => {
                     out = String::from(if win.pick(false, false) {
                         "Pick a document in Alaya's Open window.\n"

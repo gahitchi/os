@@ -122,7 +122,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         versions()
     );
     // Another app cannot take the game's folder.
-    let other = x.files_as(person, fs::app_id(role::TERMINAL));
+    let other = x.files_as(person, fs::app_id(role::CHART));
     other.buf()[..8].copy_from_slice(b"Glowroot");
     let r = other.call(fs::SAVED_GAMES, &[8]);
     assert!(

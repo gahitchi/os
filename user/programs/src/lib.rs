@@ -692,6 +692,11 @@ pub mod files {
     /// READ_PAST: file, moment, offset, length → bytes read: the file as
     /// it was at that moment. Any app, for a file it may change.
     pub const READ_PAST: u64 = 91;
+    /// ALL_FILES: app, on (1) or off (0). The desktop only, after the
+    /// person said yes: the terminal, inside a protected task, sees all
+    /// of the person's documents until it closes (decision 71). Outside
+    /// tasks it always does (decision 40).
+    pub const ALL_FILES: u64 = 92;
     pub const ANSWERS_PER_DAY: u64 = 10;
     /// A question on Alaya's fixed list.
     pub const fn question_ok(q: u64) -> bool {
@@ -1190,6 +1195,11 @@ pub mod desktop {
     /// and a HANDOFF event. From the first program: → status, from, to,
     /// file, place, write of the last handoff done.
     pub const HANDOFF: u64 = 44;
+    /// ALL_FILES (the terminal): inside a protected task, ask the person
+    /// to open all of their documents to it until it closes (decision
+    /// 71) → OK (asked), or EMPTY when it is in no task and already sees
+    /// them all (decision 40).
+    pub const ALL_FILES: u64 = 45;
     pub mod reader_role {
         pub const WINDOW: u64 = 0;
         pub const LABEL: u64 = 1;

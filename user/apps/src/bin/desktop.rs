@@ -87,6 +87,9 @@ enum Asked {
     /// Live handoff (milestone 8, step 3): continue this document in
     /// another app, at this place.
     Handoff(Handoff),
+    /// The terminal (this role) inside a task asks to see all of the
+    /// person's documents (decision 71).
+    AllFiles(u64),
 }
 
 struct Ask {
@@ -1974,6 +1977,13 @@ impl Desk {
                     (label::INSTALL, _) => self.undo_install(&l, redo),
                     (label::REMOVE, _) => self.undo_install(&l, !redo),
                     (label::UPDATE, _) => self.undo_update(&l),
+                    (label::ALL_FILES, _) => {
+                        let _ = s.all_files(fs::app_id(u64::from(l[1])), redo);
+                        say!(
+                            "the terminal's view of all files: {}",
+                            if redo { "open" } else { "closed" }
+                        );
+                    }
                     (label::LOOK, _) => {
                         let code = if redo { l[2] } else { l[1] };
                         if let Ok(apps) = s.root(APPS)
@@ -2077,6 +2087,9 @@ impl Desk {
         if let Asked::Handoff(h) = a.what {
             return self.handoff_done(&s, h, yes);
         }
+        if let Asked::AllFiles(r) = a.what {
+            return self.all_files_done(&s, r, yes);
+        }
         if !yes {
             self.say_note(String::from("Kept as it is: nothing was undone"));
             return;
@@ -2095,8 +2108,70 @@ impl Desk {
                 let r = s.undo_change(cn, app, true);
                 self.undone(Asked::Change(cn, app), r, &about);
             }
-            Asked::Handoff(_) => {}
+            Asked::Handoff(_) | Asked::AllFiles(_) => {}
         }
+    }
+
+    /// The terminal asks to see all of the person's documents
+    /// (dk::ALL_FILES). Outside tasks it already does (decision 40);
+    /// inside a protected task Alaya asks the person first (decision 71).
+    fn all_files_start(&mut self, owner: u64, w: &[u64; 6]) -> u64 {
+        let Some(s) = self.mine() else {
+            return dk::BAD_REQUEST;
+        };
+        if owner != role::TERMINAL
+            || self.ask.is_some()
+            || self.pick.is_some()
+            || !self
+                .wins
+                .iter()
+                .any(|x| u64::from(x.id) == w[0] && x.owner == owner)
+        {
+            return dk::BAD_REQUEST;
+        }
+        let app = fs::app_id(owner);
+        let Some(t) = s.task_of(app).ok().flatten() else {
+            return dk::EMPTY;
+        };
+        let task = self
+            .group_row(t)
+            .map_or(String::from("this task"), |g| g.name.clone());
+        say!("asked: open all files to the terminal in {task}");
+        self.ask = Some(Ask {
+            what: Asked::AllFiles(owner),
+            title: String::from("Open all your files to the terminal?"),
+            body: alloc::format!(
+                "The terminal is inside the task {task}, where it sees only the task's files. \
+                 This opens all your documents to it until it closes; reading a private file \
+                 still counts. One undo closes them again."
+            ),
+            yes: "Open all",
+            no: "Only the task",
+        });
+        self.damage_all();
+        dk::OK
+    }
+
+    fn all_files_done(&mut self, s: &Store, r: u64, yes: bool) {
+        if !yes {
+            self.say_note(String::from(
+                "The terminal still sees only the task's files",
+            ));
+            return;
+        }
+        let app = fs::app_id(r);
+        if s.all_files(app, true).is_err() {
+            self.say_note(String::from("The files could not be opened to it"));
+            return;
+        }
+        let mut l = alloc::vec![label::ALL_FILES, r as u8];
+        l.extend_from_slice(st::app_name(app).as_bytes());
+        l.truncate(fs::LABEL);
+        self.record(act::SETTINGS, &l);
+        say!("the terminal sees all your files until it closes");
+        self.say_note(String::from(
+            "The terminal sees all your files until it closes",
+        ));
     }
 
     /// An app asks to hand the document it has open to another app, at
@@ -3031,6 +3106,7 @@ impl Desk {
                 ([dk::OK, u64::from(id), 0, 0, 0, 0], 0)
             }
             dk::PICK => ([self.pick_start(owner, &w), 0, 0, 0, 0, 0], 0),
+            dk::ALL_FILES => ([self.all_files_start(owner, &w), 0, 0, 0, 0, 0], 0),
             dk::HANDOFF if owner != 0 => ([self.handoff_start(owner, &w), 0, 0, 0, 0, 0], 0),
             dk::HANDOFF => (
                 self.handed.map_or([dk::BAD_REQUEST, 0, 0, 0, 0, 0], |h| {
