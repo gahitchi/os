@@ -100,7 +100,7 @@ Ask for an answer with `Window::ask_answer(question)` (from `files::question`); 
 
 A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like everything else, and a flag Alaya does not know is refused.
 
-## Checked in every boot test (checks 110 to 125)
+## Checked in every boot test (checks 110 to 126)
 
 - 110: a bundle with one byte changed after signing is refused; nothing is installed.
 - 111: installed on the side with the files line unticked, then approved; the app's store handle really is absent.
@@ -118,3 +118,4 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 123: a note from the editor, held while you are elsewhere, comes forward when you go into the editor's group.
 - 124: live handoff: the editor hands a document it holds to the chart maker at line 3 after Alaya asks; "Stay here" hands nothing, and a document it does not hold cannot be handed.
 - 125: the terminal runs C tools on Alaya's own C library: hello, the library's self test, and wc on a document that fails until the person picks it in the Open window, then counts it; every command is kept in the terminal's log.
+- 126: Glowroot, a game in C on the SDL subset, saves twice; every save is kept in Saved games, the older one comes back from the game's save list and is saved as the newest without losing the others; another app can take neither the folder nor its history; full screen turns game mode on.

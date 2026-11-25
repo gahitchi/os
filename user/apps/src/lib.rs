@@ -268,6 +268,44 @@ impl Window {
             .with_contrast(self.contrast)
     }
 
+    /// Show a picture of `w` by `h` pixels (a game's screen, from C),
+    /// made as large as whole multiples allow and centred on black.
+    /// Pixels are shown as they are (high contrast does not apply).
+    pub fn present(&self, src: &[u32], w: i32, h: i32) {
+        if w <= 0 || h <= 0 || src.len() < (w * h) as usize {
+            return;
+        }
+        // SAFETY: the two picture pages are mapped at PICTURE.
+        let px = unsafe {
+            core::slice::from_raw_parts_mut(PICTURE as *mut u32, (dk::STRIDE * dk::MAX_H) as usize)
+        };
+        let stride = dk::STRIDE as usize;
+        let (pw, ph) = (
+            self.pw.min(dk::STRIDE as i32),
+            self.ph.min(dk::MAX_H as i32),
+        );
+        let k = (pw / w).min(ph / h).max(1);
+        let (ox, oy) = ((pw - w * k).max(0) / 2, (ph - h * k).max(0) / 2);
+        for y in 0..ph {
+            let row = &mut px[y as usize * stride..y as usize * stride + pw as usize];
+            let sy = (y - oy) / k;
+            if y < oy || sy >= h {
+                row.fill(0);
+                continue;
+            }
+            let line = &src[(sy * w) as usize..(sy * w + w) as usize];
+            for (x, p) in row.iter_mut().enumerate() {
+                let x = x as i32;
+                let sx = (x - ox) / k;
+                *p = if x < ox || sx >= w {
+                    0
+                } else {
+                    line[sx as usize]
+                };
+            }
+        }
+    }
+
     /// Hand the screen reader what the window shows (the toolkit's
     /// tree of this pass); only a change is written.
     pub fn tell(&mut self, tree: &[Node]) {

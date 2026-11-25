@@ -24,7 +24,7 @@ use alaya_store::grants::{Access, Lasts};
 use alaya_store::history::{Restored, Undo};
 use alaya_store::jobs::Job;
 use alaya_store::made::Source;
-use alaya_store::{Class, Error, FileId, Options, Store};
+use alaya_store::{Class, Error, FileId, Options, STORE_APP, Store};
 use alaya_sys::abi::{StartInfo, call, start};
 use alaya_sys::rt::{self, Mem};
 use alaya_sys::{Caps, Kind, Msg, MsgInfo, say};
@@ -491,8 +491,11 @@ impl Server<'_> {
             | fs::RECORD_ACTION
             | fs::JOB
             | fs::JOB_DONE
-            | fs::ANSWER => Ok(None),
-            fs::WRITE | fs::TRUNCATE | fs::AS_OF => need(s, w[0], true).map(|_| None),
+            | fs::ANSWER
+            | fs::SAVED_GAMES => Ok(None),
+            fs::WRITE | fs::TRUNCATE | fs::AS_OF | fs::SAVE_VERSIONS | fs::READ_PAST => {
+                need(s, w[0], true).map(|_| None)
+            }
             fs::MARK => need(s, w[0], false).map(|_| None),
             fs::MADE_FROM => {
                 need(s, w[0], true)?;
@@ -1133,6 +1136,51 @@ impl Server<'_> {
                     put_words(buf, 8 * i, &[f.0]);
                 }
                 alloc::vec![code, files.len() as u64]
+            }
+            fs::SAVED_GAMES => {
+                // Saved games (decision 161): one folder for all games in
+                // the documents, made by Alaya; in it, each game's own.
+                let name = Self::name(ch, w[0])?;
+                let docs = s.root(Class::Documents);
+                let top_name = fs::SAVED_GAMES_FOLDER.as_bytes();
+                let top = match s.lookup(p, docs, top_name) {
+                    Ok(f) => f,
+                    Err(Error::NotFound) => s.create(p, STORE_APP, docs, top_name, true)?,
+                    Err(e) => return Err(e),
+                };
+                let f = match s.lookup(p, top, &name) {
+                    Ok(f) => {
+                        if restricted(app) && s.access(p, app, f, now)? == Access::No {
+                            // Another game's folder of that name.
+                            return Err(Error::Exists);
+                        }
+                        f
+                    }
+                    Err(Error::NotFound) => {
+                        let f = s.create(p, app, top, &name, true)?;
+                        if restricted(app) {
+                            s.own_file(p, app, f)?;
+                        }
+                        f
+                    }
+                    Err(e) => return Err(e),
+                };
+                alloc::vec![f.0]
+            }
+            fs::SAVE_VERSIONS => {
+                let max = (w[1] as usize).min(fs::XFER_BYTES / 16).min(256);
+                let st = s.story(p, FileId(w[0]), max)?;
+                let buf = xfer(ch);
+                for (i, c) in st.changes.iter().enumerate() {
+                    put_words(buf, 16 * i, &[c.0, c.1]);
+                }
+                alloc::vec![st.changes.len() as u64]
+            }
+            fs::READ_PAST => {
+                let f = FileId(w[0]);
+                let past = s.past(p, f.class(), w[1])?;
+                let n = len(w[3]);
+                alloc::vec![s.past_read(&past, f, w[2], &mut xfer(ch)[..n])? as u64]
             }
             fs::STORY => {
                 let max = (w[1] as usize).min(256);

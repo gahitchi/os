@@ -15,6 +15,7 @@ mod back;
 mod chart;
 mod editor;
 mod files;
+mod game;
 mod helper;
 mod settings;
 mod terminal;
@@ -34,8 +35,13 @@ fn main(info: &'static StartInfo) -> ! {
     let mut mem = Mem::new(info);
     alaya_sys::heap::init(&mut mem, 4).expect("heap");
     let ntfn = start::FIRST_GIVEN + dk::APP_G_NTFN;
-    // About once a second.
-    rt::start_clock(&mut mem, ntfn, CLOCK_BIT, 100, info.priority).expect("clock");
+    // About once a second; for the game, about twenty times.
+    let every = if info.args[dk::ARG_ROLE] == role::GAME {
+        5
+    } else {
+        100
+    };
+    rt::start_clock(&mut mem, ntfn, CLOCK_BIT, every, info.priority).expect("clock");
     let store = Store::new(start::FIRST_GIVEN + dk::APP_G_STORE);
     match info.args[dk::ARG_ROLE] {
         role::EDITOR => editor::run(info, mem, store),
@@ -46,6 +52,7 @@ fn main(info: &'static StartInfo) -> ! {
         role::HELPER => helper::run(info, mem, store, false),
         role::HOSTILE => helper::run(info, mem, store, true),
         role::TERMINAL => terminal::run(info, mem, store),
+        role::GAME => game::run(mem),
         r => panic!("no app has role {r}"),
     }
 }

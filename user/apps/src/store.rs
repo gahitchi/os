@@ -698,6 +698,36 @@ impl Store {
         Ok(self.call(fs::QUIET, &[on as u64])?[1])
     }
 
+    /// This game's folder for its saves, `Saved games/<game>` in the
+    /// documents (decision 161): made the first time, its own.
+    pub fn saved_games(&self, game: &str) -> Result<u64, Status> {
+        let n = Self::name(game)?;
+        Ok(self.call(fs::SAVED_GAMES, &[n])?[1])
+    }
+
+    /// Each moment `f` changed, newest first: (moment, time).
+    pub fn save_versions(&self, f: u64, most: u64) -> Result<Vec<(u64, u64)>, Status> {
+        let n = self.call(fs::SAVE_VERSIONS, &[f, most])?[1] as usize;
+        let b = xfer();
+        let w = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
+        Ok((0..n).map(|i| (w(2 * i), w(2 * i + 1))).collect())
+    }
+
+    /// All of `f` as it was at moment `cn` (up to `most` bytes).
+    pub fn read_past(&self, f: u64, cn: u64, most: usize) -> Result<Vec<u8>, Status> {
+        let mut out = Vec::new();
+        while out.len() < most {
+            let want = (most - out.len()).min(fs::XFER_BYTES);
+            let r = self.call(fs::READ_PAST, &[f, cn, out.len() as u64, want as u64])?;
+            let got = (r[1] as usize).min(want);
+            out.extend_from_slice(&xfer()[..got]);
+            if got < want {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Take a document back from an app.
     pub fn revoke(&self, app: u64, f: u64) -> Result<bool, Status> {
         Ok(self.call(fs::REVOKE, &[app, f])?[1] != 0)

@@ -3378,12 +3378,13 @@ impl Desk {
 
 /// The dock: the apps of milestone 6, in the mock-up's colours, with
 /// their roles.
-const DOCK: [(&str, u32, u64); 5] = [
+const DOCK: [(&str, u32, u64); 6] = [
     ("Files", 0x23_68_6b, role::FILES),
     ("Text editor", 0x2d_5c_9c, role::EDITOR),
     ("Chart maker", 0x9a_5b_00, role::CHART),
     ("Settings", 0x5b_6b_6c, role::SETTINGS),
     ("Terminal", 0x2b_2b_2b, role::TERMINAL),
+    ("Glowroot", 0x6b_4e_1a, role::GAME),
 ];
 
 /// What the dock holds of Alaya's own apps in each look.
@@ -3391,10 +3392,12 @@ fn dock_items(look: Look) -> impl Iterator<Item = (&'static str, u32, u64)> {
     DOCK.iter().copied().filter(move |d| match look {
         // The terminal is in the Build look's dock (and opened by name
         // elsewhere).
-        Look::Everyday => d.2 != role::CHART && d.2 != role::TERMINAL,
-        Look::Play => d.2 == role::FILES || d.2 == role::SETTINGS,
-        Look::Everything | Look::Create => d.2 != role::TERMINAL,
-        Look::Build => true,
+        // The game is in the Play and Everything looks.
+        Look::Everyday => d.2 != role::CHART && d.2 != role::TERMINAL && d.2 != role::GAME,
+        Look::Play => d.2 == role::FILES || d.2 == role::SETTINGS || d.2 == role::GAME,
+        Look::Everything => d.2 != role::TERMINAL,
+        Look::Create => d.2 != role::TERMINAL && d.2 != role::GAME,
+        Look::Build => d.2 != role::GAME,
     })
 }
 

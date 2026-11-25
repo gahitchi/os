@@ -73,4 +73,32 @@ empties the screen. Every command, what it printed and how it ended
 (`[exit N]`) is kept in the terminal's own file `terminal.log`. Boot check
 125 types into it.
 
-SDL-like windows from C and the first C game come next, and build on this.
+## Windows from C and the SDL subset
+
+`alaya.h` also opens one window per C program (`alaya_window_open`), shows
+a picture the program draws itself (`alaya_window_present`, 0x00RRGGBB
+pixels, scaled up by whole steps) and gives its events
+(`alaya_window_event`: keys, closing, size, focus, clicks). On top of it,
+`SDL.h` in Alaya's C library is a small part of the SDL 2 interface written
+from scratch: `SDL_CreateWindow`, `SDL_GetWindowSurface`,
+`SDL_UpdateWindowSurface`, `SDL_FillRect`, `SDL_MapRGB`, `SDL_PollEvent`,
+`SDL_WaitEvent`, `SDL_GetTicks` and `SDL_Delay`, with SDL 2's key values.
+Drawing is in software until fast graphics (milestone 9). Full screen is the
+person's choice (Alaya key + Up), so `SDL_SetWindowFullscreen` says no.
+
+## Saved games
+
+A game asks for its folder with `alaya_saved_games("Name")`: Alaya makes
+`Saved games/Name` in the person's documents the first time, and it is the
+game's own (decision 161). Saves are documents, so every save stays in the
+person's history: `alaya_save_versions` lists each moment a save changed,
+newest first, and `alaya_read_past` reads a save as it was at one of them.
+Bringing an old save back and saving again keeps the newer ones.
+
+### Glowroot
+
+The first game (`user/libc/games/glowroot.c`), in the Play and Everything
+looks: a firefly lights a dark garden, one tile at a time, and may only fly
+to a tile that is still dark. Each garden grows from a random walk, so
+there is always a way. Arrows fly, U steps back, R starts again, S saves,
+H shows every save (Enter brings one back). Boot check 126 plays it.

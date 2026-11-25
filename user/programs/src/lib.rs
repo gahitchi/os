@@ -677,6 +677,21 @@ pub mod files {
     /// itself while on, for at most [`QUIET_MAX`] seconds.
     pub const QUIET: u64 = 88;
     pub const QUIET_MAX: u64 = 2 * 3600;
+    /// Saved games (milestone 8, step 4; decision 161).
+    /// SAVED_GAMES: name length (the game's name in the transfer pages)
+    /// → the folder `Saved games/<name>` in the person's documents, made
+    /// the first time and the game's own. Another app's folder of that
+    /// name is refused ([`st::EXISTS`]).
+    pub const SAVED_GAMES: u64 = 89;
+    /// The folder in the documents that holds every game's saves.
+    pub const SAVED_GAMES_FOLDER: &str = "Saved games";
+    /// SAVE_VERSIONS: file, most → n; (moment, time) pairs in the
+    /// transfer pages, newest first: each moment the file changed. Any
+    /// app, for a file it may change.
+    pub const SAVE_VERSIONS: u64 = 90;
+    /// READ_PAST: file, moment, offset, length → bytes read: the file as
+    /// it was at that moment. Any app, for a file it may change.
+    pub const READ_PAST: u64 = 91;
     pub const ANSWERS_PER_DAY: u64 = 10;
     /// A question on Alaya's fixed list.
     pub const fn question_ok(q: u64) -> bool {
@@ -801,6 +816,7 @@ pub mod files {
             a if a == app_id(role::HELPER) => "the tidy-up helper",
             a if a == app_id(role::HOSTILE) => "the hostile test helper",
             a if a == app_id(role::TERMINAL) => "the terminal",
+            a if a == app_id(role::GAME) => "Glowroot",
             DESKTOP_APP => "the desktop",
             INIT_APP => "Alaya's checks",
             _ => "another app",
@@ -1270,10 +1286,12 @@ pub mod desktop {
         /// The terminal (milestone 8, step 4): a command line with small
         /// C tools built in; it sees only what it is handed.
         pub const TERMINAL: u64 = 8;
-        pub const COUNT: u64 = 8;
+        /// Glowroot, the small C game (milestone 8, step 4).
+        pub const GAME: u64 = 9;
+        pub const COUNT: u64 = 9;
         /// Installed apps (milestone 8): one role per place, from
         /// `INSTALLED` to [`LAST`], for the person logged in.
-        pub const INSTALLED: u64 = 9;
+        pub const INSTALLED: u64 = 10;
         pub const INSTALLED_MAX: u64 = 3;
         pub const LAST: u64 = INSTALLED + INSTALLED_MAX - 1;
         /// Whether role `r` is an installed app's place.

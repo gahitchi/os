@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Alaya's small C library and the C tools built into the terminal
-//! (milestone 8, step 4): compiled with clang for the target and linked
+//! Alaya's small C library, the C tools built into the terminal and the
+//! C game (milestone 8, step 4): compiled with clang for the target and linked
 //! into the `apps` program only.
 
 use std::path::{Path, PathBuf};
@@ -57,6 +57,7 @@ fn main() {
     sources(&libc.join("src"), &mut list);
     sources(&libc.join("src").join(&arch), &mut list);
     sources(&libc.join("tools"), &mut list);
+    sources(&libc.join("games"), &mut list);
     for src in list {
         let name = src
             .strip_prefix(&libc)
