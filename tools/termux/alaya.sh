@@ -57,6 +57,33 @@ esac
 say() { printf 'alaya.sh: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
+# A "still running" line straight to the screen, so a long run never looks
+# stuck, even when its output goes through a filter like grep. Without a
+# screen (CI, a log file), it goes to stderr.
+beat() {
+    local log="$1" start="$2" last t
+    t=$((SECONDS - start))
+    last=$(tr -d '\r' <"$log" | grep -a -o 'init: ok *[0-9]*' | tail -n1 | sed 's/init: ok */check /')
+    local msg
+    msg=$(printf 'alaya.sh: still running, %dm %02ds so far%s' $((t / 60)) $((t % 60)) "${last:+, last passed: $last}")
+    if { : >/dev/tty; } 2>/dev/null; then
+        printf '%s\n' "$msg" >/dev/tty
+    else
+        printf '%s\n' "$msg" >&2
+    fi
+}
+
+# Print the whole lines of the serial log that were not shown yet.
+SHOWN=0
+show_new() {
+    local log="$1" n
+    n=$(wc -l <"$log")
+    if [ "$n" -gt "$SHOWN" ]; then
+        sed -n "$((SHOWN + 1)),${n}p" "$log" | tr -d '\r' | sed 's/^/  | /'
+        SHOWN=$n
+    fi
+}
+
 need_tools() {
     local missing=()
     if [ "$ARCH" = aarch64 ]; then
@@ -222,16 +249,27 @@ test_boot() {
     mapfile -t args < <(FRESH_STICK=1 qemu_args "$image")
     say "boot test on $CPUS core(s) with $(accel_name), timeout ${TIMEOUT}s"
     "$QEMU" "${args[@]}" -serial "file:$log" </dev/null &
-    local pid=$! result=timeout start=$SECONDS
+    local pid=$! result=timeout start=$SECONDS last_beat=$SECONDS
+    SHOWN=0
     while [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
-        if grep -q "$OK_MARKER" "$log"; then result=pass; break; fi
-        if grep -q "$PANIC_MARKER" "$log"; then result=panic; break; fi
+        # What Alaya printed so far, as it comes.
+        show_new "$log"
+        if grep -aq "$OK_MARKER" "$log"; then result=pass; break; fi
+        if grep -aq "$PANIC_MARKER" "$log"; then result=panic; break; fi
         kill -0 "$pid" 2>/dev/null || { result=exited; break; }
+        if [ $((SECONDS - last_beat)) -ge 30 ]; then
+            beat "$log" "$start"
+            last_beat=$SECONDS
+        fi
         sleep 1
     done
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-    tr -d '\r' <"$log" | sed 's/^/  | /'
+    show_new "$log"
+    # A last line without its newline.
+    if [ -n "$(tail -c1 "$log")" ]; then
+        tail -n1 "$log" | tr -d '\r' | sed 's/^/  | /'
+    fi
     local ready
     ready=$(tr -d '\r' <"$log" | grep -cE "$READY_PATTERN" || true)
     rm -f "$log"
@@ -263,9 +301,9 @@ plug_test() {
         log=$(mktemp "${TMPDIR:-/tmp}/alaya-plug.XXXXXX")
         mapfile -t args < <(qemu_args "$image")
         "$QEMU" "${args[@]}" -serial "file:$log" </dev/null &
-        local pid=$! start=$SECONDS saves=$((1 + RANDOM % 12)) result=timeout found=''
+        local pid=$! start=$SECONDS last_beat=$SECONDS saves=$((1 + RANDOM % 12)) result=timeout found=''
         while [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
-            if grep -qE "$PANIC_MARKER|FAILED" "$log"; then result=panic; break; fi
+            if grep -qaE "$PANIC_MARKER|FAILED" "$log"; then result=panic; break; fi
             if [ -z "$found" ]; then
                 found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\) (.*/\1/p' | head -n1 || true)
             fi
@@ -276,6 +314,10 @@ plug_test() {
                 break
             fi
             kill -0 "$pid" 2>/dev/null || { result=exited; break; }
+            if [ $((SECONDS - last_beat)) -ge 30 ]; then
+                beat "$log" "$start"
+                last_beat=$SECONDS
+            fi
             sleep 0.2
         done
         kill -9 "$pid" 2>/dev/null || true
@@ -320,10 +362,14 @@ plug_test() {
     log=$(mktemp "${TMPDIR:-/tmp}/alaya-plug.XXXXXX")
     mapfile -t args < <(qemu_args "$image")
     "$QEMU" "${args[@]}" -serial "file:$log" </dev/null &
-    local pid=$! start=$SECONDS found=''
+    local pid=$! start=$SECONDS last_beat=$SECONDS found=''
     while [ $((SECONDS - start)) -lt "$TIMEOUT" ] && [ -z "$found" ]; do
-        if grep -qE "$PANIC_MARKER|FAILED" "$log"; then break; fi
+        if grep -qaE "$PANIC_MARKER|FAILED" "$log"; then break; fi
         kill -0 "$pid" 2>/dev/null || break
+        if [ $((SECONDS - last_beat)) -ge 30 ]; then
+            beat "$log" "$start"
+            last_beat=$SECONDS
+        fi
         found=$(tr -d '\r' <"$log" | sed -n 's/.*soak: found \([0-9]*\) (.*/\1/p' | head -n1 || true)
         sleep 0.2
     done
