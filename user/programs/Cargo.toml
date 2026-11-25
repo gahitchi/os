@@ -59,3 +59,9 @@ path = "src/bin/input.rs"
 test = false
 bench = false
 
+
+[[bin]]
+name = "linux"
+path = "src/bin/linux.rs"
+test = false
+bench = false

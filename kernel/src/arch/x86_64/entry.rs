@@ -261,6 +261,29 @@ impl Regs {
     pub fn rewind_call(&mut self) {
         self.rip -= SYSCALL_LEN;
     }
+
+    /// A Linux system call: its number and six arguments (Linux's own
+    /// registers: rax; rdi, rsi, rdx, r10, r8, r9).
+    pub fn linux_call(&self) -> (u64, [u64; 6]) {
+        (
+            self.rax,
+            [self.rdi, self.rsi, self.rdx, self.r10, self.r8, self.r9],
+        )
+    }
+
+    /// A Linux system call's result (rax, which also held its number).
+    pub fn set_linux_result(&mut self, _nr: u64, v: u64) {
+        self.rax = v;
+    }
+
+    /// The thread pointer (FS base).
+    pub fn set_tls(&mut self, v: u64) {
+        self.fs_base = v;
+    }
+
+    pub fn jump(&mut self, pc: u64, sp: u64) {
+        (self.rip, self.rsp) = (pc, sp);
+    }
 }
 
 /// Copy a user-mode frame into `r`.

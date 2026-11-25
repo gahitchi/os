@@ -3447,6 +3447,7 @@ impl Desk {
                 }
                 None => ([dk::NO_WINDOW, 0, 0, 0, 0, 0], 0),
             },
+            dk::SCREENS => ([dk::OK, self.wm.screens.len() as u64, 0, 0, 0, 0], 0),
             _ => ([dk::BAD_REQUEST, 0, 0, 0, 0, 0], 0),
         }
     }

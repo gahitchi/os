@@ -9,6 +9,9 @@
 
 use crate::kprintln;
 
+/// Whether writing the deadline is costly: a cheap system-register write.
+pub const WRITE_IS_COSTLY: bool = false;
+
 /// The timer's interrupt: private peripheral interrupt 27 (virtual timer).
 pub const TIMER_INTID: u32 = 27;
 

@@ -144,9 +144,36 @@ pub(crate) fn sleep_ms(ms: u64) {
     }
 }
 
-/// Wait (sleeping) until `done` holds, at most `ms`.
+/// How many times slower than the reference machine this one runs (1 to
+/// [`MAX_SLOWER`]). Every limit [`sleep_until`] waits for is stretched by
+/// it, so a slow machine (a phone emulating a PC) gets the same chances as
+/// a fast one. A limit only says when to give up: a check that passes
+/// still returns as soon as it holds.
+pub(crate) static SLOWER: AtomicU64 = AtomicU64::new(1);
+const MAX_SLOWER: u64 = 10;
+/// The busy loop below takes about 14 ms on one emulated (TCG) core of a
+/// cloud machine; this leaves room above that before waits stretch.
+const REFERENCE_US: u64 = 20_000;
+
+/// Time a fixed busy loop and set [`SLOWER`] from it.
+pub(crate) fn measure_speed() {
+    let start = alaya_sys::clock();
+    let mut x = 0u64;
+    for i in 0..4_000_000u64 {
+        x = core::hint::black_box(x.wrapping_mul(31).wrapping_add(i));
+    }
+    let us = ticks_to_us(alaya_sys::clock() - start);
+    let slower = us.div_ceil(REFERENCE_US).clamp(1, MAX_SLOWER);
+    SLOWER.store(slower, SeqCst);
+    crate::say!(
+        "speed: a fixed loop took {us} us (reference {REFERENCE_US}); waits x{slower} ({x:x})"
+    );
+}
+
+/// Wait (sleeping) until `done` holds, at most `ms` (stretched on a slow
+/// machine, see [`SLOWER`]).
 pub(crate) fn sleep_until(ms: u64, done: impl Fn() -> bool) -> bool {
-    let end = alaya_sys::clock() + ms_to_ticks(ms);
+    let end = alaya_sys::clock() + ms_to_ticks(ms * SLOWER.load(SeqCst));
     while !done() {
         if alaya_sys::clock() > end {
             return false;
@@ -364,6 +391,7 @@ pub(crate) fn until_state(t: u64, s: u64) {
 /// Returns the next free slot.
 pub fn run(info: &BootInfo, big: u64, first_free: u64, pass: &mut dyn FnMut(&str)) -> u64 {
     HZ.store(info.clock_hz, SeqCst);
+    measure_speed();
     let cores = info.cores;
     let last = cores - 1;
     let mut k = Kit {

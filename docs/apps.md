@@ -119,3 +119,11 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 124: live handoff: the editor hands a document it holds to the chart maker at line 3 after Alaya asks; "Stay here" hands nothing, and a document it does not hold cannot be handed.
 - 125: the terminal runs C tools on Alaya's own C library: hello and the library's self test; wc counts a document outside tasks; inside a protected task only the task's files, until "all" and the person's "Open all" ("Only the task" keeps the wall); one undo closes them again.
 - 126: Glowroot, a game in C on the SDL subset, saves twice; every save is kept in Saved games, the older one comes back from the game's save list and is saved as the newest without losing the others; another app can take neither the folder nor its history; full screen turns game mode on.
+
+## Linux programs (milestone 8b)
+
+How they run: [linux-world.md](linux-world.md).
+
+- 127: a Linux program built from source (`hello`) runs unchanged in the Linux world: its memory, clock, thread pointer and output answered as Linux would; it prints exactly what it prints on a real Linux machine (the two-world check).
+- 128: a Linux program (`sandbox`) reaches nothing of Alaya's: unknown call numbers get Linux's "not implemented", from the world or, beyond any Linux call, from the kernel itself; a bad pointer gets "bad address".
+- 129: a Linux program that crashes (`crash`) leaves a flight record in plain words, and the Linux world goes on running the next one.

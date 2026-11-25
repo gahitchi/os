@@ -14,7 +14,7 @@
 //! (`Sc::reply_top`). A server that runs out of borrowed time waits for the
 //! caller's next refill (decision 55).
 
-use alaya_abi::{Error, FAULT_LABEL, Info, Kind, TIMEOUT_LABEL, rights};
+use alaya_abi::{Error, FAULT_LABEL, Info, Kind, LINUX_LABEL, TIMEOUT_LABEL, linux, rights};
 use alaya_cap::{self as cap, Memory, SlotRef};
 
 use crate::caps::Phys;
@@ -102,7 +102,7 @@ pub fn wake(k: &mut sched::Sys, t: u64, e: Error) {
     th.state = state::READY;
     th.waiting = 0;
     th.flags &= !(tflag::CALLING | tflag::FAULTING | tflag::SEND_GRANT);
-    th.flags2 &= !tflag2::TIMED_OUT;
+    th.flags2 &= !(tflag2::TIMED_OUT | tflag2::LINUX_CALL);
     sched::make_ready(k, t);
 }
 
@@ -111,12 +111,19 @@ fn transfer(m: &mut Phys, from: u64, to: u64, badge: u64, grant: bool, called: b
     let f = tcb(from);
     let (mut info, words) = if f.flags & tflag::FAULTING != 0 {
         let x = f.fault;
-        let label = if f.flags2 & tflag2::TIMED_OUT != 0 {
-            TIMEOUT_LABEL
+        if f.flags2 & tflag2::LINUX_CALL != 0 {
+            // The number was kept when the request was made: sending may
+            // already have reused its register for the call's status.
+            let (_, args) = f.regs.linux_call();
+            (Info::new(LINUX_LABEL + x[0], 6).0, args)
         } else {
-            FAULT_LABEL
-        };
-        (Info::new(label, 5).0, [x[0], x[1], x[2], x[3], x[4], 0])
+            let label = if f.flags2 & tflag2::TIMED_OUT != 0 {
+                TIMEOUT_LABEL
+            } else {
+                FAULT_LABEL
+            };
+            (Info::new(label, 5).0, [x[0], x[1], x[2], x[3], x[4], 0])
+        }
     } else {
         let i = Info(f.regs.arg1());
         let n = i.words().min(Info::MAX_WORDS) as usize;
@@ -300,8 +307,13 @@ pub fn answer(m: &mut Phys, me: u64, rep: u64) {
         if c.flags & tflag::FAULTING != 0 {
             // A fault was handled: the thread tries the instruction again
             // (or, after a timeout, goes on waiting for its caller's time).
+            // A Linux request was answered: word 0 is its result, and the
+            // thread goes on after its system call.
+            if c.flags2 & tflag2::LINUX_CALL != 0 {
+                c.regs.set_linux_result(c.fault[0], tcb(me).regs.words()[0]);
+            }
             c.flags &= !tflag::FAULTING;
-            c.flags2 &= !tflag2::TIMED_OUT;
+            c.flags2 &= !(tflag2::TIMED_OUT | tflag2::LINUX_CALL);
         } else {
             transfer(m, me, caller, 0, true, false);
         }
@@ -431,7 +443,7 @@ pub fn cancel(k: &mut sched::Sys, t: u64) {
     let _ = k;
     th.waiting = 0;
     th.flags &= !(tflag::CALLING | tflag::FAULTING | tflag::SEND_GRANT);
-    th.flags2 &= !tflag2::TIMED_OUT;
+    th.flags2 &= !(tflag2::TIMED_OUT | tflag2::LINUX_CALL);
 }
 
 /// Stop a thread: cancel its wait and take it off every core. Returns
@@ -467,6 +479,26 @@ pub fn fault(m: &mut Phys, t: u64, vector: u64, error: u64, addr: u64) {
     }
     let _ = stop(m.sys, t);
 }
+
+/// Thread `t`, which speaks Linux, made a system call: send it as a Linux
+/// request to its fault endpoint and wait for the answer. Without a fault
+/// endpoint the call fails with Linux's "not implemented".
+pub fn linux_request(m: &mut Phys, t: u64) {
+    let th = tcb(t);
+    let fe = th.slots[SLOT_FAULT].cap;
+    let (nr, _) = th.regs.linux_call();
+    if !fe.is(Kind::Endpoint) || fe.rights & rights::WRITE == 0 || nr >= linux::CALLS {
+        th.regs.set_linux_result(nr, LINUX_ENOSYS);
+        return;
+    }
+    th.fault[0] = nr;
+    th.flags |= tflag::FAULTING;
+    th.flags2 |= tflag2::LINUX_CALL;
+    let _ = send(m, t, fe.object, fe.a, false, true, true);
+}
+
+/// Linux's -ENOSYS.
+const LINUX_ENOSYS: u64 = -38i64 as u64;
 
 /// `t`, serving a call, used up the time its caller lent it: send a timeout
 /// message to its fault endpoint, if it has one. Without one nothing

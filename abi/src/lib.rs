@@ -133,6 +133,15 @@ pub mod op {
     /// [`super::TIMEOUT_LABEL`]); 0 to just wait for the caller's next
     /// refill, as before (decision 55).
     pub const THREAD_TIMEOUTS: u64 = 39;
+    /// Linux requests (decision 163): arg 0 = [`super::linux::ON`] makes a
+    /// stopped thread speak Linux (every system call it makes becomes a
+    /// message to its fault endpoint, labelled [`super::LINUX_LABEL`] plus
+    /// the Linux call number, words = its six arguments; answering with
+    /// word 0 sets its result); [`super::linux::OFF`] turns it back;
+    /// [`super::linux::TLS`] sets its thread pointer to arg 1, and
+    /// [`super::linux::JUMP`] its pc and stack pointer to args 1 and 2,
+    /// while it is stopped or waits for an answer to a Linux request.
+    pub const THREAD_LINUX: u64 = 40;
 
     // On a scheduling context.
     /// Bind to a thread: arg 0 = thread handle.
@@ -294,6 +303,20 @@ pub const FAULT_LABEL: u64 = 0xfa_17;
 /// used of the caller's context (ns), how long until that context's next
 /// refill (ns), rip, rsp. Answering it lets the thread wait for the refill.
 pub const TIMEOUT_LABEL: u64 = 0x71_3e;
+
+/// Label base of a Linux request: the label is this plus the Linux call
+/// number; the words are the call's six arguments (decision 163).
+pub const LINUX_LABEL: u64 = 0x4c_0000;
+
+/// Arguments of [`op::THREAD_LINUX`].
+pub mod linux {
+    pub const OFF: u64 = 0;
+    pub const ON: u64 = 1;
+    pub const TLS: u64 = 2;
+    pub const JUMP: u64 = 3;
+    /// Linux call numbers are below this.
+    pub const CALLS: u64 = 0x1_0000;
+}
 
 /// Highest priority.
 pub const MAX_PRIORITY: u64 = 255;
@@ -506,7 +529,7 @@ pub struct BootInfo {
     pub modules: [BootModule; MAX_BOOT_MODULES],
 }
 
-pub const MAX_BOOT_MODULES: usize = 16;
+pub const MAX_BOOT_MODULES: usize = 24;
 /// Where the boot modules are mapped in the first program.
 pub const BOOT_MODULES_ADDRESS: u64 = 0x7ff0_0000_0000;
 

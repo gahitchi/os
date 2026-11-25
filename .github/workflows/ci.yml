@@ -24,7 +24,7 @@ jobs:
       - name: Install host tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 xorriso ovmf clang
+          sudo apt-get install -y -qq qemu-system-x86 xorriso ovmf clang lld
 
       - name: Allow KVM
         run: |
@@ -132,7 +132,10 @@ jobs:
       - name: Boot with the Termux script
         run: |
           ALAYA_ACCEL=tcg ALAYA_CPUS=2 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
-          ALAYA_ACCEL=kvm ALAYA_CPUS=8 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
+          # KVM with the runner's own cores (decision 149): more virtual
+          # cores than real ones made this boot 4 times slower, at random.
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          ALAYA_ACCEL=kvm ALAYA_CPUS=$cores bash tools/termux/alaya.sh test build/alaya-x86_64.iso
 
       - name: Pull-the-plug image for the Termux script
         run: |
@@ -167,7 +170,7 @@ jobs:
       - name: Install host tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-arm qemu-efi-aarch64 xorriso clang
+          sudo apt-get install -y -qq qemu-system-arm qemu-efi-aarch64 xorriso clang lld
 
       - name: Allow KVM (when the machine has it)
         run: |
@@ -198,8 +201,13 @@ jobs:
           for n in 1 2 4; do
             cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --accel tcg --cpus $n --timeout 900
           done
-      - name: Boot, KVM if available, 8 cores
-        run: cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus 8 --timeout 7000
+      # Up to 8 cores, but never more than the runner has (decision 149):
+      # 8 emulated ARM cores on a 4-core runner took 2 hours and more
+      # (the 1, 2 and 4 core boots take 7 minutes each).
+      - name: Boot, KVM if available, up to 8 cores
+        run: |
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus $cores --timeout 3600
 
       - name: Fault reports
         run: |

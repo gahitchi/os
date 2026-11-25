@@ -341,6 +341,27 @@ impl Regs {
     pub fn rewind_call(&mut self) {
         self.pc -= 4;
     }
+
+    /// A Linux system call: its number (x8) and six arguments (x0 to x5).
+    pub fn linux_call(&self) -> (u64, [u64; 6]) {
+        (self.x[8], self.x[0..6].try_into().unwrap())
+    }
+
+    /// A Linux system call's result (x0); every other register is as it
+    /// was, x8 (the call number, which sending used for its status) too.
+    pub fn set_linux_result(&mut self, nr: u64, v: u64) {
+        self.x[0] = v;
+        self.x[8] = nr;
+    }
+
+    /// The thread pointer (TPIDR_EL0).
+    pub fn set_tls(&mut self, v: u64) {
+        self.tpidr = v;
+    }
+
+    pub fn jump(&mut self, pc: u64, sp: u64) {
+        (self.pc, self.sp) = (pc, sp);
+    }
 }
 
 /// Copy a user-mode frame into `r`. Runs on the core the thread ran on, so

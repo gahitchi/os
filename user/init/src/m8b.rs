@@ -39,6 +39,9 @@ pub(crate) fn ended(x: &mut Session<'_>) -> bool {
 }
 
 const SLOW: u64 = 30_000;
+/// How long a deliberately slow postcards version may take to show its
+/// window: its own wait (at most 2 x 30 s + 8 s) plus the machine's slowness.
+const SLOW_START: u64 = 2 * 30_000 + 8_000 + 2 * SLOW;
 
 /// Place 0's trial, as the desktop sees it: (starts left on trial, what
 /// it tried, the version the Guardian went back from, flags, the usual
@@ -160,7 +163,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     x.start_app(role::INSTALLED);
     x.wait_window(role::INSTALLED);
     assert!(
-        sleep_until(SLOW, || place(ep).2 == 5),
+        sleep_until(SLOW_START, || place(ep).2 == 5),
         "no question when it first tried the new line: {:?}",
         place(ep)
     );
@@ -203,8 +206,10 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     assert!(sleep_until(SLOW, || version(ep) == 4));
     assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
     x.start_app(role::INSTALLED);
+    // The slow versions wait up to 2 x 30 s + 8 s on purpose before their
+    // window opens, so the wait covers that plus the machine's own slowness.
     assert!(
-        sleep_until(SLOW * 2, || version(ep) == 2),
+        sleep_until(SLOW_START, || version(ep) == 2),
         "the slow version was kept: version {}, {} ms (usually {})",
         version(ep),
         trial(ep).last,
@@ -224,7 +229,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
     x.start_app(role::INSTALLED);
     assert!(
-        sleep_until(SLOW * 2, || trial(ep).left < u64::from(ins::TRIAL_STARTS)),
+        sleep_until(SLOW_START, || trial(ep).left < u64::from(ins::TRIAL_STARTS)),
         "the security fix never started"
     );
     let t = trial(ep);

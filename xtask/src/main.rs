@@ -365,8 +365,8 @@ fn build_kernel(arch: Arch, release: bool) -> Result<PathBuf, String> {
 
 /// Programs the boot image carries besides the first one, all from the
 /// `alaya-programs` crate.
-const PROGRAMS: [&str; 9] = [
-    "keeper", "blk1", "blk2", "disktest", "store", "gpu", "input", "desktop", "apps",
+const PROGRAMS: [&str; 10] = [
+    "keeper", "blk1", "blk2", "disktest", "store", "gpu", "input", "desktop", "apps", "linux",
 ];
 
 /// Font files shipped in the boot image: text, strong, mono, fallback.
@@ -849,7 +849,14 @@ fn qemu_arm(image: &Path, opts: &Options, serial: &str) -> Result<Command, Strin
     } else {
         // The most complete emulated CPU: it has PAN (the ARM twin of
         // SMAP), 16-bit address-space tags and the newer atomics.
-        cmd.args(["-accel", "tcg", "-cpu", "max,pauth-impdef=on"]);
+        // ALAYA_ARM_CNTFRQ=1000000000: the clock at 1 GHz, as newer QEMU
+        // (9 and later) and real ARM machines run it; older QEMU uses
+        // 62.5 MHz.
+        let mut cpu = String::from("max,pauth-impdef=on");
+        if let Ok(hz) = env::var("ALAYA_ARM_CNTFRQ") {
+            cpu.push_str(&format!(",cntfrq={hz}"));
+        }
+        cmd.args(["-accel", "tcg", "-cpu", &cpu]);
     }
     if let Ok(extra) = env::var("ALAYA_QEMU_ARGS") {
         cmd.args(extra.split_whitespace());
@@ -934,12 +941,21 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
     // first program then sends the keys and mouse moves itself.
     let no_input = env::var("ALAYA_NO_HOST_INPUT").is_ok_and(|v| v == "1");
     let mut booted = false;
+    // What each Linux test program printed in Alaya (decision 166).
+    let mut linux_out: Vec<(String, String)> = Vec::new();
     let outcome = loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
             Ok(line) => {
                 let line = line.trim_end_matches('\r');
                 println!("  | {line}");
+                if let Some((name, text)) = line
+                    .strip_prefix(LINUX_OUT_MARKER)
+                    .and_then(|rest| rest.split_once("> "))
+                    .filter(|(name, _)| !name.contains(' '))
+                {
+                    linux_out.push((name.to_string(), format!("{text}\n")));
+                }
                 if let Some(n) = line
                     .strip_prefix(CORE_READY.0)
                     .and_then(|rest| rest.split_once(CORE_READY.1))
@@ -1156,11 +1172,66 @@ fn test(image: &Path, opts: &Options) -> Result<(), String> {
     let _ = child.wait();
     let _ = fs::remove_file(&qmp_path);
     let label = format!("{mode}, {accel}, {} core(s)", opts.cpus);
+    let outcome = outcome.and_then(|()| two_worlds(opts.arch, &linux_out));
     match &outcome {
         Ok(()) => eprintln!("xtask: PASS ({label})"),
         Err(e) => eprintln!("xtask: FAIL ({label}): {e}"),
     }
     outcome
+}
+
+/// A line a Linux test program printed in Alaya's Linux world:
+/// `linux: <program>> <text>`.
+const LINUX_OUT_MARKER: &str = "linux: ";
+
+/// The two-world check (decision 166): the Linux test programs Alaya
+/// built are run on this machine too, when it is a Linux machine with the
+/// same processor, with the same arguments and environment; what they
+/// print must be exactly what they printed in Alaya's Linux world (every
+/// run there, as some run more than once).
+fn two_worlds(arch: Arch, seen: &[(String, String)]) -> Result<(), String> {
+    if seen.is_empty() {
+        return Ok(());
+    }
+    if !cfg!(target_os = "linux") || env::consts::ARCH != arch.name() {
+        eprintln!(
+            "xtask: two-world check skipped (this machine cannot run {} Linux programs)",
+            arch.name()
+        );
+        return Ok(());
+    }
+    let dir = root().join("build").join("linux-tests").join(arch.name());
+    let mut names: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        let alaya: String = seen
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, t)| t.as_str())
+            .collect();
+        let out = Command::new(dir.join(name))
+            .args(["one", "two"])
+            .env_clear()
+            .envs([("LANG", "C.UTF-8"), ("HOME", "/home"), ("PATH", "/bin")])
+            .output()
+            .map_err(|e| format!("two-world check: run {name} here: {e}"))?;
+        let linux = String::from_utf8_lossy(&out.stdout).into_owned();
+        // A program may run more than once in Alaya: each run must match.
+        if linux.is_empty()
+            || !alaya.len().is_multiple_of(linux.len())
+            || alaya != linux.repeat(alaya.len() / linux.len())
+        {
+            return Err(format!(
+                "two-world check: {name} printed differently.\n--- on Linux:\n{linux}--- in Alaya:\n{alaya}"
+            ));
+        }
+        eprintln!(
+            "xtask: two-world check: {name} printed the same on Linux and in Alaya ({} bytes)",
+            linux.len()
+        );
+    }
+    Ok(())
 }
 
 /// Lines the first program prints when the test picture is on the screen

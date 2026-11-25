@@ -189,6 +189,21 @@ static int load_text(const char *text) {
 static void list_saves(void) {
     saves_n = 0;
     if (open_save()) alaya_save_versions(save_file, moments, times, SAVES_SHOWN, &saves_n);
+    /* The same garden saved twice in a row (the store may keep both) is
+       shown once: each line on the list is a different garden. */
+    static char a[1024], b[1024];
+    size_t kept = 0, got_a = 0;
+    for (size_t i = 0; i < saves_n; i++) {
+        size_t got_b = 0;
+        if (alaya_read_past(save_file, moments[i], (uint8_t *)b, sizeof b, &got_b) != ALAYA_OK) got_b = (size_t)-1;
+        if (kept > 0 && got_b != (size_t)-1 && got_b == got_a && memcmp(a, b, got_b) == 0) continue;
+        moments[kept] = moments[i];
+        times[kept] = times[i];
+        kept++;
+        if (got_b != (size_t)-1) memcpy(a, b, got_b);
+        got_a = got_b;
+    }
+    saves_n = kept;
     chosen = 0;
     char line[48];
     snprintf(line, sizeof line, "%d saves kept", (int)saves_n);

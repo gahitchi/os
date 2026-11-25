@@ -85,6 +85,9 @@ pub fn idle(mut k: BklGuard<'_, KernelState>, core: usize) -> ! {
             drop(k);
             entry::return_to_user(&f)
         }
+        // Arm this core's timer before sleeping, so a lost timer
+        // interrupt is put right at the latest when the core goes idle.
+        sched::arm(&k.sys, core, crate::time::now());
         drop(k);
         crate::arch::wait_for_interrupt();
         k = BKL.lock();
@@ -119,6 +122,12 @@ pub extern "C" fn syscall_entry(f: &mut TrapFrame) -> u64 {
 fn handle(k: &mut KernelState, me: u64) {
     let r = tcb(me).regs;
     let KernelState { caps: g, sys, .. } = k;
+    if tcb(me).flags2 & obj::tflag2::LINUX != 0 {
+        // A Linux program: none of Alaya's calls, only Linux requests,
+        // answered by its Linux world (decision 163).
+        ipc::linux_request(&mut Phys::new(sys), me);
+        return;
+    }
     let result: Result<Outcome, Error> = match r.call_nr() {
         call::YIELD => {
             sched::yield_now(sys, percpu::index() as usize);
