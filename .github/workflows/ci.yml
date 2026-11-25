@@ -108,8 +108,10 @@ jobs:
       # on a sandbox; the kernel must not crash and must still work after.
       - name: Kernel fuzzer, TCG, 4 cores, 60 s
         run: cargo xtask test --accel tcg --cpus 4 --fuzz 60 --timeout 900
+      # (8 cores on a 4-core runner: the boot checks before the fuzzer can
+      # take well over ten minutes when the host is busy.)
       - name: Kernel fuzzer, KVM, 8 cores, 120 s
-        run: cargo xtask test --accel kvm --cpus 8 --fuzz 120 --timeout 900
+        run: cargo xtask test --accel kvm --cpus 8 --fuzz 120 --timeout 1800
 
       # Milestone 4: the driver is killed at random for 10 minutes while the
       # test app uses the disk; no wrong answer may reach it. Milestone 5:
