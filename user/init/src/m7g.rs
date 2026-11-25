@@ -51,14 +51,21 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         "the reader did not say Settings: {:?}",
         heard(ep)
     );
-    // Tab in Settings: the reader says the button that has it.
-    let before = heard(ep).0;
+    // Tab in Settings: the reader says the button that has it. (First
+    // let what it says on its own settle, so only Tab can make it say
+    // something new.)
+    let last = core::cell::Cell::new(heard(ep).0);
+    assert!(sleep_until(SLOW, || {
+        crate::m3::sleep_ms(500);
+        last.replace(heard(ep).0) == last.get()
+    }));
+    let (before, _, _, said) = heard(ep);
     assert!(
         x.keys(
             "{tab}",
             || {
                 let h = heard(ep);
-                h.0 > before && h.1 == rr::BUTTON
+                h.0 > before && h.1 == rr::BUTTON && h.3 != said
             },
             SLOW
         ),

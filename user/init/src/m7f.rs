@@ -142,7 +142,16 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     // Settings back to Alaya's pick there (175%, 200%, pick), and the
     // second screen out.
     ask(ep, dk::RAISE, &[settings]);
-    assert!(x.keys("sss", || true, SLOW));
+    // (Wait until Settings has taken the last S: on a slow machine it
+    // can still be on its way when the next check types.)
+    let picked = || {
+        let r = ask(ep, dk::SCALE, &[settings, u64::MAX]);
+        r[0] == dk::OK && r[2] == 0
+    };
+    assert!(
+        x.keys("sss", picked, SLOW),
+        "Settings did not go back to Alaya's pick"
+    );
     assert!(sleep_until(SLOW, || at(settings).2 <= 640));
     assert!(x.s.plug(0, 0, 0));
     assert!(sleep_until(SLOW, || at(settings).0 < MAIN_W && x.s.screens().0 == 1));
