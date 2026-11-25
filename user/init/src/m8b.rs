@@ -163,7 +163,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     x.start_app(role::INSTALLED);
     x.wait_window(role::INSTALLED);
     assert!(
-        sleep_until(SLOW, || place(ep).2 == 5),
+        sleep_until(SLOW_START, || place(ep).2 == 5),
         "no question when it first tried the new line: {:?}",
         place(ep)
     );
