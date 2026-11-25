@@ -168,6 +168,67 @@ fn difference(store: &Store, rows: &[Row], result: u64) -> String {
     )
 }
 
+/// Read the documents again: the rows, their marks, what is waiting to
+/// be forgotten; the chosen file stays chosen.
+fn look_again(
+    store: &Store,
+    docs: u64,
+    rows: &mut Vec<Row>,
+    selected: &mut Option<usize>,
+    waiting: &mut Vec<(u64, u64, String)>,
+    said: &mut String,
+) {
+    *waiting = store.forgetting().unwrap_or_default();
+    // The chosen file stays chosen when others come and go.
+    let chosen = selected.and_then(|i| rows.get(i)).map(|r| r.e.file);
+    if let Ok(mut l) = store.list(docs) {
+        l.sort_by(|a, b| a.name.cmp(&b.name));
+        if let Some(f) = chosen {
+            *selected = l.iter().position(|e| e.file == f).or(*selected);
+        }
+        let marks: Vec<Mark> = l
+            .iter()
+            .map(|e| {
+                store.mark(e.file).unwrap_or(Mark {
+                    kind: Kind::NoMark,
+                    why: Why::Nothing,
+                    source: 0,
+                    now_version: 0,
+                    maker: 0,
+                    sources: 0,
+                })
+            })
+            .collect();
+        let abouts: Vec<String> = marks.iter().map(|m| about(store, &l, m)).collect();
+        *rows = l
+            .into_iter()
+            .zip(marks)
+            .zip(abouts)
+            .map(|((e, mark), about)| Row {
+                private: !e.is_dir && store.private(e.file, None).unwrap_or(false),
+                e,
+                mark,
+                about,
+            })
+            .collect();
+    }
+    let line = rows
+        .iter()
+        .map(|r| match pill(&r.mark) {
+            Some((t, _, _)) => format!("{} ({})", r.e.name, t.to_lowercase()),
+            None => r.e.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if line != *said {
+        say!(
+            "documents: {}",
+            if line.is_empty() { "none" } else { &line }
+        );
+        *said = line;
+    }
+}
+
 pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
     let mut fonts = app::fonts(info);
     let docs = store.root(DOCS).expect("documents");
@@ -199,7 +260,21 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                 _ => {}
             }
         }
-        let mut look = last_look == 0 || rt::now_ms() - last_look >= 2000;
+        // Keys, or due to look again: look before the keys, so they act
+        // on the rows as they are now (a file just brought back is there
+        // to choose, and End reaches it).
+        if !keys.is_empty() || last_look == 0 || rt::now_ms() - last_look >= 2000 {
+            last_look = rt::now_ms();
+            look_again(
+                &store,
+                docs,
+                &mut rows,
+                &mut selected,
+                &mut waiting,
+                &mut said,
+            );
+        }
+        let mut look = false;
         for k in &keys {
             let last = rows.len().saturating_sub(1);
             match k {
@@ -388,55 +463,14 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
         }
         if look {
             last_look = rt::now_ms();
-            waiting = store.forgetting().unwrap_or_default();
-            // The chosen file stays chosen when others come and go.
-            let chosen = selected.and_then(|i| rows.get(i)).map(|r| r.e.file);
-            if let Ok(mut l) = store.list(docs) {
-                l.sort_by(|a, b| a.name.cmp(&b.name));
-                if let Some(f) = chosen {
-                    selected = l.iter().position(|e| e.file == f).or(selected);
-                }
-                let marks: Vec<Mark> = l
-                    .iter()
-                    .map(|e| {
-                        store.mark(e.file).unwrap_or(Mark {
-                            kind: Kind::NoMark,
-                            why: Why::Nothing,
-                            source: 0,
-                            now_version: 0,
-                            maker: 0,
-                            sources: 0,
-                        })
-                    })
-                    .collect();
-                let abouts: Vec<String> = marks.iter().map(|m| about(&store, &l, m)).collect();
-                rows = l
-                    .into_iter()
-                    .zip(marks)
-                    .zip(abouts)
-                    .map(|((e, mark), about)| Row {
-                        private: !e.is_dir && store.private(e.file, None).unwrap_or(false),
-                        e,
-                        mark,
-                        about,
-                    })
-                    .collect();
-            }
-            let line = rows
-                .iter()
-                .map(|r| match pill(&r.mark) {
-                    Some((t, _, _)) => format!("{} ({})", r.e.name, t.to_lowercase()),
-                    None => r.e.name.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            if line != said {
-                say!(
-                    "documents: {}",
-                    if line.is_empty() { "none" } else { &line }
-                );
-                said = line;
-            }
+            look_again(
+                &store,
+                docs,
+                &mut rows,
+                &mut selected,
+                &mut waiting,
+                &mut said,
+            );
         }
         let hint = match selected.and_then(|i| rows.get(i)) {
             _ if !waiting.is_empty() && told.is_none() => {

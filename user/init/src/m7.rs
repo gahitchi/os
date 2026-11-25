@@ -98,13 +98,12 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     let before = me.contents(summary);
     let files = x.window_of(role::FILES).expect("the file browser's window");
     ask(ep, dk::RAISE, &[files]);
-    // It looks again every two seconds: then the summary is the last file.
-    sleep_until(2500, || false);
-    x.keys("{end}", || false, 1000);
+    // It reads the documents again before it acts on keys: the summary
+    // is the last file.
     let gone = || me.lookup(docs, "summary.txt").is_none();
     let back = || me.lookup(docs, "summary.txt") == Some(summary);
     assert!(
-        x.keys("d", gone, SLOW),
+        x.keys("{end}d", gone, SLOW),
         "the file browser did not delete it"
     );
     // The file browser puts it on the undo list just after.
@@ -122,9 +121,8 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     pass("a file deleted in the file browser comes back exactly with Alaya key + Z");
 
     // ---- 77. The strip's Undo button does the same.
-    sleep_until(2500, || false);
     assert!(
-        x.keys("d", gone, SLOW),
+        x.keys("{end}d", gone, SLOW),
         "the file browser did not delete it again"
     );
     let undo = place(dk::places::UNDO);
