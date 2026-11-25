@@ -106,3 +106,11 @@ looks: a firefly lights a dark garden, one tile at a time, and may only fly
 to a tile that is still dark. Each garden grows from a random walk, so
 there is always a way. Arrows fly, U steps back, R starts again, S saves,
 H shows every save (Enter brings one back). Boot check 126 plays it.
+
+## License
+
+The SDK is a System Library under Alaya's [linking exception](../LICENSE-EXCEPTION.md)
+(decision 159): `alaya-apps`, `alaya-sys`, `alaya-ui`, `alaya.h`, and Alaya's C
+library with its SDL subset. An app built with them may use any license, open or
+closed. Alaya itself, its kernel, servers, drivers and built-in apps, stays
+GPL-3.0-only.

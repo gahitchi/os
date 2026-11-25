@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The pieces apps are built from: labels, buttons, text boxes and lists,
 //! drawn in Alaya's look (the mock-up of decision 86).
 //!

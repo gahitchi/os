@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* What the C library needs from Alaya: the SDK's C interface (alaya.h)
  * and a few calls only the library uses. */
 #ifndef ALAYA_LIBC_INTERNAL_H

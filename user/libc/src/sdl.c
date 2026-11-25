@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* The SDL subset (SDL.h) on Alaya's windows from C (alaya.h): one window,
  * a software surface of 32-bit pixels, key events, ticks and delays. */
 #include <SDL.h>

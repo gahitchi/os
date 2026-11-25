@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* setjmp and longjmp for AArch64: x19 to x30 and the stack pointer. The
  * C library uses no floating-point registers. */
     .text

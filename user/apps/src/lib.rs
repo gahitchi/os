@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! What an app needs to open a window on the desktop and draw in it with
 //! the toolkit: the window's picture, its events, and Alaya's letters.
 

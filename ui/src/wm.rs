@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The window rules of the compositor (decisions 34 and 87): which window
 //! is in front, what the mouse grabbed, moving and resizing, snapping to
 //! a half or the whole screen, and tiling.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The small C interface of Alaya's app SDK (milestone 8, step 3), so
 //! that programs written in C (and the POSIX layer of step 8-4) can use
 //! the same calls as Rust apps. Its header is `user/apps/include/alaya.h`;

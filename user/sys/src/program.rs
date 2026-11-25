@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! Starting a program from an ELF image (the program starter's library).
 //!
 //! Everything the new program is made of comes from one untyped capability

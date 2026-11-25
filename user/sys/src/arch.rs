@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The few things a program does that depend on the processor family: the
 //! system call instruction and its registers, the clock, a deliberate
 //! crash, and the first instruction of a program. Everything else in the

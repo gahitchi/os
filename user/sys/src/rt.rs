@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The small runtime of a started program: its entry point, printing with
 //! its name in front, a crash on panic (so whoever looks after it notices),
 //! its own memory, threads and a clock.

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 #ifndef _SYS_TYPES_H
 #define _SYS_TYPES_H
 #include <stdint.h>

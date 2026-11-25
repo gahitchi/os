@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /*
  * A small part of the SDL 2 interface, written for Alaya from scratch
  * (milestone 8, step 4): one window with a software surface, key events,

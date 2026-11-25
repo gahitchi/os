@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The core-type helper (decision 54): which kind of core each time budget
 //! should use, on processors with performance and efficiency cores.
 //!

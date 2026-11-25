@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! "Show the difference" (living validity, milestone 7): what changed
 //! between two versions of a text, line by line, simply.
 

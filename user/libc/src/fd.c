@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* Files by number (unistd.h, fcntl.h) on Alaya's store. A file is read
  * whole when opened and written back whole when closed, if it changed:
  * the store keeps every version, so a program that crashes half way

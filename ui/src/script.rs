@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! Right-to-left text (milestone 7b, step 3): Arabic letters joined, and
 //! a line put in the order it is seen, with Hebrew and Arabic running
 //! from the right among left-to-right words and numbers.

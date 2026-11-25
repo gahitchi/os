@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! Text: Alaya's letters (decision 105), with a fallback font for
 //! alphabets the main one lacks, and a cache of drawn glyphs.
 //!

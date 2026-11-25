@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The input-method server's logic (milestone 7b, step 3; decision 50):
 //! between the keyboard and the apps. Apps never read the keyboard for
 //! text; the desktop turns key presses into text here and hands the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! Drawing into a picture of 32-bit pixels (0x00RRGGBB, row after row):
 //! filled and rounded rectangles, soft shadows, frames, gradients, and
 //! glyph coverage blended in a colour. Everything is clipped to the

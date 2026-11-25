@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* Alaya's small C library (milestone 8, step 4). */
 #ifndef _STRING_H
 #define _STRING_H

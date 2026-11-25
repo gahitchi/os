@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* string.h. memcpy, memmove, memset and memcmp come from the Rust side
  * (compiler-builtins). */
 #include <errno.h>

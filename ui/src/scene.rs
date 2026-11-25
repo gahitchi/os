@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! How the compositor draws the screen: the wallpaper, the windows with
 //! their frames and shadows, the snap preview, the dock, the top strip that
 //! only Alaya draws, and the pointer. Only the part that changed is drawn

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* setjmp and longjmp for x86-64 (System V): the callee-saved registers,
  * the stack pointer after return, and the return address. */
     .text

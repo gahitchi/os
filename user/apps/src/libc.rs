@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! What Alaya's small C library (`user/libc`, milestone 8, step 4) needs
 //! from the Rust side: memory from Alaya's allocator, and where a C
 //! program's output goes. The C library itself is linked only into the

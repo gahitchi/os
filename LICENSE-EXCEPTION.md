@@ -19,7 +19,18 @@ The kernel, the system servers, the drivers and any file carrying only
 `SPDX-License-Identifier: GPL-3.0-only` are **not** System Libraries. This
 exception does not apply to them.
 
-At milestone 0 no System Library exists yet.
+The System Libraries today (decision 159, chosen by the person on
+25 November 2026):
+
+- `alaya-apps`, the app SDK (`user/apps/src/lib.rs`, `store.rs`, `c.rs`,
+  `libc.rs`) and its C interface `user/apps/include/alaya.h`;
+- `alaya-sys`, the runtime every program links (`user/sys/src`);
+- `alaya-ui`, the toolkit (`ui/src`);
+- Alaya's own C library and its SDL subset (`user/libc/include`,
+  `user/libc/src`), which C apps link through the C interface.
+
+The programs built from the same folders (the desktop, the built-in apps,
+the C tools and games) are not System Libraries.
 
 ## The permission
 

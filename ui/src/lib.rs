@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! Alaya's toolkit and desktop logic (milestone 6): letters, drawing, the
 //! window rules of the compositor, and the pieces apps are built from.
 //!

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* Running a C program's main inside an Alaya program: exit() comes back
  * here, files left open are written back, and the next program starts
  * clean. Also the clock. */

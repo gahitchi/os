@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception
 //! The store, as the desktop and the apps use it: whole files by name.
 //!
 //! Requests are messages on a badged endpoint; the badge says who asks

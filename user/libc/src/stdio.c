@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only */
+/* SPDX-License-Identifier: GPL-3.0-only WITH AdditionRef-Alaya-system-library-exception */
 /* stdio.h on top of the file numbers (fd.c), and printf's formatting. */
 #include <errno.h>
 #include <fcntl.h>
