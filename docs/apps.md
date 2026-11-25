@@ -100,7 +100,7 @@ Ask for an answer with `Window::ask_answer(question)` (from `files::question`); 
 
 A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like everything else, and a flag Alaya does not know is refused.
 
-## Checked in every boot test (checks 110 to 122)
+## Checked in every boot test (checks 110 to 124)
 
 - 110: a bundle with one byte changed after signing is refused; nothing is installed.
 - 111: installed on the side with the files line unticked, then approved; the app's store handle really is absent.
@@ -115,3 +115,5 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 120: installed, then updated and undone 50 times in a row; it still starts at the right version.
 - 121: Postcards asks for the total of a column of a document picked in the answer window and gets 4.90, never the document; each answer is in the ledger, and after 10 the day's limit holds.
 - 122: game mode: with the editor full screen, Postcards 3 running with no window is frozen and an update offered meanwhile waits; leaving full screen, it goes on and the update comes.
+- 123: a note from the editor, held while you are elsewhere, comes forward when you go into the editor's group.
+- 124: live handoff: the editor hands a document it holds to the chart maker at line 3 after Alaya asks; "Stay here" hands nothing, and a document it does not hold cannot be handed.

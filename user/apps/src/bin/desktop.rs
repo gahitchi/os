@@ -84,12 +84,28 @@ struct Win {
 enum Asked {
     Action(u64),
     Change(u64, u64),
+    /// Live handoff (milestone 8, step 3): continue this document in
+    /// another app, at this place.
+    Handoff(Handoff),
 }
 
 struct Ask {
     what: Asked,
     title: String,
     body: String,
+    yes: &'static str,
+    no: &'static str,
+}
+
+/// A live handoff the person is asked about, or the last one done (for
+/// the checks): from role, to role, the file, the place, write.
+#[derive(Clone, Copy)]
+struct Handoff {
+    from: u64,
+    to: u64,
+    file: u64,
+    place: u64,
+    write: bool,
 }
 
 /// The Open or Save window an app asked for (dk::PICK): Alaya draws it,
@@ -299,6 +315,8 @@ struct Desk {
     windowless: u64,
     /// How many held things came forward at the last GROUP_GO.
     came_forward: u64,
+    /// The last live handoff (for the checks).
+    handed: Option<Handoff>,
 }
 
 fn font(info: &StartInfo, i: usize) -> &'static [u8] {
@@ -438,6 +456,7 @@ fn main(info: &'static StartInfo) -> ! {
         held_offers: Vec::new(),
         windowless: 0,
         came_forward: 0,
+        handed: None,
     };
     d.tick();
     say!(
@@ -829,8 +848,8 @@ impl Desk {
         let question = self.ask.as_ref().map(|a| Question {
             title: &a.title,
             body: &a.body,
-            yes: "Undo anyway",
-            no: "Keep as it is",
+            yes: a.yes,
+            no: a.no,
         });
         let pick_rows: Vec<String> = self
             .pick
@@ -2034,6 +2053,8 @@ impl Desk {
             what,
             title: alloc::format!("Undo \"{about}\"?"),
             body,
+            yes: "Undo anyway",
+            no: "Keep as it is",
         });
         self.damage_all();
     }
@@ -2053,6 +2074,9 @@ impl Desk {
         let Some(a) = self.ask.take() else { return };
         self.damage_all();
         let Some(s) = self.mine() else { return };
+        if let Asked::Handoff(h) = a.what {
+            return self.handoff_done(&s, h, yes);
+        }
         if !yes {
             self.say_note(String::from("Kept as it is: nothing was undone"));
             return;
@@ -2071,7 +2095,112 @@ impl Desk {
                 let r = s.undo_change(cn, app, true);
                 self.undone(Asked::Change(cn, app), r, &about);
             }
+            Asked::Handoff(_) => {}
         }
+    }
+
+    /// An app asks to hand the document it has open to another app, at
+    /// its place (dk::HANDOFF): Alaya asks the person first, since the
+    /// other app gets the document too.
+    fn handoff_start(&mut self, owner: u64, w: &[u64; 6]) -> u64 {
+        let Some(s) = self.mine() else {
+            return dk::BAD_REQUEST;
+        };
+        let (to, file, place) = (w[1], w[2], w[3]);
+        let can_take = to != owner
+            && (to == role::EDITOR || to == role::CHART || role::installed(to))
+            && (!role::installed(to) || self.allowed(to, alaya_bundle::promise::FILES));
+        if owner == 0
+            || !can_take
+            || self.ask.is_some()
+            || self.pick.is_some()
+            || !self
+                .wins
+                .iter()
+                .any(|x| u64::from(x.id) == w[0] && x.owner == owner)
+        {
+            return dk::BAD_REQUEST;
+        }
+        // Only a document the app itself holds.
+        let Some(g) = s
+            .grants(fs::app_id(owner))
+            .unwrap_or_default()
+            .into_iter()
+            .find(|g| g.file == file && !matches!(g.lasts, Lasts::Pinned(_)))
+        else {
+            return dk::NOT_ALLOWED;
+        };
+        let name = s.name_of(file, 0).unwrap_or_default();
+        let (a, b) = (
+            capital(st::app_name(fs::app_id(owner))),
+            st::app_name(fs::app_id(to)),
+        );
+        say!("asked: hand {name} from {a} to {b} at line {}", place + 1);
+        self.ask = Some(Ask {
+            what: Asked::Handoff(Handoff {
+                from: owner,
+                to,
+                file,
+                place,
+                write: g.write,
+            }),
+            title: alloc::format!("Continue {name} in {b}?"),
+            body: alloc::format!(
+                "{a} hands {name} to {b}, at line {}, so you go on where you are. \
+                 {b} gets this document until it closes, and nothing else.",
+                place + 1
+            ),
+            yes: "Continue there",
+            no: "Stay here",
+        });
+        self.damage_all();
+        dk::OK
+    }
+
+    fn handoff_done(&mut self, s: &Store, h: Handoff, yes: bool) {
+        if !yes {
+            self.say_note(String::from("Not handed over: you stay where you are"));
+            return;
+        }
+        // An app that already holds it for good keeps that.
+        let holds = s
+            .grants(fs::app_id(h.to))
+            .unwrap_or_default()
+            .iter()
+            .any(|g| g.file == h.file && g.lasts == Lasts::Live && (g.write || !h.write));
+        if !holds
+            && s.grant(fs::app_id(h.to), h.file, h.write, Lasts::UntilClosed)
+                .is_err()
+        {
+            self.say_note(String::from("It could not be handed over"));
+            return;
+        }
+        let e = [event::HANDOFF, h.file, h.place, h.from, h.write as u64];
+        match self
+            .wins
+            .iter()
+            .rev()
+            .find(|w| w.owner == h.to)
+            .map(|w| w.id)
+        {
+            Some(id) => {
+                self.push(id, e);
+                let mut out = Vec::new();
+                self.wm.raise(id, &mut out);
+                self.apply(out);
+            }
+            None => {
+                self.hand = Some((h.to, e));
+                self.show_app(h.to, st::app_name(fs::app_id(h.to)));
+            }
+        }
+        say!(
+            "handed off: {} goes on in {} at line {}",
+            s.name_of(h.file, 0).unwrap_or_default(),
+            st::app_name(fs::app_id(h.to)),
+            h.place + 1
+        );
+        self.handed = Some(h);
     }
 
     /// An app asks for the Open or Save window (dk::PICK).
@@ -2902,6 +3031,13 @@ impl Desk {
                 ([dk::OK, u64::from(id), 0, 0, 0, 0], 0)
             }
             dk::PICK => ([self.pick_start(owner, &w), 0, 0, 0, 0, 0], 0),
+            dk::HANDOFF if owner != 0 => ([self.handoff_start(owner, &w), 0, 0, 0, 0, 0], 0),
+            dk::HANDOFF => (
+                self.handed.map_or([dk::BAD_REQUEST, 0, 0, 0, 0, 0], |h| {
+                    [dk::OK, h.from, h.to, h.file, h.place, h.write as u64]
+                }),
+                0,
+            ),
             dk::JOB => ([self.job_request(owner, &w), 0, 0, 0, 0, 0], 0),
             dk::PAGE => match find(self, w[0]) {
                 Some(i) if w[1] < dk::PAGES => {

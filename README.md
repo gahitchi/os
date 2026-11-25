@@ -13,6 +13,16 @@ The full design is in [`docs/design/`](docs/design/), starting with
 
 ## Status
 
+**Milestone 8 (in progress): apps that are not built in.** Apps come as
+signed bundles you install and approve line by line; updates can never take
+more on their own, go on trial, and slip back by themselves when clearly
+slower; a rehearsal runs a new app on a copy of your files first. An app can
+get an answer instead of your file ("the total of column 2": one number,
+never the document), a full-screen game freezes what runs in the
+background, notes from a task wait for you in that task, and the editor
+hands a document to another app at the same line. How it works:
+[`docs/apps.md`](docs/apps.md) and [`docs/sdk.md`](docs/sdk.md).
+
 **Milestone 7, step 1: going back.** One undo for the whole computer:
 the Alaya key plus Z, or the Undo button in the top strip, undoes your last
 action anywhere (a deleted file, a setting, a closed window), and asks first

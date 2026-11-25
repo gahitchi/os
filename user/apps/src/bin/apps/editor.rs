@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 
 use alaya_apps::store::{Store, Version};
 use alaya_apps::{self as app, Event, Window};
+use alaya_programs::desktop::role;
 use alaya_programs::files::{APPS, DOCS};
 use alaya_sys::abi::StartInfo;
 use alaya_sys::rt::Mem;
@@ -240,6 +241,53 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                         dirty = false;
                         changed = true;
                         say!("saved {} ({} bytes)", name, edit.text.len());
+                    }
+                }
+                // Live handoff: go on in the chart maker at this line.
+                Event::Shortcut('h') if dirty => {
+                    note = String::from("Save first (Ctrl+S), then Ctrl+H.");
+                }
+                Event::Shortcut('h') => {
+                    let line = edit.text.as_bytes()[..edit.cursor]
+                        .iter()
+                        .filter(|&&b| b == b'\n')
+                        .count() as u64;
+                    note = match file {
+                        Some(f) if win.hand_off(role::CHART, f, line) => {
+                            say!(
+                                "asked to continue {} in the chart maker at line {}",
+                                name,
+                                line + 1
+                            );
+                            String::from("Alaya asks you first.")
+                        }
+                        _ => String::from("This document cannot be handed over."),
+                    };
+                }
+                Event::HandedOff { .. } if dirty => {
+                    note = String::from("Save first: a document was handed to you.");
+                }
+                Event::HandedOff { file: f, place, .. } => {
+                    // Go on where the other app was.
+                    if let Ok(b) = store.read_all(*f) {
+                        edit = TextEdit::new(&String::from_utf8_lossy(&b));
+                        let t = edit.text.as_bytes();
+                        edit.cursor = t
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, b)| **b == b'\n')
+                            .nth((*place as usize).wrapping_sub(1))
+                            .map_or(0, |(i, _)| i + 1)
+                            .min(t.len());
+                        if *place == 0 {
+                            edit.cursor = 0;
+                        }
+                        file = Some(*f);
+                        name = name_of(&store, docs, *f).unwrap_or_default();
+                        used.clear();
+                        changed = true;
+                        note = format!("Handed over: line {}.", place + 1);
+                        say!("continues {} at line {}", name, place + 1);
                     }
                 }
                 Event::Shortcut('o') if dirty => {

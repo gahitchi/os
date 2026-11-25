@@ -1166,6 +1166,13 @@ pub mod desktop {
     /// frozen, the store puts off its backups, and install offers wait.
     /// The first program only, for checks.
     pub const GAME: u64 = 43;
+    /// HANDOFF: window, to role, file, place (a line, from 0) → status.
+    /// Live handoff (milestone 8, step 3): an app hands the document it
+    /// holds to another app, which goes on at the same place. Alaya asks
+    /// the person first; the other app gets the document until it closes
+    /// and a HANDOFF event. From the first program: → status, from, to,
+    /// file, place, write of the last handoff done.
+    pub const HANDOFF: u64 = 44;
     pub mod reader_role {
         pub const WINDOW: u64 = 0;
         pub const LABEL: u64 = 1;
@@ -1305,6 +1312,9 @@ pub mod desktop {
         /// Apps get text only this way; the keys that make it stay with
         /// the desktop.
         pub const TEXT: u64 = 10;
+        /// Go on with this document at this place (live handoff): the
+        /// file, the place (a line, from 0), the role it came from, write.
+        pub const HANDOFF: u64 = 11;
     }
 
     /// Places, as WINDOW reports them.

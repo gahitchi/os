@@ -509,7 +509,48 @@ fn limine() -> Result<PathBuf, String> {
 
 /// Build the bootable ISO. `cmdline` makes a test variant whose kernel
 /// command line is set, kept apart from the normal image.
+/// The C interface's header lists exactly the functions `c.rs` has
+/// (milestone 8, step 3).
+fn check_c_interface() -> Result<(), String> {
+    let dir = root().join("user").join("apps");
+    let read = |p: PathBuf| fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()));
+    let names = |text: &str, before: &str| -> Vec<String> {
+        let mut v: Vec<String> = text
+            .lines()
+            .filter_map(|l| {
+                let at = l.find("alaya_")?;
+                let rest = &l[at..];
+                let end = rest.find('(')?;
+                (l[..at].trim_end().ends_with(before) || before.is_empty())
+                    .then(|| rest[..end].to_string())
+            })
+            .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let header = read(dir.join("include").join("alaya.h"))?;
+    let rust = read(dir.join("src").join("c.rs"))?;
+    let h = names(
+        &header
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('*') && !l.trim_start().starts_with("/*"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "",
+    );
+    let r = names(&rust, "fn");
+    if h != r {
+        return Err(format!(
+            "alaya.h and c.rs differ: the header has {h:?}, c.rs has {r:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn build_image(arch: Arch, release: bool, cmdline: Option<&str>) -> Result<PathBuf, String> {
+    check_c_interface()?;
     let kernel = build_kernel(arch, release)?;
     let init = build_init(arch, release)?;
     let limine = limine()?;

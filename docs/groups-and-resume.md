@@ -96,6 +96,11 @@ trusted. Alaya key + I shows everything, sorted; the strip counts what
 is held. In the inbox, Enter opens the thing's app, Delete is done with
 it, and A means "always let this app through".
 
+Notes belong to tasks (milestone 8): a held note remembers the group its
+app was in. When you go into that group, what its apps said while you
+were elsewhere comes forward ("2 things from Thesis waited for you"), and
+the inbox shows which task each note came from.
+
 The look (Everyday, Everything, Play, Create, Build) is chosen in
 Settings and changes only what is on screen; every protection works the
 same. A few hints show once, the first time they help, and never again.

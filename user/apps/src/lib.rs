@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+pub mod c;
 pub mod store;
 
 use alaya_sys::abi::{StartInfo, map, start};
@@ -56,6 +57,13 @@ pub enum Event {
         file: Option<u64>,
         save: bool,
         pinned: bool,
+    },
+    /// Live handoff: go on with this document at this place (a line,
+    /// from 0); it came from the app with role `from`.
+    HandedOff {
+        file: u64,
+        place: u64,
+        from: u64,
     },
     /// About the job it asked for (`dk::job_event`), with the folder it
     /// may change (started) or how many files were kept.
@@ -320,6 +328,13 @@ impl Window {
         call(self.ep, dk::PICK, &[self.id, 2, question, 0])[0] == dk::OK
     }
 
+    /// Hand the document this app holds to the app with role `to`, at
+    /// `place` (a line, from 0): live handoff. Alaya asks the person
+    /// first; the other app gets an [`Event::HandedOff`].
+    pub fn hand_off(&self, to: u64, file: u64, place: u64) -> bool {
+        call(self.ep, dk::HANDOFF, &[self.id, to, file, place])[0] == dk::OK
+    }
+
     /// Ask for a job with rules (`done` false), or say the job is done
     /// (true): Alaya shows the person the rules, or what its checks
     /// found. The answer comes later as an [`Event::Job`].
@@ -386,6 +401,11 @@ impl Window {
                 },
                 event::MAKE_AGAIN => Event::MakeAgain(r[2]),
                 event::MOMENT => Event::Moment(r[2]),
+                event::HANDOFF => Event::HandedOff {
+                    file: r[2],
+                    place: r[3],
+                    from: r[4],
+                },
                 event::TEXT => match char::from_u32(r[2] as u32) {
                     Some(c) if !c.is_control() => Event::Key(Key::Char(c)),
                     _ => continue,

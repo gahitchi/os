@@ -4,7 +4,8 @@
 //! total of a column of a document the person picks, and gets one number,
 //! never the document. Then game mode: a full-screen window in front
 //! freezes apps running with no window, and install offers wait. Then
-//! notifications that belong to a task come forward with it.
+//! notifications that belong to a task come forward with it, and a
+//! live handoff from the editor to the chart maker.
 
 use alaya_programs::desktop::{self as dk, inbox, role};
 use alaya_programs::files::{self as fs, DOCS, question, st};
@@ -214,5 +215,65 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     }
     pass(
         "a note from an app in a task waits while the person is elsewhere, and comes forward when they go into that task",
+    );
+
+    // ---- 124. Live handoff: the editor hands a document it holds to the
+    // chart maker, at its line; Alaya asks first.
+    let grants = |a: u64| {
+        let r = me.call(fs::GRANTS, &[fs::app_id(a)]);
+        let b = me.buf();
+        let mut out = [(0u64, 0u64); 32];
+        let n = (r[1] as usize).min(32);
+        for (i, o) in out.iter_mut().enumerate().take(n) {
+            let at = fs::GRANT_BYTES * i;
+            let w =
+                |k: usize| u64::from_le_bytes(b[at + 8 * k..at + 8 * k + 8].try_into().unwrap());
+            *o = (w(1), w(2));
+        }
+        (n, out)
+    };
+    let (n, held) = grants(role::EDITOR);
+    // A document the editor holds, not pinned to one version (kind 1).
+    let doc = held[..n]
+        .iter()
+        .find(|g| g.1 & 0xff != 1)
+        .map(|g| g.0)
+        .expect("the editor holds no document");
+    let asking = || ask(ep, dk::STATE, &[])[5] & 1 != 0;
+    // Not a document it does not hold.
+    assert!(
+        ask(editor_ep, dk::HANDOFF, &[editor, role::CHART, file, 2])[0] == dk::NOT_ALLOWED,
+        "the editor handed over a document it does not hold"
+    );
+    // "Stay here": nothing is handed over.
+    assert!(ask(editor_ep, dk::HANDOFF, &[editor, role::CHART, doc, 2])[0] == dk::OK);
+    assert!(asking(), "Alaya did not ask before handing over");
+    assert!(x.keys("{escape}", || !asking(), SLOW));
+    assert!(
+        ask(ep, dk::HANDOFF, &[])[0] != dk::OK,
+        "handed over although the person said to stay"
+    );
+    // "Continue there".
+    assert!(ask(editor_ep, dk::HANDOFF, &[editor, role::CHART, doc, 2])[0] == dk::OK);
+    assert!(x.keys("{enter}", || !asking(), SLOW));
+    let h = ask(ep, dk::HANDOFF, &[]);
+    assert!(
+        h[0] == dk::OK && h[1] == role::EDITOR && h[2] == role::CHART && h[3] == doc && h[4] == 2,
+        "the handoff was not done as asked: {h:?}"
+    );
+    x.pause_now();
+    if x.window_of(role::CHART).is_none() {
+        x.start_asked();
+    }
+    x.wait_window(role::CHART);
+    let (n, got) = grants(role::CHART);
+    assert!(
+        got[..n]
+            .iter()
+            .any(|g| g.0 == doc && matches!(g.1 & 0xff, 0 | 3)),
+        "the chart maker was not handed the document"
+    );
+    pass(
+        "live handoff: the editor hands its document to the chart maker at its line, after Alaya asks; staying is respected and a document it does not hold cannot be handed",
     );
 }
