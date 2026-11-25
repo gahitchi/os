@@ -60,7 +60,10 @@ pub fn set_deadline(ticks: u64) {
     }
     let armed = &percpu::this().timer_armed;
     let now_armed = armed.load(Ordering::Relaxed);
-    if now_armed != 0 && now_armed <= ticks {
+    // A remembered time already past means its interrupt was lost or is
+    // late: write the timer again rather than trust it, so one lost
+    // interrupt can never leave a core without its timer for good.
+    if now_armed != 0 && now_armed <= ticks && now_armed > now() {
         return;
     }
     armed.store(ticks, Ordering::Relaxed);

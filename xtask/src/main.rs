@@ -849,7 +849,14 @@ fn qemu_arm(image: &Path, opts: &Options, serial: &str) -> Result<Command, Strin
     } else {
         // The most complete emulated CPU: it has PAN (the ARM twin of
         // SMAP), 16-bit address-space tags and the newer atomics.
-        cmd.args(["-accel", "tcg", "-cpu", "max,pauth-impdef=on"]);
+        // ALAYA_ARM_CNTFRQ=1000000000: the clock at 1 GHz, as newer QEMU
+        // (9 and later) and real ARM machines run it; older QEMU uses
+        // 62.5 MHz.
+        let mut cpu = String::from("max,pauth-impdef=on");
+        if let Ok(hz) = env::var("ALAYA_ARM_CNTFRQ") {
+            cpu.push_str(&format!(",cntfrq={hz}"));
+        }
+        cmd.args(["-accel", "tcg", "-cpu", &cpu]);
     }
     if let Ok(extra) = env::var("ALAYA_QEMU_ARGS") {
         cmd.args(extra.split_whitespace());

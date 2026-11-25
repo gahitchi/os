@@ -85,6 +85,9 @@ pub fn idle(mut k: BklGuard<'_, KernelState>, core: usize) -> ! {
             drop(k);
             entry::return_to_user(&f)
         }
+        // Arm this core's timer before sleeping, so a lost timer
+        // interrupt is put right at the latest when the core goes idle.
+        sched::arm(&k.sys, core, crate::time::now());
         drop(k);
         crate::arch::wait_for_interrupt();
         k = BKL.lock();
