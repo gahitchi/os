@@ -27,6 +27,7 @@ extern crate alloc;
 
 pub use alaya_crypto as crypto;
 pub mod again;
+pub mod answers;
 pub mod backup;
 pub mod disk;
 pub mod finish;
@@ -84,6 +85,9 @@ pub enum Error {
     /// Something else changed the same file since (rule B6): nothing was
     /// done, so the person can see both and choose.
     Conflict,
+    /// An answer grant asked all the questions it may today
+    /// (`answers.rs`).
+    UsedUp,
 }
 
 impl From<IoError> for Error {
@@ -317,10 +321,12 @@ fn k_made(obj: u64, slot: u64) -> Key {
 const H_ROOT: u64 = 0;
 const H_CHANGE: u64 = 1;
 const H_READ: u64 = 2;
-const H_INFO: u64 = 3;
+pub(crate) const H_INFO: u64 = 3;
 const H_APPS: u64 = 4;
 /// The name of a named version (decision 58).
 const H_NAME: u64 = 5;
+/// An answer an app was given instead of the data (`answers.rs`).
+pub(crate) const H_ANSWER: u64 = 6;
 /// The one-undo list (`history.rs`), after every commit's records.
 const H_ACT: u64 = 1 << 62;
 fn k_hist(cn: u64, kind: u64, seq: u64) -> Key {
@@ -472,6 +478,8 @@ struct Branch {
     /// Changes and reads since the last commit.
     changes: BTreeMap<(App, FileId), u64>,
     reads: BTreeSet<Read>,
+    /// Answers given since the last commit (`answers.rs`).
+    answered: Vec<answers::Answered>,
     /// File blocks written since the last commit.
     dirty: BTreeMap<(FileId, u64), Box<Block>>,
     /// Something changed since the last commit.
@@ -507,6 +515,7 @@ impl Branch {
             next_obj: ROOT_OBJ + 1,
             changes: BTreeMap::new(),
             reads: BTreeSet::new(),
+            answered: Vec::new(),
             dirty: BTreeMap::new(),
             touched: true,
             docs_changed: true,
@@ -846,6 +855,7 @@ impl<D: Disk> Store<D> {
             next_obj: word(&b, 2),
             changes: BTreeMap::new(),
             reads: BTreeSet::new(),
+            answered: Vec::new(),
             dirty: BTreeMap::new(),
             touched: false,
             docs_changed: false,
@@ -2330,6 +2340,14 @@ impl<D: Disk> Store<D> {
                 &b.keys,
                 k_hist(cn, H_READ, seq as u64),
                 words(&[r.app, r.file.0, r.version]),
+            )?;
+        }
+        for (seq, a) in core::mem::take(&mut b.answered).into_iter().enumerate() {
+            b.hist.insert(
+                dev,
+                &b.keys,
+                k_hist(cn, H_ANSWER, seq as u64),
+                words(&[a.app, a.file.0, a.question.code(), a.value as u64]),
             )?;
         }
         b.hist

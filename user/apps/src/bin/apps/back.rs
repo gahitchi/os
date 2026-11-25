@@ -21,7 +21,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_apps::store::{Action, Entry, Happening, Store, app_name, describe};
+use alaya_apps::store::{
+    Action, Entry, Happening, Store, answer_words, app_name, describe, question_words,
+};
 use alaya_apps::{self as app, Event, Window};
 use alaya_programs::desktop as dk;
 use alaya_programs::files::{self as fs, DOCS, act, what};
@@ -40,6 +42,8 @@ struct Line {
     /// these commits (newest first).
     action: Option<Action>,
     changes: Vec<(u64, u64)>,
+    /// The moment it happened in (for the order).
+    cn: u64,
 }
 
 fn clock(t: u64) -> String {
@@ -154,6 +158,7 @@ fn lines(store: &Store) -> Vec<Line> {
                 when,
                 action: Some(a),
                 changes: alloc::vec![(cn, app)],
+                cn,
             });
             continue;
         }
@@ -170,8 +175,27 @@ fn lines(store: &Store) -> Vec<Line> {
             when,
             action: None,
             changes: alloc::vec![(cn, app)],
+            cn,
         });
     }
+    // Answers an app was given instead of a document (milestone 8, step
+    // 3): nothing to undo, but every one is shown (R9).
+    for a in store.answers(0, 40).unwrap_or_default() {
+        out.push(Line {
+            text: format!(
+                "{} asked for {} of {} and got one number: {}",
+                capital(app_name(a.app)),
+                question_words(a.question),
+                name(store, a.file, a.cn, &moments),
+                answer_words(a.question, a.value)
+            ),
+            when: clock(a.time),
+            action: None,
+            changes: Vec::new(),
+            cn: a.cn,
+        });
+    }
+    out.sort_by_key(|l| core::cmp::Reverse(l.cn));
     out
 }
 
@@ -385,9 +409,10 @@ pub fn run(info: &'static StartInfo, mut mem: Mem, store: Store) -> ! {
                     ) {
                         chosen = i;
                     }
-                    let can = list
-                        .get(chosen)
-                        .is_some_and(|l| l.action.is_none_or(|a| !a.undone));
+                    let can = list.get(chosen).is_some_and(|l| match l.action {
+                        Some(a) => !a.undone,
+                        None => !l.changes.is_empty(),
+                    });
                     if can {
                         let (hit, _) = ui.button(12, h - 58, "Undo this", true);
                         if hit {

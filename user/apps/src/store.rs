@@ -106,6 +106,45 @@ pub struct Happening {
     pub what: u64,
 }
 
+/// An answer an app was given instead of a document.
+#[derive(Clone, Copy, Debug)]
+pub struct Answered {
+    pub cn: u64,
+    pub time: u64,
+    pub app: u64,
+    pub file: u64,
+    pub question: u64,
+    pub value: i64,
+}
+
+/// A question from Alaya's fixed list, in words ("the total of column
+/// 2").
+pub fn question_words(q: u64) -> String {
+    use alloc::format;
+    match (q & 0xff, q >> 8) {
+        (fs::question::LINES, _) => String::from("how many lines"),
+        (fs::question::WORDS, _) => String::from("how many words"),
+        (fs::question::TOTAL, c) => format!("the total of column {c}"),
+        _ => String::from("a question"),
+    }
+}
+
+/// An answer in words: totals are in hundredths.
+pub fn answer_words(q: u64, v: i64) -> String {
+    use alloc::format;
+    if q & 0xff == fs::question::TOTAL {
+        let sign = if v < 0 { "-" } else { "" };
+        let a = v.unsigned_abs();
+        if a.is_multiple_of(100) {
+            format!("{sign}{}", a / 100)
+        } else {
+            format!("{sign}{}.{:02}", a / 100, a % 100)
+        }
+    } else {
+        format!("{v}")
+    }
+}
+
 /// A file's story.
 #[derive(Clone, Debug, Default)]
 pub struct Story {
@@ -609,6 +648,48 @@ impl Store {
         let (kind, arg) = lasts.code();
         self.call(fs::GRANT, &[app, f, write as u64, kind, arg])
             .map(|_| ())
+    }
+
+    /// Let `app` ask one fixed question about `f` (the desktop only):
+    /// `question` as [`fs::question`], at most `per_day` a day; 0 takes
+    /// it back.
+    pub fn grant_answer(
+        &self,
+        app: u64,
+        f: u64,
+        question: u64,
+        per_day: u64,
+    ) -> Result<(), Status> {
+        self.call(fs::ANSWER_GRANT, &[app, f, question, per_day])
+            .map(|_| ())
+    }
+
+    /// Ask this app's question about `f`: (the answer, questions left
+    /// today).
+    pub fn answer(&self, f: u64) -> Result<(i64, u64), Status> {
+        let r = self.call(fs::ANSWER, &[f])?;
+        Ok((r[1] as i64, r[2]))
+    }
+
+    /// The answers given, newest first (Alaya's own programs only).
+    pub fn answers(&self, before: u64, max: u64) -> Result<Vec<Answered>, Status> {
+        let n = self.call(fs::ANSWERS, &[before, max])?[1] as usize;
+        let b = xfer();
+        Ok((0..n)
+            .map(|i| {
+                let o = fs::ANSWER_BYTES * i;
+                let w =
+                    |k: usize| u64::from_le_bytes(b[o + 8 * k..o + 8 * k + 8].try_into().unwrap());
+                Answered {
+                    cn: w(0),
+                    time: w(1),
+                    app: w(2),
+                    file: w(3),
+                    question: w(4),
+                    value: w(5) as i64,
+                }
+            })
+            .collect())
     }
 
     /// Take a document back from an app.

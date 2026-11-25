@@ -70,13 +70,26 @@ An installed app whose last window closes is **ended**, unless you left its line
 
 When an app is removed, taken away by undo, sent back by the Experience Guardian or done rehearsing, closing its windows is not enough: an app could ignore that. The desktop asks the first program to **end the program itself** (a new "end" bit, next to pause and go on), which takes back everything it holds.
 
+## Answers instead of data (milestone 8, step 3)
+
+Often an app needs one fact about your file, not the file. Postcards wants to know what your postcards cost: the **total of column 2** of a list you keep. With **Ctrl+T** it asks Alaya for an **answer window**: you pick the document, and Postcards gets **one number**, never the document. It holds no grant to the file, so reading it is still refused.
+
+- The questions come only from **Alaya's fixed list**: how many lines, how many words, the total of a column (in hundredths; a heading line is skipped). An app never sends its own code to run on your files (rule R8).
+- Each answer grant may ask **at most 10 times a day**; then it gets "no more questions today" until tomorrow (R9). Asking again gives the same answer, so a number cannot be rebuilt by asking around it.
+- **Every answer is in your history**: "What happened?" shows "Postcards asked for the total of column 2 of postcard-costs.txt and got one number: 4.90" (R9).
+- An answer from a **private** document is private too: the app is marked as if it had read the file (decision 27, R10).
+
+For now the store itself works out the answer, since it already reads the file safely; separate answer helpers come with more kinds of questions (a resized photo without its location, "is a controller connected").
+
 ## For makers
+
+Ask for an answer with `Window::ask_answer(question)` (from `files::question`); the document picked comes back as `Event::Picked`, then `Store::answer(file)` gives the number and the questions left today.
 
 `cargo xtask` builds the example app **Postcards** (`user/apps/src/bin/postcards.rs`), cuts its program down to what is loaded, signs it with the **example maker key** (public on purpose, in `xtask/src/bundles.rs`; for test apps only) and puts it in the boot image as `example-apps`, in five versions: 2 asks for nothing new, 3 also wants to keep running with no window, 4 is slow to start on purpose, 5 is slow too but marked a security fix. A real maker keeps their secret key secret.
 
 A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like everything else, and a flag Alaya does not know is refused.
 
-## Checked in every boot test (checks 110 to 120)
+## Checked in every boot test (checks 110 to 121)
 
 - 110: a bundle with one byte changed after signing is refused; nothing is installed.
 - 111: installed on the side with the files line unticked, then approved; the app's store handle really is absent.
@@ -89,3 +102,4 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 118: a rehearsal reads and adds to the postcard on the side copy; Alaya shows what it read and changed, throws the copy away, and the real postcard is unchanged.
 - 119: the installer under a fuzzer: 40 bundles, each changed at a random byte, are all refused.
 - 120: installed, then updated and undone 50 times in a row; it still starts at the right version.
+- 121: Postcards asks for the total of a column of a document picked in the answer window and gets 4.90, never the document; each answer is in the ledger, and after 10 the day's limit holds.

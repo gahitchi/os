@@ -311,6 +311,15 @@ impl Window {
         call(self.ep, dk::PICK, &[self.id, save as u64, write as u64, 0])[0] == dk::OK
     }
 
+    /// Ask Alaya for an answer window (milestone 8, step 3): the person
+    /// picks a document, and the app may then ask `question` (from
+    /// [`alaya_programs::files::question`]) about it with
+    /// [`store::Store::answer`], getting one number and never the file.
+    /// The picked document comes back as an [`Event::Picked`].
+    pub fn ask_answer(&self, question: u64) -> bool {
+        call(self.ep, dk::PICK, &[self.id, 2, question, 0])[0] == dk::OK
+    }
+
     /// Ask for a job with rules (`done` false), or say the job is done
     /// (true): Alaya shows the person the rules, or what its checks
     /// found. The answer comes later as an [`Event::Job`].

@@ -658,6 +658,36 @@ pub mod files {
     /// rehearsal (milestone 8) shows this before throwing the copy away.
     /// Alaya's own programs only.
     pub const JOB_TRACE: u64 = 84;
+    /// Answers instead of data (milestone 8, step 3; R8 to R10).
+    /// ANSWER_GRANT: app, file, question ([`question`]), how many a day
+    /// (1 to [`ANSWERS_PER_DAY`]; 0 takes it back) → status. The desktop
+    /// only, when the person picked the file.
+    pub const ANSWER_GRANT: u64 = 85;
+    /// ANSWER: file → the answer (an i64), questions left today, 1 when
+    /// the whole document was read. Any app holding an answer grant;
+    /// [`st::USED_UP`] once today's questions are used.
+    pub const ANSWER: u64 = 86;
+    /// ANSWERS: before (a moment; 0: the newest), most → n; entries of
+    /// [`ANSWER_BYTES`] in the transfer pages: moment, time, app, file,
+    /// question, the answer. Alaya's own programs only.
+    pub const ANSWERS: u64 = 87;
+    pub const ANSWER_BYTES: usize = 48;
+    pub const ANSWERS_PER_DAY: u64 = 10;
+    /// A question on Alaya's fixed list.
+    pub const fn question_ok(q: u64) -> bool {
+        matches!(
+            (q & 0xff, q >> 8),
+            (question::LINES, 0) | (question::WORDS, 0) | (question::TOTAL, 1..=32)
+        )
+    }
+    /// Alaya's fixed list of questions (`alaya_store::answers::Question`).
+    pub mod question {
+        pub const LINES: u64 = 1;
+        pub const WORDS: u64 = 2;
+        /// The total of a column: `TOTAL | column << 8` (1 to 32), in
+        /// hundredths.
+        pub const TOTAL: u64 = 3;
+    }
     pub const FINISH_BYTES: usize = 32;
     pub mod fate {
         pub const KEEP: u64 = 0;
@@ -735,6 +765,8 @@ pub mod files {
         pub const IO: u64 = 8;
         pub const OTHER: u64 = 9;
         pub const NO_SUCH_MOMENT: u64 = 10;
+        /// An answer grant asked all it may today.
+        pub const USED_UP: u64 = 11;
     }
 
     pub const fn badge(person: u64, app: u64, channel: u64) -> u64 {
@@ -1014,7 +1046,10 @@ pub mod desktop {
     /// PICK: window, save (1) or open (0), write, how long it suggests
     /// (a `Lasts` kind; 0: let the person choose) → status. Alaya shows
     /// the Open or Save window; the answer comes later as a PICKED event
-    /// (milestone 7, step 2).
+    /// (milestone 7, step 2). Save 2 is the answer window (milestone 8,
+    /// step 3): the third word is the question (`files::question`), and
+    /// the app gets an answer grant on the document picked, not the
+    /// document.
     pub const PICK: u64 = 22;
     /// JOB: window, what (0: ask for a job, 1: the job is done) → status.
     /// Asking shows the rules screen: the person picks the one folder it

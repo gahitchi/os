@@ -1081,6 +1081,7 @@ pub(crate) fn run<'a>(
     crate::m7h::run(&mut x, pass);
     crate::m8a::run(&mut x, pass);
     crate::m8b::run(&mut x, pass);
+    crate::m8c::run(&mut x, pass);
     x
 }
 

@@ -11,6 +11,11 @@
 //! Its version is the bundle's (Alaya passes it). For the Experience
 //! Guardian's check (milestone 8, step 2), versions 4 and 5 are slow to
 //! start on purpose: they wait a few seconds before opening their window.
+//!
+//! Ctrl+T asks for an answer instead of data (milestone 8, step 3): "how
+//! much did my postcards cost?" is the total of column 2 of a document
+//! the person picks. Postcards gets that one number and never the file;
+//! it tries to read the file too, to show that it cannot.
 
 #![no_std]
 #![no_main]
@@ -21,10 +26,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use alaya_apps::store::Store;
+use alaya_apps::store::{Store, answer_words};
 use alaya_apps::{self as app, Event, Window};
 use alaya_programs::desktop as dk;
-use alaya_programs::files::DOCS;
+use alaya_programs::files::{DOCS, question, st};
 use alaya_sys::abi::{StartInfo, start};
 use alaya_sys::rt::{self, Mem};
 use alaya_sys::say;
@@ -41,6 +46,8 @@ const SLOW_FROM: u64 = 4;
 const SLOW_MS: u64 = 8000;
 const CARD: &str = "postcard.txt";
 const CLOCK_BIT: u64 = 2;
+/// The question it asks: the total of column 2.
+const TOTAL: u64 = question::TOTAL | 2 << 8;
 
 fn main(info: &'static StartInfo) -> ! {
     let mut mem = Mem::new(info);
@@ -92,12 +99,21 @@ fn main(info: &'static StartInfo) -> ! {
     }
     let mut note = String::new();
     let mut write = false;
+    // The document it may ask about (it holds no grant to it).
+    let mut asked: Option<u64> = None;
+    let mut ask = false;
     loop {
         let mut keys = Vec::new();
         while let Some(e) = win.next_event() {
             match e {
                 Event::Key(k) => keys.push(k),
                 Event::Shortcut('s') => write = true,
+                Event::Shortcut('t') => ask = true,
+                Event::Picked { file: Some(f), .. } => {
+                    asked = Some(f);
+                    ask = true;
+                }
+                Event::Picked { file: None, .. } => note = String::from("No document picked."),
                 Event::Close => {
                     win.close();
                     loop {
@@ -106,6 +122,40 @@ fn main(info: &'static StartInfo) -> ! {
                 }
                 _ => {}
             }
+        }
+        if core::mem::take(&mut ask) {
+            note = match (docs, asked) {
+                (None, _) => String::from("You did not allow files, so it cannot ask."),
+                (Some(_), None) => {
+                    if win.ask_answer(TOTAL) {
+                        String::from("Pick the document to add up.")
+                    } else {
+                        String::from("Alaya did not show the answer window.")
+                    }
+                }
+                (Some(_), Some(f)) => {
+                    let got = store.answer(f);
+                    // It holds no grant to the file itself.
+                    let read = store.read_all(f).is_ok();
+                    say!(
+                        "postcards: answer {} · reading the file {}",
+                        match got {
+                            Ok((v, left)) => format!("{v} ({left} left today)"),
+                            Err(st::USED_UP) => String::from("used up"),
+                            Err(e) => format!("refused ({e})"),
+                        },
+                        if read { "worked" } else { "refused" }
+                    );
+                    match got {
+                        Ok((v, left)) => format!(
+                            "The total is {} · {left} questions left today.",
+                            answer_words(TOTAL, v)
+                        ),
+                        Err(st::USED_UP) => String::from("No more questions today."),
+                        Err(_) => String::from("Alaya gave no answer."),
+                    }
+                }
+            };
         }
         if core::mem::take(&mut write) {
             note = match docs {

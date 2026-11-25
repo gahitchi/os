@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 use alaya_programs::files::{self as fs, st};
 use alaya_programs::{keeper as k, status};
 use alaya_store::again::ReadThen;
+use alaya_store::answers::Question;
 use alaya_store::disk::{Disk, IoError};
 use alaya_store::format::Block;
 use alaya_store::grants::{Access, Lasts};
@@ -112,6 +113,7 @@ fn code(e: Error) -> u64 {
         Error::Damaged(_) => st::DAMAGED,
         Error::Io(_) | Error::MustReopen => st::IO,
         Error::NoSuchMoment => st::NO_SUCH_MOMENT,
+        Error::UsedUp => st::USED_UP,
         Error::BadRequest | Error::BadName | Error::NotADirectory | Error::IsADirectory => {
             st::BAD_REQUEST
         }
@@ -470,7 +472,8 @@ impl Server<'_> {
             | fs::ACTION_BEGIN
             | fs::RECORD_ACTION
             | fs::JOB
-            | fs::JOB_DONE => Ok(None),
+            | fs::JOB_DONE
+            | fs::ANSWER => Ok(None),
             fs::WRITE | fs::TRUNCATE | fs::AS_OF => need(s, w[0], true).map(|_| None),
             fs::MARK => need(s, w[0], false).map(|_| None),
             fs::MADE_FROM => {
@@ -1137,6 +1140,42 @@ impl Server<'_> {
                 alloc::vec![]
             }
             fs::REVOKE => alloc::vec![s.revoke(p, w[0], FileId(w[1]))? as u64],
+            fs::ANSWER_GRANT => {
+                if app != fs::DESKTOP_APP && app != fs::INIT_APP {
+                    return Err(Error::BadRequest);
+                }
+                if w[3] == 0 {
+                    alloc::vec![s.revoke_answer(p, w[0], FileId(w[1]))? as u64]
+                } else {
+                    let q = Question::from_code(w[2]).ok_or(Error::BadRequest)?;
+                    s.grant_answer(p, w[0], FileId(w[1]), q, w[3])?;
+                    alloc::vec![]
+                }
+            }
+            fs::ANSWER => {
+                let a = s.answer(p, app, FileId(w[0]), now)?;
+                alloc::vec![a.value as u64, a.left, a.whole as u64]
+            }
+            fs::ANSWERS => {
+                let max = (w[1] as usize).min(fs::XFER_BYTES / fs::ANSWER_BYTES);
+                let l = s.answers(p, w[0], max)?;
+                let buf = xfer(ch);
+                for (i, (cn, time, a)) in l.iter().enumerate() {
+                    put_words(
+                        buf,
+                        fs::ANSWER_BYTES * i,
+                        &[
+                            *cn,
+                            *time,
+                            a.app,
+                            a.file.0,
+                            a.question.code(),
+                            a.value as u64,
+                        ],
+                    );
+                }
+                alloc::vec![l.len() as u64]
+            }
             fs::GRANTS => {
                 let l = s.grants(p, (w[0] != 0).then_some(w[0]))?;
                 let n = l.len().min(fs::XFER_BYTES / fs::GRANT_BYTES);

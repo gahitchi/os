@@ -103,6 +103,10 @@ struct Pick {
     name: String,
     /// Index into [`Pick::choices`].
     lasts: usize,
+    /// An answer window (milestone 8, step 3): the app asks one question
+    /// from Alaya's fixed list ([`fs::question`]) about the document
+    /// picked, and gets only the answer. 0: an ordinary Open window.
+    answer: u64,
 }
 
 impl Pick {
@@ -823,16 +827,29 @@ impl Desk {
             .unwrap_or_default();
         let pick_refs: Vec<&str> = pick_rows.iter().map(|r| r.as_str()).collect();
         let pick_title = self.pick.as_ref().map(|p| {
+            if p.answer != 0 {
+                return alloc::format!(
+                    "{} asks for {} of a document",
+                    capital(st::app_name(fs::app_id(p.role))),
+                    st::question_words(p.answer)
+                );
+            }
             alloc::format!(
                 "{} wants to {} a document",
                 capital(st::app_name(fs::app_id(p.role))),
                 if p.save { "save" } else { "open" }
             )
         });
-        let pick_foot = self
-            .pick
-            .as_ref()
-            .map(|p| alloc::format!("Keeps it: {}", p.choices()[p.lasts].words()));
+        let pick_foot = self.pick.as_ref().map(|p| {
+            if p.answer != 0 {
+                alloc::format!(
+                    "It gets one number, never the document · at most {} a day · shown in What happened?",
+                    fs::ANSWERS_PER_DAY
+                )
+            } else {
+                alloc::format!("Keeps it: {}", p.choices()[p.lasts].words())
+            }
+        });
         let search_rows: Vec<String> = self
             .search
             .as_ref()
@@ -872,14 +889,24 @@ impl Desk {
             }
             (Some(p), _) => Some(Picker {
                 title: pick_title.as_deref().unwrap_or(""),
-                hint: "Only what you pick is handed over. Tab: how long it keeps it.",
+                hint: if p.answer != 0 {
+                    "Only the answer is handed over, never the document."
+                } else {
+                    "Only what you pick is handed over. Tab: how long it keeps it."
+                },
                 rows: &pick_refs,
                 chosen: p.chosen,
                 mark: !p.save,
                 field: p.save.then_some(("Name", p.name.as_str())),
                 foot: pick_foot.as_deref().unwrap_or(""),
                 empty: "No documents yet.",
-                ok: if p.save { "Save here" } else { "Hand it over" },
+                ok: if p.answer != 0 {
+                    "Give the answer"
+                } else if p.save {
+                    "Save here"
+                } else {
+                    "Hand it over"
+                },
                 no: "Cancel",
             }),
             (None, Some(q)) => Some(Picker {
@@ -2054,16 +2081,21 @@ impl Desk {
             .filter(|e| !e.is_dir)
             .collect();
         files.sort_by(|a, b| a.name.cmp(&b.name));
-        let save = w[1] != 0;
+        let save = w[1] == 1;
+        let answer = if w[1] == 2 { w[2] } else { 0 };
+        if w[1] > 2 || (w[1] == 2 && !fs::question_ok(answer)) {
+            return dk::BAD_REQUEST;
+        }
         let mut p = Pick {
             win,
             role: owner,
             save,
-            write: save || w[2] != 0,
+            write: save || (answer == 0 && w[2] != 0),
             files,
             chosen: 0,
             name: String::from(if save { "Untitled.txt" } else { "" }),
             lasts: 0,
+            answer,
         };
         // The app may suggest how long; the person can change it.
         if let Some(i) = p
@@ -2075,7 +2107,13 @@ impl Desk {
         }
         say!(
             "{} window for {} ({} documents)",
-            if save { "save" } else { "open" },
+            if save {
+                "save"
+            } else if answer != 0 {
+                "answer"
+            } else {
+                "open"
+            },
             st::app_name(fs::app_id(owner)),
             p.files.len()
         );
@@ -2089,7 +2127,7 @@ impl Desk {
         match k {
             Key::Enter => return self.pick_done(true),
             Key::Escape => return self.pick_done(false),
-            Key::Tab => p.lasts = (p.lasts + 1) % p.choices().len(),
+            Key::Tab if p.answer == 0 => p.lasts = (p.lasts + 1) % p.choices().len(),
             Key::Up => p.chosen = p.chosen.saturating_sub(1),
             Key::Down => p.chosen = (p.chosen + 1).min(p.files.len().saturating_sub(1)),
             Key::Home => p.chosen = 0,
@@ -2117,6 +2155,24 @@ impl Desk {
                     Lasts::Pinned(_) => Lasts::Pinned(p.files.get(p.chosen)?.version),
                     l => l,
                 };
+                if p.answer != 0 {
+                    let f = p.files.get(p.chosen)?.file;
+                    return match s.grant_answer(app, f, p.answer, fs::ANSWERS_PER_DAY) {
+                        Ok(()) => {
+                            say!(
+                                "{} may ask {} of {}",
+                                st::app_name(app),
+                                st::question_words(p.answer),
+                                s.name_of(f, 0).unwrap_or_default()
+                            );
+                            Some(f)
+                        }
+                        Err(e) => {
+                            say!("could not give the answer grant: {e}");
+                            None
+                        }
+                    };
+                }
                 let f = if p.save {
                     let docs = s.root(DOCS).ok()?;
                     let name = p.name.trim();
