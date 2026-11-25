@@ -2,14 +2,18 @@
 //! Milestone 8 checks, step three: answers instead of data (R8 to R10).
 //! Postcards (installed in place 0 by the checks before) asks for the
 //! total of a column of a document the person picks, and gets one number,
-//! never the document.
+//! never the document. Then game mode: a full-screen window in front
+//! freezes apps running with no window, and install offers wait. Then
+//! notifications that belong to a task come forward with it.
 
-use alaya_programs::desktop::{self as dk, role};
+use alaya_programs::desktop::{self as dk, inbox, role};
 use alaya_programs::files::{self as fs, DOCS, question, st};
+use alaya_sys::rights;
 
 use crate::m3::sleep_until;
 use crate::m6b::{Files, Session, ask, key_list};
-use crate::m8a::put;
+use crate::m8a::{example, place, put};
+use crate::m8b::{close_it, ended, version};
 
 const SLOW: u64 = 30_000;
 const COSTS: &str = "postcard-costs.txt";
@@ -94,5 +98,121 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     );
     pass(
         "an app asks for the total of a column and gets one number, never the document; every answer is in the ledger, and the day's question limit holds",
+    );
+
+    // ---- 122. Game mode.
+    // Version 3 wants to keep running with no window: taken, and allowed
+    // when it first asks.
+    close_it(x);
+    assert!(ended(x), "Postcards 1 kept running with no window");
+    let v3 = put(&me, docs, "Postcards-3.alaya", example(x, 2), None);
+    let v4 = put(&me, docs, "Postcards-4.alaya", example(x, 3), None);
+    assert!(ask(ep, dk::OFFER_INSTALL, &[v3])[0] == dk::OK);
+    assert!(
+        sleep_until(SLOW, || version(ep) == 3 && place(ep).2 == 4),
+        "version 3 was not taken"
+    );
+    assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
+    x.start_app(role::INSTALLED);
+    x.wait_window(role::INSTALLED);
+    if sleep_until(SLOW, || place(ep).2 == 5) {
+        assert!(x.keys("{enter}", || place(ep).2 == 0, SLOW));
+    }
+    close_it(x);
+    assert!(
+        !ended(x),
+        "it was ended although it may run in the background"
+    );
+    let game = || ask(ep, dk::GAME, &[]);
+    assert!(game()[1] == 0, "game mode is on with nothing full screen");
+    // A full-screen window in front: game mode.
+    let editor = match x.window_of(role::EDITOR) {
+        Some(w) => w,
+        None => {
+            x.start_app(role::EDITOR);
+            x.wait_window(role::EDITOR)
+        }
+    };
+    ask(ep, dk::RAISE, &[editor]);
+    assert!(
+        x.keys("{super+up}", || game()[1] == 1, SLOW),
+        "no game mode with a full-screen window in front"
+    );
+    assert!(
+        game()[2] & 1 << role::INSTALLED != 0,
+        "the app with no window was not frozen: {:x?}",
+        game()
+    );
+    x.pause_now();
+    assert!(x.frozen(role::INSTALLED), "its thread still runs");
+    // An update offered now waits for the game to end.
+    assert!(ask(ep, dk::OFFER_INSTALL, &[v4])[0] == dk::OK);
+    assert!(game()[3] == 1 && version(ep) == 3 && place(ep).2 == 0);
+    // Out of full screen: everything goes on, and the offer comes.
+    assert!(
+        x.keys("{super+down}", || game()[1] == 0, SLOW),
+        "game mode did not end"
+    );
+    x.pause_now();
+    assert!(
+        !x.frozen(role::INSTALLED),
+        "it did not go on after the game"
+    );
+    assert!(
+        sleep_until(SLOW, || version(ep) == 4 && game()[3] == 0),
+        "the update offered during the game did not come after it"
+    );
+    assert!(x.keys("{escape}", || place(ep).2 == 0, SLOW));
+    pass(
+        "game mode: with a full-screen window in front, an app running with no window is frozen and an update waits; both go on when the game ends",
+    );
+
+    // ---- 123. Notifications belong to tasks: what the editor said while
+    // the person was elsewhere waits, and comes forward with its group.
+    let screen = || (ask(ep, dk::STATE, &[])[5] >> 40) & 0xf;
+    let editor_ep = x.s.k.slot();
+    alaya_sys::mint(x.s.k.at(editor_ep), x.s.k.at(ep), rights::ALL, role::EDITOR).unwrap();
+    let text = b"your draft is checked";
+    let mut words = [0u64; 4];
+    for (k, c) in text.chunks(8).enumerate() {
+        let mut b = [0u8; 8];
+        b[..c.len()].copy_from_slice(c);
+        words[k] = u64::from_le_bytes(b);
+    }
+    let held = || {
+        let c = ask(ep, dk::INBOX, &[]);
+        c[4]
+    };
+    let before = held();
+    assert!(
+        ask(
+            editor_ep,
+            dk::NOTIFY,
+            &[
+                inbox::WAIT | (text.len() as u64) << 8,
+                words[0],
+                words[1],
+                words[2],
+                words[3]
+            ]
+        )[0] == dk::OK
+    );
+    assert!(held() == before + 1, "the editor's note was not held");
+    ask(ep, dk::RAISE, &[editor]);
+    let r = ask(ep, dk::GROUP_GO, &[0]);
+    assert!(
+        r[0] == dk::OK && r[1] == 1,
+        "the editor's note did not come forward with its group: {r:?}"
+    );
+    if screen() != 0 {
+        x.keys("{escape}", || screen() == 0, SLOW);
+    }
+    // Once forward, it does not come again.
+    assert!(ask(ep, dk::GROUP_GO, &[0])[1] == 0);
+    if screen() != 0 {
+        x.keys("{escape}", || screen() == 0, SLOW);
+    }
+    pass(
+        "a note from an app in a task waits while the person is elsewhere, and comes forward when they go into that task",
     );
 }

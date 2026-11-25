@@ -672,6 +672,11 @@ pub mod files {
     /// question, the answer. Alaya's own programs only.
     pub const ANSWERS: u64 = 87;
     pub const ANSWER_BYTES: usize = 48;
+    /// QUIET: on (1) or off (0) → backups put off since it went on.
+    /// Game mode (the desktop only): the store puts off its backups by
+    /// itself while on, for at most [`QUIET_MAX`] seconds.
+    pub const QUIET: u64 = 88;
+    pub const QUIET_MAX: u64 = 2 * 3600;
     pub const ANSWERS_PER_DAY: u64 = 10;
     /// A question on Alaya's fixed list.
     pub const fn question_ok(q: u64) -> bool {
@@ -1074,9 +1079,11 @@ pub mod desktop {
     /// GROUP_FILE: file → status: ask the person which group to put it in
     /// (the file browser, and the first program).
     pub const GROUP_FILE: u64 = 27;
-    /// GROUP_GO: group → status: as if the person clicked its label (the
+    /// GROUP_GO: group (0: the window in front's) → status, how many held
+    /// things came forward: as if the person clicked its label (the
     /// first program only). Leaves the group they were in; coming back
-    /// to one they left shows "since you left".
+    /// to one they left shows "since you left". What the group's apps
+    /// said meanwhile comes forward (milestone 8, step 3).
     pub const GROUP_GO: u64 = 28;
     /// BRIEF_LINE: i → status, kind (1 changed, 2 needs a look), file,
     /// moment, app, what: line i of the briefing up now, and its receipt
@@ -1153,6 +1160,12 @@ pub mod desktop {
     /// left ticked. Without it, an installed app whose last window closes
     /// is ended: no processor time with no window.
     pub const BACKGROUND: u64 = 42;
+    /// GAME: → status, on, the roles frozen for it (bit r), install
+    /// offers waiting. Game mode (milestone 8, step 3): while a
+    /// full-screen window is in front, installed apps with no window are
+    /// frozen, the store puts off its backups, and install offers wait.
+    /// The first program only, for checks.
+    pub const GAME: u64 = 43;
     pub mod reader_role {
         pub const WINDOW: u64 = 0;
         pub const LABEL: u64 = 1;

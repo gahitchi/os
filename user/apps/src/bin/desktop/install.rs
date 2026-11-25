@@ -230,6 +230,15 @@ impl Desk {
     /// An app bundle is offered (a file of the person's): check it and
     /// show its promise.
     pub(crate) fn offer_install(&mut self, f: u64) -> u64 {
+        if self.game {
+            // Nothing about apps changes under a game (game mode): the
+            // offer waits until it ends.
+            if !self.held_offers.contains(&f) {
+                self.held_offers.push(f);
+            }
+            say!("an install offer waits for the game to end");
+            return dk::OK;
+        }
         let Some(s) = self.mine() else {
             return dk::BAD_REQUEST;
         };
@@ -1027,6 +1036,7 @@ impl Desk {
     /// close, and the first program ends the program itself.
     pub(crate) fn end_app(&mut self, r: u64) {
         self.forget(r);
+        self.windowless &= !(1 << r);
         let _ = alaya_sys::signal(self.session_ntfn, 1 << (dk::END_SHIFT + r));
     }
 

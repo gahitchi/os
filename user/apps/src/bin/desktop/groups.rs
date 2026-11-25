@@ -190,7 +190,7 @@ impl Desk {
     }
 
     /// Ask the first program to stop (or start again) role `r`'s app.
-    fn freeze(&mut self, r: u64, stop: bool) {
+    pub(crate) fn freeze(&mut self, r: u64, stop: bool) {
         let bit = if stop {
             dk::PAUSE_SHIFT
         } else {
@@ -956,9 +956,22 @@ impl Desk {
             return dk::BAD_REQUEST;
         }
         self.groups = s.groups().unwrap_or_default();
+        // 0: the group of the window in front.
+        let g = if g == 0 {
+            self.wm
+                .focused()
+                .and_then(|id| self.wins.iter().find(|w| w.id == id))
+                .and_then(|w| self.groups_of.iter().find(|x| x.0 == w.owner))
+                .map_or(0, |x| x.1)
+        } else {
+            g
+        };
         if self.group_row(g).is_none() {
             return dk::BAD_REQUEST;
         }
+        // What its apps said while the person was elsewhere comes forward
+        // with the task (notifications belong to tasks).
+        self.came_forward = self.come_forward(g);
         if self.current_group != Some(g) {
             if let Some(old) = self.current_group {
                 self.group_leave_now(old);

@@ -15,7 +15,7 @@ use crate::m8a::{example, place, put};
 
 /// Close the window of installed place 0 with its close button, as a
 /// person would.
-fn close_it(x: &Session<'_>) {
+pub(crate) fn close_it(x: &Session<'_>) {
     let w = x.window_of(role::INSTALLED).expect("its window");
     ask(x.ep, dk::RAISE, &[w]);
     let f = ask(x.ep, dk::WINDOW, &[w]);
@@ -27,7 +27,7 @@ fn close_it(x: &Session<'_>) {
 }
 
 /// Act on the desktop's end bits until place 0's app has ended (or not).
-fn ended(x: &mut Session<'_>) -> bool {
+pub(crate) fn ended(x: &mut Session<'_>) -> bool {
     for _ in 0..40 {
         x.pause_now();
         if !x.app_running(role::INSTALLED) {
@@ -43,18 +43,18 @@ const SLOW: u64 = 30_000;
 /// Place 0's trial, as the desktop sees it: (starts left on trial, what
 /// it tried, the version the Guardian went back from, flags, the usual
 /// start in ms, the last start in ms, the version kept for undo).
-struct Trial {
-    left: u64,
-    tried: u64,
-    went_back_from: u64,
-    asks: u64,
-    flags: u64,
-    usual: u64,
-    last: u64,
-    kept: u64,
+pub(crate) struct Trial {
+    pub(crate) left: u64,
+    pub(crate) tried: u64,
+    pub(crate) went_back_from: u64,
+    pub(crate) asks: u64,
+    pub(crate) flags: u64,
+    pub(crate) usual: u64,
+    pub(crate) last: u64,
+    pub(crate) kept: u64,
 }
 
-fn trial(ep: u64) -> Trial {
+pub(crate) fn trial(ep: u64) -> Trial {
     let r = ask(ep, dk::TRIAL, &[0]);
     assert!(r[0] == dk::OK);
     Trial {
@@ -69,7 +69,7 @@ fn trial(ep: u64) -> Trial {
     }
 }
 
-fn version(ep: u64) -> u64 {
+pub(crate) fn version(ep: u64) -> u64 {
     ask(ep, dk::INSTALLED, &[0])[1] >> 32
 }
 

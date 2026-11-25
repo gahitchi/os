@@ -66,6 +66,17 @@ Nothing real is touched, and nothing is installed. **Enter** goes back to the in
 
 An installed app whose last window closes is **ended**, unless you left its line "Keep running with no window open" ticked (or allowed it when it first asked). Alaya's own apps are not affected.
 
+## Game mode
+
+While a **full-screen window is in front**, nothing in the background competes with it:
+
+- installed apps running with no window are **frozen** where they are, and go on when you leave full screen;
+- the store **puts off its backups by itself** (at most two hours);
+- **install and update offers wait** until the game ends, so no sheet covers your game and nothing about your apps changes under it;
+- notifications are held (only Alaya's "now" shows), as before.
+
+Alaya decides this from what is on your screen, so an app cannot switch game mode on to slow the others down.
+
 ## Ending an app for real
 
 When an app is removed, taken away by undo, sent back by the Experience Guardian or done rehearsing, closing its windows is not enough: an app could ignore that. The desktop asks the first program to **end the program itself** (a new "end" bit, next to pause and go on), which takes back everything it holds.
@@ -89,7 +100,7 @@ Ask for an answer with `Window::ask_answer(question)` (from `files::question`); 
 
 A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like everything else, and a flag Alaya does not know is refused.
 
-## Checked in every boot test (checks 110 to 121)
+## Checked in every boot test (checks 110 to 122)
 
 - 110: a bundle with one byte changed after signing is refused; nothing is installed.
 - 111: installed on the side with the files line unticked, then approved; the app's store handle really is absent.
@@ -103,3 +114,4 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 119: the installer under a fuzzer: 40 bundles, each changed at a random byte, are all refused.
 - 120: installed, then updated and undone 50 times in a row; it still starts at the right version.
 - 121: Postcards asks for the total of a column of a document picked in the answer window and gets 4.90, never the document; each answer is in the ledger, and after 10 the day's limit holds.
+- 122: game mode: with the editor full screen, Postcards 3 running with no window is frozen and an update offered meanwhile waits; leaving full screen, it goes on and the update comes.

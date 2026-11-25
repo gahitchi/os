@@ -45,6 +45,8 @@ use alaya_ui::text::Fonts;
 use alaya_ui::widgets::{Key, us_key};
 use alaya_ui::wm::{Out, Place, Screen, Wm};
 
+#[path = "desktop/game.rs"]
+mod game;
 #[path = "desktop/groups.rs"]
 mod groups;
 #[path = "desktop/inbox.rs"]
@@ -288,6 +290,15 @@ struct Desk {
     rehearsed: Option<(u64, u64, bool)>,
     /// The version each installed place's running copy was started at.
     running_version: [u32; role::INSTALLED_MAX as usize],
+    /// Game mode is on (`game.rs`), the roles it froze (bit r), and the
+    /// install offers waiting for it to end.
+    game: bool,
+    game_frozen: u64,
+    held_offers: Vec<u64>,
+    /// Installed apps running with no window open (bit r).
+    windowless: u64,
+    /// How many held things came forward at the last GROUP_GO.
+    came_forward: u64,
 }
 
 fn font(info: &StartInfo, i: usize) -> &'static [u8] {
@@ -422,6 +433,11 @@ fn main(info: &'static StartInfo) -> ! {
         starting: [0; role::INSTALLED_MAX as usize],
         rehearsed: None,
         running_version: [0; role::INSTALLED_MAX as usize],
+        game: false,
+        game_frozen: 0,
+        held_offers: Vec::new(),
+        windowless: 0,
+        came_forward: 0,
     };
     d.tick();
     say!(
@@ -527,6 +543,7 @@ impl Desk {
                 }
             }
             self.reader_poll();
+            self.game_check();
             self.frame();
         }
     }
@@ -2818,6 +2835,7 @@ impl Desk {
                 if !m.info.has(MsgInfo::CAP) {
                     return ([dk::BAD_REQUEST, 0, 0, 0, 0, 0], 0);
                 }
+                self.windowless &= !(1 << owner);
                 let Some(slot) = self.free_slots.iter().position(|f| *f) else {
                     return ([dk::NO_MEMORY, 0, 0, 0, 0, 0], 0);
                 };
@@ -2965,6 +2983,10 @@ impl Desk {
                     {
                         say!("its last window closed: app {owner} ends (no background time)");
                         let _ = alaya_sys::signal(self.session_ntfn, 1 << (dk::END_SHIFT + owner));
+                    } else if role::installed(owner) && !self.wins.iter().any(|w| w.owner == owner)
+                    {
+                        // Running with no window: game mode freezes it.
+                        self.windowless |= 1 << owner;
                     }
                     ([dk::OK, 0, 0, 0, 0, 0], 0)
                 }
@@ -2986,6 +3008,7 @@ impl Desk {
             }
             dk::INSTALLED if owner == 0 => (self.installed_words(w[0]), 0),
             dk::TRIAL if owner == 0 => (self.trial_words(w[0]), 0),
+            dk::GAME if owner == 0 => (self.game_words(), 0),
             dk::BACKGROUND if owner != 0 => {
                 let ok = self.may(owner, alaya_bundle::promise::BACKGROUND);
                 (
@@ -3047,7 +3070,11 @@ impl Desk {
             dk::GROUP_FILE if owner == role::FILES || owner == 0 => {
                 ([self.group_choose(w[0]), 0, 0, 0, 0, 0], 0)
             }
-            dk::GROUP_GO if owner == 0 => ([self.group_go(w[0] as u32), 0, 0, 0, 0, 0], 0),
+            dk::GROUP_GO if owner == 0 => {
+                self.came_forward = 0;
+                let r = self.group_go(w[0] as u32);
+                ([r, self.came_forward, 0, 0, 0, 0], 0)
+            }
             dk::BRIEF_LINE if owner == 0 => self.brief_line(w[0] as usize),
             dk::READER if owner == 0 => {
                 let mut b = [0u8; 16];

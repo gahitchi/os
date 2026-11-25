@@ -46,6 +46,9 @@ pub(crate) struct Item {
     pub text: String,
     /// It showed at once, when it came.
     pub shown: bool,
+    /// The group (task) its app was in when it came (0: none): it comes
+    /// forward when the person goes into that group.
+    pub group: u32,
 }
 
 fn kind_words(k: u64) -> &'static str {
@@ -139,14 +142,47 @@ impl Desk {
                 None => return dk::NO_MEMORY,
             }
         }
+        let group = if from == 0 {
+            0
+        } else {
+            self.groups_of
+                .iter()
+                .find(|x| x.0 == from)
+                .map_or(0, |x| x.1)
+        };
         self.inbox.push(Item {
             kind,
             from,
             text,
             shown,
+            group,
         });
         self.damage_all();
         dk::OK
+    }
+
+    /// The person goes into group `g`: what its apps said meanwhile, held
+    /// back, comes forward now. Returns how many.
+    pub(crate) fn come_forward(&mut self, g: u32) -> u64 {
+        let mut n = 0;
+        for x in self.inbox.iter_mut() {
+            if x.group == g && !x.shown && x.kind != inbox::KNOW {
+                x.shown = true;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            let name = self
+                .group_row(g)
+                .map_or_else(String::new, |r| r.name.clone());
+            say!("inbox: {n} thing(s) from {name} come forward");
+            self.say_note(alloc::format!(
+                "{n} thing{} from {name} waited for you · Alaya key + I",
+                if n == 1 { "" } else { "s" }
+            ));
+            self.damage_all();
+        }
+        n
     }
 
     /// The app is part of what the person is doing: in front, or in the
@@ -320,7 +356,18 @@ impl Desk {
                     } else {
                         st::app_name(fs::app_id(x.from))
                     };
-                    alloc::format!("{}   ·   {}   ·   {}", kind_words(x.kind), x.text, who)
+                    match self.group_row(x.group) {
+                        Some(g) => alloc::format!(
+                            "{}   ·   {}   ·   {} in {}",
+                            kind_words(x.kind),
+                            x.text,
+                            who,
+                            g.name
+                        ),
+                        None => {
+                            alloc::format!("{}   ·   {}   ·   {}", kind_words(x.kind), x.text, who)
+                        }
+                    }
                 })
                 .collect(),
             mark: !order.is_empty() && at < order.len(),

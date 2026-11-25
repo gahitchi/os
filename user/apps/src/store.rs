@@ -692,6 +692,12 @@ impl Store {
             .collect())
     }
 
+    /// Game mode on or off (the desktop only): the store puts off its
+    /// backups while on. Returns how many it put off.
+    pub fn quiet(&self, on: bool) -> Result<u64, Status> {
+        Ok(self.call(fs::QUIET, &[on as u64])?[1])
+    }
+
     /// Take a document back from an app.
     pub fn revoke(&self, app: u64, f: u64) -> Result<bool, Status> {
         Ok(self.call(fs::REVOKE, &[app, f])?[1] != 0)

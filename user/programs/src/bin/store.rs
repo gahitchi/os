@@ -243,6 +243,8 @@ fn main(info: &'static StartInfo) -> ! {
         jobs: None,
         replay: Vec::new(),
         clips: Vec::new(),
+        quiet: None,
+        put_off: 0,
     };
     let mut msg = alaya_sys::msg_call(
         call::RECV,
@@ -284,8 +286,20 @@ fn main(info: &'static StartInfo) -> ! {
                 }
                 // Backups by themselves (decision 36): for each person who
                 // made one, every ten minutes when something changed.
+                // Not under a game (game mode), for at most two hours.
+                let quiet = serve.quiet.is_some_and(|t| now() < t + fs::QUIET_MAX);
                 if m.badge & TICK_BIT != 0
                     && now() >= last_auto + fs::BACKUP_EVERY
+                    && quiet
+                    && serve.stick.is_some()
+                {
+                    last_auto = now();
+                    serve.put_off += 1;
+                    say!("a backup by itself is put off: a game is on");
+                }
+                if m.badge & TICK_BIT != 0
+                    && now() >= last_auto + fs::BACKUP_EVERY
+                    && !quiet
                     && let Some(stick) = serve.stick.as_mut()
                 {
                     last_auto = now();
@@ -373,6 +387,10 @@ struct Server<'a> {
     /// The clipboard of each person: the bytes, and the exact version of
     /// the document they came from, if any.
     clips: Vec<(u64, Vec<u8>, Option<Source>)>,
+    /// Game mode (milestone 8, step 3): since when backups by themselves
+    /// are put off (seconds), and how many were.
+    quiet: Option<u64>,
+    put_off: u64,
 }
 
 /// Bytes to stir the key generator with, and whether the processor's
@@ -1140,6 +1158,21 @@ impl Server<'_> {
                 alloc::vec![]
             }
             fs::REVOKE => alloc::vec![s.revoke(p, w[0], FileId(w[1]))? as u64],
+            fs::QUIET => {
+                if app != fs::DESKTOP_APP && app != fs::INIT_APP {
+                    return Err(Error::BadRequest);
+                }
+                let put_off = self.put_off;
+                if w[0] != 0 {
+                    if self.quiet.is_none() {
+                        self.quiet = Some(now);
+                        self.put_off = 0;
+                    }
+                } else {
+                    self.quiet = None;
+                }
+                alloc::vec![put_off]
+            }
             fs::ANSWER_GRANT => {
                 if app != fs::DESKTOP_APP && app != fs::INIT_APP {
                     return Err(Error::BadRequest);
