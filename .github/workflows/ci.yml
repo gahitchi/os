@@ -132,7 +132,10 @@ jobs:
       - name: Boot with the Termux script
         run: |
           ALAYA_ACCEL=tcg ALAYA_CPUS=2 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
-          ALAYA_ACCEL=kvm ALAYA_CPUS=8 bash tools/termux/alaya.sh test build/alaya-x86_64.iso
+          # KVM with the runner's own cores (decision 149): more virtual
+          # cores than real ones made this boot 4 times slower, at random.
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          ALAYA_ACCEL=kvm ALAYA_CPUS=$cores bash tools/termux/alaya.sh test build/alaya-x86_64.iso
 
       - name: Pull-the-plug image for the Termux script
         run: |
