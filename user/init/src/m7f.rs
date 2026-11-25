@@ -143,16 +143,13 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     // second screen out.
     ask(ep, dk::RAISE, &[settings]);
     // (Wait until Settings has taken the last S: on a slow machine it
-    // can still be on its way when the next check types.)
-    let picked = || {
-        let r = ask(ep, dk::SCALE, &[settings, u64::MAX]);
-        r[0] == dk::OK && r[2] == 0
-    };
+    // can still be on its way when the next check types. Only Alaya's
+    // pick brings it back to its size at 100%.)
     assert!(
-        x.keys("sss", picked, SLOW),
-        "Settings did not go back to Alaya's pick"
+        x.keys("sss", || at(settings).2 <= 640, SLOW),
+        "Settings did not go back to Alaya's pick: {:?}",
+        at(settings)
     );
-    assert!(sleep_until(SLOW, || at(settings).2 <= 640));
     assert!(x.s.plug(0, 0, 0));
     assert!(sleep_until(SLOW, || at(settings).0 < MAIN_W && x.s.screens().0 == 1));
     pass("each screen its own scale: a window keeps its size in points across screens");
