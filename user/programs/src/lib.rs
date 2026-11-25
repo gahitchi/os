@@ -1201,6 +1201,10 @@ pub mod desktop {
     /// 71) → OK (asked), or EMPTY when it is in no task and already sees
     /// them all (decision 40).
     pub const ALL_FILES: u64 = 45;
+    /// SCREENS (checks): → OK, how many screens the desktop lays windows
+    /// out on now (it learns of a new one a moment after the screen
+    /// card).
+    pub const SCREENS: u64 = 46;
     pub mod reader_role {
         pub const WINDOW: u64 = 0;
         pub const LABEL: u64 = 1;

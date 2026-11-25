@@ -32,6 +32,11 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         sleep_until(SLOW, || x.s.screens() == (2, layout + 1)),
         "the second screen did not come"
     );
+    // (The desktop learns of it a moment later.)
+    assert!(
+        sleep_until(SLOW, || ask(ep, dk::SCREENS, &[])[1] == 2),
+        "the desktop did not see the second screen"
+    );
     // Alaya key + Shift + right: the window goes to the next screen.
     assert!(
         x.keys("{super+shift+right}", || frame().0 >= MAIN_W, SLOW),
@@ -72,7 +77,9 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
     );
     // Leave one screen for the checks after this one.
     assert!(x.s.plug(0, 0, 0));
-    assert!(sleep_until(SLOW, || frame().0 < MAIN_W && x.s.screens().0 == 1));
+    assert!(sleep_until(SLOW, || {
+        frame().0 < MAIN_W && x.s.screens().0 == 1 && ask(ep, dk::SCREENS, &[])[1] == 1
+    }));
     pass(
         "plug and unplug a screen while apps run: no window lost, and each goes back to its screen",
     );
@@ -85,6 +92,7 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         sleep_until(SLOW, || x.s.screens() == (2, layout + 1)),
         "the second screen did not come back"
     );
+    assert!(sleep_until(SLOW, || ask(ep, dk::SCREENS, &[])[1] == 2));
     if x.window_of(role::SETTINGS).is_none() {
         x.start_app(role::SETTINGS);
         assert!(sleep_until(SLOW, || x.window_of(role::SETTINGS).is_some()));
