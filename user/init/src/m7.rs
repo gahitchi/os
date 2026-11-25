@@ -125,6 +125,11 @@ pub(crate) fn run(x: &mut Session<'_>, pass: &mut dyn FnMut(&str)) {
         x.keys("{end}d", gone, SLOW),
         "the file browser did not delete it again"
     );
+    // (The Undo button undoes the newest step: wait until it is this one.)
+    assert!(
+        sleep_until(SLOW, || me.newest(act::FILES).is_some_and(|a| !a.1)),
+        "deleting again is not on the undo list"
+    );
     let undo = place(dk::places::UNDO);
     assert!(
         x.drag(undo, undo, back),
