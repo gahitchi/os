@@ -70,13 +70,14 @@ pub fn say(args: fmt::Arguments) {
     };
     let _ = write!(line, "{}: ", name());
     let _ = line.write_fmt(args);
-    let _ = line.write_str("\n");
-    // A long line may have been cut inside a character: keep what is whole.
-    let b = &line.buf[..line.len];
-    let text = match core::str::from_utf8(b) {
-        Ok(t) => t,
-        Err(e) => core::str::from_utf8(&b[..e.valid_up_to()]).unwrap_or("?"),
-    };
+    // A long line is cut, maybe inside a character: keep what is whole,
+    // and always end it, so the next line starts on its own.
+    let mut n = line.len.min(line.buf.len() - 1);
+    if let Err(e) = core::str::from_utf8(&line.buf[..n]) {
+        n = e.valid_up_to();
+    }
+    line.buf[n] = b'\n';
+    let text = core::str::from_utf8(&line.buf[..n + 1]).unwrap_or("?\n");
     crate::print(text);
 }
 

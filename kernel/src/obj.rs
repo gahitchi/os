@@ -124,6 +124,11 @@ pub mod tflag2 {
     pub const TIMEOUTS: u8 = 1 << 0;
     /// The pending fault message is a timeout message.
     pub const TIMED_OUT: u8 = 1 << 1;
+    /// It speaks Linux: its system calls are messages to its fault
+    /// endpoint (decision 163).
+    pub const LINUX: u8 = 1 << 2;
+    /// The pending fault message is a Linux request.
+    pub const LINUX_CALL: u8 = 1 << 3;
 }
 
 /// Internal slots of a thread.

@@ -484,6 +484,13 @@ pub fn thread_timeouts(t: u64, on: bool) -> Result<(), Error> {
     call(t, abi::op::THREAD_TIMEOUTS, [u64::from(on), 0, 0, 0, 0, 0]).map(|_| ())
 }
 
+/// Linux requests for thread `t` (decision 163): `abi::linux::ON`/`OFF`
+/// (stopped threads), `TLS` with the thread pointer in `a`, or `JUMP`
+/// to pc `a` with stack `b`.
+pub fn thread_linux(t: u64, what: u64, a: u64, b: u64) -> Result<(), Error> {
+    call(t, abi::op::THREAD_LINUX, [what, a, b, 0, 0, 0]).map(|_| ())
+}
+
 pub mod cores;
 pub mod elf;
 pub mod heap;

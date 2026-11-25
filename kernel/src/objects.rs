@@ -2,7 +2,7 @@
 //! Operations on threads, scheduling contexts, address spaces and pages,
 //! and what happens when capabilities to them are deleted.
 
-use alaya_abi::{Error, Kind, MAX_PRIORITY, core_type, op, rights};
+use alaya_abi::{Error, Kind, MAX_PRIORITY, core_type, linux, op, rights};
 use alaya_cap::{self as cap, Cap, Globals, INTERNAL, Memory, SlotRef};
 
 use crate::caps::{Outcome, Phys};
@@ -140,6 +140,34 @@ pub fn thread(
                 OK
             } else {
                 Ok(Outcome::Restart)
+            }
+        }
+        op::THREAD_LINUX => {
+            let th = tcb(t);
+            let stopped = th.state == state::STOPPED;
+            let asking = th.flags & tflag::FAULTING != 0 && th.flags2 & tflag2::LINUX_CALL != 0;
+            match a[0] {
+                linux::ON | linux::OFF if !stopped => Err(Error::Busy),
+                linux::ON => {
+                    th.flags2 |= tflag2::LINUX;
+                    OK
+                }
+                linux::OFF => {
+                    th.flags2 &= !tflag2::LINUX;
+                    OK
+                }
+                linux::TLS | linux::JUMP if !stopped && !asking => Err(Error::Busy),
+                linux::TLS if a[1] >= USER_END => Err(Error::InvalidArgument),
+                linux::TLS => {
+                    th.regs.set_tls(a[1]);
+                    OK
+                }
+                linux::JUMP if a[1] >= USER_END || a[2] >= USER_END => Err(Error::InvalidArgument),
+                linux::JUMP => {
+                    th.regs.jump(a[1], a[2]);
+                    OK
+                }
+                _ => Err(Error::InvalidArgument),
             }
         }
         op::THREAD_TIMEOUTS => {

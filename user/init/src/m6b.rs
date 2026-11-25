@@ -438,14 +438,26 @@ impl<'a> Session<'a> {
             role::HOSTILE => "hostile",
             role::TERMINAL => "terminal",
             role::GAME => "glowroot",
+            role::LINUX => "linux",
             _ if ready.is_some() => "installed",
             _ => "settings",
         };
         let image = match &ready {
             Some(x) => x.program(),
+            None if r == role::LINUX => module(info, "linux"),
             None => module(info, "apps"),
         };
-        let store = if files { a.store } else { program::NOTHING };
+        // The Linux world also gets its endpoint and a scheduling context
+        // for each Linux program it may run at once (milestone 8b).
+        let mut given = [a.desktop, a.ntfn, program::NOTHING, 0, 0, 0, 0, 0];
+        let mut n_given = 3;
+        if r == role::LINUX {
+            let (ep, scs) = crate::m8f::world_handles(&mut self.s.k);
+            given[3] = ep;
+            given[4..8].copy_from_slice(&scs);
+            n_given = 8;
+        }
+        given[2] = if files { a.store } else { program::NOTHING };
         if let Some(x) = &ready {
             let n = x.name.iter().position(|&c| c == 0).unwrap_or(32);
             say!(
@@ -468,7 +480,7 @@ impl<'a> Session<'a> {
                 sc: app_sc,
                 clock_sc: clock,
                 fault: a.fault,
-                given: &[a.desktop, a.ntfn, store],
+                given: &given[..n_given],
                 shared: shared.as_slice(),
                 args: &args,
                 clock_hz: info.clock_hz,
@@ -1087,6 +1099,7 @@ pub(crate) fn run<'a>(
     crate::m8c::run(&mut x, pass);
     crate::m8d::run(&mut x, pass);
     crate::m8e::run(&mut x, pass);
+    crate::m8f::run(&mut x, pass);
     x
 }
 

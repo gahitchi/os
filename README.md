@@ -124,11 +124,11 @@ Milestone 2 (capabilities and memory) is described in
 ### On a PC (Linux)
 
 Needs Rust (the version in `rust-toolchain.toml` is installed automatically by
-rustup), `git`, `make`, a C compiler, `clang` (for Alaya's own C library), `xorriso` and `qemu-system-x86_64`. On
+rustup), `git`, `make`, a C compiler, `clang` and `lld` (for Alaya's own C library and the Linux test programs), `xorriso` and `qemu-system-x86_64`. On
 Debian or Ubuntu:
 
 ```sh
-sudo apt install build-essential git xorriso clang qemu-system-x86 ovmf
+sudo apt install build-essential git xorriso clang lld qemu-system-x86 ovmf
 cargo xtask run              # build the image and boot it, serial on this terminal
 cargo xtask test --cpus 8    # boot and check every core came up
 cargo xtask run --uefi       # boot with UEFI firmware instead of BIOS

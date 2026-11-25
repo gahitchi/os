@@ -74,6 +74,12 @@ impl<'a> Elf<'a> {
         Some(Some(s))
     }
 
+    /// Where the program headers are in the file, their size and number
+    /// (a Linux program is told where they are in its memory).
+    pub fn headers(&self) -> (usize, usize, usize) {
+        (self.phoff, self.phentsize, self.phnum)
+    }
+
     pub fn segments(&self) -> impl Iterator<Item = Segment> + '_ {
         (0..self.phnum).filter_map(|i| self.segment(i).flatten())
     }

@@ -822,6 +822,7 @@ pub mod files {
             a if a == app_id(role::HOSTILE) => "the hostile test helper",
             a if a == app_id(role::TERMINAL) => "the terminal",
             a if a == app_id(role::GAME) => "Glowroot",
+            a if a == app_id(role::LINUX) => "the Linux world",
             DESKTOP_APP => "the desktop",
             INIT_APP => "Alaya's checks",
             _ => "another app",
@@ -838,7 +839,7 @@ pub mod files {
     /// Transfer channels and their size. The first program's checks use
     /// channels 0 to 3 (milestone 5); after them, channel 0 is the first
     /// program's, 1 the desktop's and 2 on each app's ([`app_channel`]).
-    pub const CHANNELS: u64 = 13;
+    pub const CHANNELS: u64 = app_channel(super::desktop::role::LAST) + 1;
     pub const XFER_PAGES: u64 = 16;
     pub const XFER_BYTES: usize = (XFER_PAGES * 4096) as usize;
     /// Where the transfer pages are, in the store server.
@@ -1298,10 +1299,14 @@ pub mod desktop {
         pub const TERMINAL: u64 = 8;
         /// Glowroot, the small C game (milestone 8, step 4).
         pub const GAME: u64 = 9;
+        /// Built-in apps with windows: roles 1 to `COUNT`.
         pub const COUNT: u64 = 9;
+        /// The Linux world (milestone 8b): answers Linux programs'
+        /// requests. It has no window of its own.
+        pub const LINUX: u64 = 10;
         /// Installed apps (milestone 8): one role per place, from
         /// `INSTALLED` to [`LAST`], for the person logged in.
-        pub const INSTALLED: u64 = 10;
+        pub const INSTALLED: u64 = 11;
         pub const INSTALLED_MAX: u64 = 3;
         pub const LAST: u64 = INSTALLED + INSTALLED_MAX - 1;
         /// Whether role `r` is an installed app's place.
@@ -1580,4 +1585,31 @@ pub mod desktop {
         }
         UPPER.iter().position(|&x| x == b).map(|i| (CODES[i], true))
     }
+}
+
+/// The Linux world (milestone 8b; decisions 163 to 166): its handles and
+/// how Alaya asks it to run a Linux program.
+pub mod linux {
+    /// Given handles, after the app's own (desktop, notification, store):
+    /// the world's endpoint, then one scheduling context per Linux
+    /// program it may run at once.
+    pub const G_WORLD: u64 = 3;
+    pub const G_SCS: u64 = 4;
+    pub const SCS: u64 = 4;
+    /// Run a Linux test program: word 0 = which ([`HELLO`]...). The answer
+    /// comes when it ends: [`DONE`], words = exit code (128 + 11 after a
+    /// crash), bytes printed, a hash of them (FNV-1a), requests made,
+    /// requests the world did not know.
+    pub const RUN: u64 = 1;
+    pub const DONE: u64 = 2;
+    pub const BAD: u64 = 3;
+    pub const BUSY: u64 = 4;
+    /// The Linux test programs (`user/linux/tests`).
+    pub const HELLO: u64 = 0;
+    pub const SANDBOX: u64 = 1;
+    pub const CRASH: u64 = 2;
+    /// Their arguments after their name, and their environment; the
+    /// two-world check runs them on Linux the same way.
+    pub const ARGS: [&str; 2] = ["one", "two"];
+    pub const ENV: [&str; 3] = ["LANG=C.UTF-8", "HOME=/home", "PATH=/bin"];
 }
