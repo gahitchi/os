@@ -7,6 +7,7 @@
 extern crate alloc;
 
 pub mod c;
+pub mod libc;
 pub mod store;
 
 use alaya_sys::abi::{StartInfo, map, start};

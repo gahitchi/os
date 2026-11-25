@@ -52,7 +52,7 @@ ALAYA_CPUS=all bash alaya.sh test ~/Downloads/alaya-x86_64.iso
 Needs the Rust toolchain and the image tools as well:
 
 ```sh
-sudo pacman -S --needed base-devel rustup xorriso
+sudo pacman -S --needed base-devel rustup xorriso clang
 rustup default stable
 git clone https://github.com/gahitchi/os
 cd os
@@ -168,7 +168,7 @@ the official ones.
 
    ```sh
    sudo apt update
-   sudo apt install qemu-system-x86 ovmf curl git build-essential xorriso
+   sudo apt install qemu-system-x86 ovmf curl git build-essential xorriso clang
    sudo usermod -aG kvm "$USER"
    ```
 

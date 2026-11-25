@@ -35,6 +35,13 @@ uint64_t alaya_store_size(uint64_t file, uint64_t *out);
 uint64_t alaya_store_read(uint64_t file, uint8_t *buf, size_t cap, size_t *got);
 uint64_t alaya_store_write(uint64_t file, const uint8_t *data, size_t len);
 uint64_t alaya_store_save(void);
+/* A file that is there, without making it. */
+uint64_t alaya_store_lookup(uint64_t dir, const uint8_t *name, size_t len, uint64_t *out);
+/* Take a file out of its folder. */
+uint64_t alaya_store_remove(uint64_t dir, const uint8_t *name, size_t len);
+/* The names in a folder that this program may see, one a line, folders
+ * ending in '/'; `got` is how many bytes. */
+uint64_t alaya_store_list(uint64_t dir, uint8_t *buf, size_t cap, size_t *got);
 
 /* Answers instead of data: one number about a document the person
  * picked, never the document. */

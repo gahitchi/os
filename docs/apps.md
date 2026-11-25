@@ -100,7 +100,7 @@ Ask for an answer with `Window::ask_answer(question)` (from `files::question`); 
 
 A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like everything else, and a flag Alaya does not know is refused.
 
-## Checked in every boot test (checks 110 to 124)
+## Checked in every boot test (checks 110 to 125)
 
 - 110: a bundle with one byte changed after signing is refused; nothing is installed.
 - 111: installed on the side with the files line unticked, then approved; the app's store handle really is absent.
@@ -117,3 +117,4 @@ A bundle's flags word (bytes 148 to 152) holds `SECURITY_FIX`; it is signed like
 - 122: game mode: with the editor full screen, Postcards 3 running with no window is frozen and an update offered meanwhile waits; leaving full screen, it goes on and the update comes.
 - 123: a note from the editor, held while you are elsewhere, comes forward when you go into the editor's group.
 - 124: live handoff: the editor hands a document it holds to the chart maker at line 3 after Alaya asks; "Stay here" hands nothing, and a document it does not hold cannot be handed.
+- 125: the terminal runs C tools on Alaya's own C library: hello, the library's self test, and wc on a document that fails until the person picks it in the Open window, then counts it; every command is kept in the terminal's log.

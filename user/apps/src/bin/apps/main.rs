@@ -17,6 +17,7 @@ mod editor;
 mod files;
 mod helper;
 mod settings;
+mod terminal;
 
 use alaya_apps::store::Store;
 use alaya_programs::desktop::{self as dk, role};
@@ -44,6 +45,7 @@ fn main(info: &'static StartInfo) -> ! {
         role::BACK => back::run(info, mem, store),
         role::HELPER => helper::run(info, mem, store, false),
         role::HOSTILE => helper::run(info, mem, store, true),
+        role::TERMINAL => terminal::run(info, mem, store),
         r => panic!("no app has role {r}"),
     }
 }

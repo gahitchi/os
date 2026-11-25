@@ -3378,19 +3378,23 @@ impl Desk {
 
 /// The dock: the apps of milestone 6, in the mock-up's colours, with
 /// their roles.
-const DOCK: [(&str, u32, u64); 4] = [
+const DOCK: [(&str, u32, u64); 5] = [
     ("Files", 0x23_68_6b, role::FILES),
     ("Text editor", 0x2d_5c_9c, role::EDITOR),
     ("Chart maker", 0x9a_5b_00, role::CHART),
     ("Settings", 0x5b_6b_6c, role::SETTINGS),
+    ("Terminal", 0x2b_2b_2b, role::TERMINAL),
 ];
 
 /// What the dock holds of Alaya's own apps in each look.
 fn dock_items(look: Look) -> impl Iterator<Item = (&'static str, u32, u64)> {
     DOCK.iter().copied().filter(move |d| match look {
-        Look::Everyday => d.2 != role::CHART,
+        // The terminal is in the Build look's dock (and opened by name
+        // elsewhere).
+        Look::Everyday => d.2 != role::CHART && d.2 != role::TERMINAL,
         Look::Play => d.2 == role::FILES || d.2 == role::SETTINGS,
-        Look::Everything | Look::Create | Look::Build => true,
+        Look::Everything | Look::Create => d.2 != role::TERMINAL,
+        Look::Build => true,
     })
 }
 

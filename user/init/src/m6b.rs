@@ -435,6 +435,7 @@ impl<'a> Session<'a> {
             role::BACK => "back",
             role::HELPER => "helper",
             role::HOSTILE => "hostile",
+            role::TERMINAL => "terminal",
             _ if ready.is_some() => "installed",
             _ => "settings",
         };
@@ -1082,6 +1083,7 @@ pub(crate) fn run<'a>(
     crate::m8a::run(&mut x, pass);
     crate::m8b::run(&mut x, pass);
     crate::m8c::run(&mut x, pass);
+    crate::m8d::run(&mut x, pass);
     x
 }
 

@@ -141,6 +141,68 @@ pub unsafe extern "C" fn alaya_store_write(file: u64, data: *const u8, len: usiz
     status(store().write_all(file, unsafe { bytes(data, len) }), |_| {})
 }
 
+/// A file that is there, without making it.
+///
+/// # Safety
+/// `name` is valid for `len` bytes; `out` is null or valid for one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn alaya_store_lookup(
+    dir: u64,
+    name: *const u8,
+    len: usize,
+    out: *mut u64,
+) -> u64 {
+    // SAFETY: the caller's promise.
+    let Ok(name) = core::str::from_utf8(unsafe { bytes(name, len) }) else {
+        return st::BAD_REQUEST;
+    };
+    // SAFETY: the caller's promise.
+    status(store().lookup(dir, name), |v| unsafe { put(out, v) })
+}
+
+/// Take a file out of its folder (history keeps it).
+///
+/// # Safety
+/// `name` is valid for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn alaya_store_remove(dir: u64, name: *const u8, len: usize) -> u64 {
+    // SAFETY: the caller's promise.
+    let Ok(name) = core::str::from_utf8(unsafe { bytes(name, len) }) else {
+        return st::BAD_REQUEST;
+    };
+    status(store().remove(dir, name), |_| {})
+}
+
+/// The names in a folder this program may see, one a line, folders
+/// ending in '/'; as many whole lines as fit in `cap` bytes.
+///
+/// # Safety
+/// `buf` is valid for `cap` bytes of writes; `got` is null or valid for
+/// one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn alaya_store_list(
+    dir: u64,
+    buf: *mut u8,
+    cap: usize,
+    got: *mut usize,
+) -> u64 {
+    status(store().list(dir), |mut entries| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut n = 0;
+        for e in entries {
+            let line = alloc::format!("{}{}\n", e.name, if e.is_dir { "/" } else { "" });
+            if n + line.len() > cap || buf.is_null() {
+                break;
+            }
+            // SAFETY: the caller's promise; it fits in `cap`.
+            unsafe { core::ptr::copy_nonoverlapping(line.as_ptr(), buf.add(n), line.len()) };
+            n += line.len();
+        }
+        // SAFETY: the caller's promise.
+        unsafe { put(got, n) };
+    })
+}
+
 /// Make what was written safe now (the store also does it by itself).
 #[unsafe(no_mangle)]
 pub extern "C" fn alaya_store_save() -> u64 {

@@ -800,6 +800,7 @@ pub mod files {
             a if a == app_id(role::BACK) => "the timeline",
             a if a == app_id(role::HELPER) => "the tidy-up helper",
             a if a == app_id(role::HOSTILE) => "the hostile test helper",
+            a if a == app_id(role::TERMINAL) => "the terminal",
             DESKTOP_APP => "the desktop",
             INIT_APP => "Alaya's checks",
             _ => "another app",
@@ -1266,11 +1267,14 @@ pub mod desktop {
         /// A deliberately hostile helper, for the attack checks: it tries
         /// every way around a job's rules. Never in the dock.
         pub const HOSTILE: u64 = 7;
-        pub const COUNT: u64 = 7;
+        /// The terminal (milestone 8, step 4): a command line with small
+        /// C tools built in; it sees only what it is handed.
+        pub const TERMINAL: u64 = 8;
+        pub const COUNT: u64 = 8;
         /// Installed apps (milestone 8): one role per place, from
         /// `INSTALLED` to [`LAST`], for the person logged in.
-        pub const INSTALLED: u64 = 8;
-        pub const INSTALLED_MAX: u64 = 4;
+        pub const INSTALLED: u64 = 9;
+        pub const INSTALLED_MAX: u64 = 3;
         pub const LAST: u64 = INSTALLED + INSTALLED_MAX - 1;
         /// Whether role `r` is an installed app's place.
         pub const fn installed(r: u64) -> bool {

@@ -40,5 +40,37 @@ through pointers. They go through the same endpoints as Rust apps, so a C
 program can do nothing a Rust app cannot. `cargo xtask image` refuses to
 build when the header and the Rust side list different functions.
 
-The first C programs, the POSIX layer on musl and SDL come in step 8-4, and
-build on this.
+The same header also has `alaya_store_lookup`, `alaya_store_remove` and
+`alaya_store_list` (names in a folder, one per line, folders ending in `/`).
+
+## Alaya's own C library
+
+`user/libc` is a small C library of Alaya's own, built with clang by
+`user/apps/build.rs` and linked into the apps program (step 8-4; decision
+160). It has what most small C programs need:
+
+- `string.h`, `ctype.h`, `stdlib.h` (numbers from text, `qsort`, `bsearch`,
+  `rand`, `malloc` and friends on the app's own heap), `errno.h`,
+  `setjmp.h`, `assert.h`, `time.h` (`clock`, `time`, `clock_gettime`);
+- `stdio.h`: `printf` and its family with flags, width and precision,
+  `FILE` streams, `fopen`, `fgets`, `fread`, `fwrite`, `fclose`;
+- `unistd.h` and `fcntl.h`: `open`, `read`, `write`, `lseek`, `close`.
+
+Files are whole documents, read when opened and written back when closed:
+`name` or `/docs/name` is a document the person handed the app, and
+`/app/name` is one of the app's own files. Anything else is "not found". A
+C program can reach exactly what its app was granted, nothing more. What a
+program prints goes to the app (the terminal shows it); `exit` and `abort`
+end the program, not the app.
+
+### The terminal
+
+The terminal (in the Build look's dock) runs small C tools on that library:
+`hello`, `echo`, `cat`, `wc`, `ls`, `cp` and `selftest`, which checks the
+library itself. `pick` opens the Open window, so the person can hand the
+terminal a document before a tool reads it; `help` lists everything, `clear`
+empties the screen. Every command, what it printed and how it ended
+(`[exit N]`) is kept in the terminal's own file `terminal.log`. Boot check
+125 types into it.
+
+SDL-like windows from C and the first C game come next, and build on this.
