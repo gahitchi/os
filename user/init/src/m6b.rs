@@ -407,13 +407,14 @@ impl<'a> Session<'a> {
             let h = XFER_PAGES[(ch * fs::XFER_PAGES + p) as usize].load(SeqCst);
             shared.push((h, dk::XFER + p * 4096, map::WRITE));
         }
-        let mut args = [0u64; 8];
+        let mut args = [0u64; 9];
         args[dk::ARG_ROLE] = r;
         args[dk::ARG_CHANNEL] = ch;
         args[dk::ARG_FONTS..dk::ARG_FONTS + 4].copy_from_slice(&self.sizes);
         if let Some(x) = &ready {
             args[dk::ARG_VERSION] = u64::from(x.version);
             args[dk::ARG_MAY] = u64::from(x.granted);
+            args[dk::ARG_STARTED] = alaya_sys::rt::now_ms();
             // The desktop times it, for the Experience Guardian.
             ask(self.ep, dk::STARTING, &[r, u64::from(x.version)]);
         }

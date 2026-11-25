@@ -1482,6 +1482,10 @@ pub mod desktop {
     /// (promise bits).
     pub const ARG_VERSION: usize = 6;
     pub const ARG_MAY: usize = 7;
+    /// When Alaya began starting an installed app (ms, Alaya's clock):
+    /// what the desktop's start time for the Experience Guardian counts
+    /// from.
+    pub const ARG_STARTED: usize = 8;
 
     /// Key codes (the numbers virtio input sends) for typed text on a US
     /// keyboard: each character of `spec` as (code, modifiers: 1 Shift,

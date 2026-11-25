@@ -42,7 +42,9 @@ alaya_sys::entry!(main);
 
 /// Versions from this one on are slow to start, on purpose.
 const SLOW_FROM: u64 = 4;
-/// How long they wait (ms).
+/// How long they wait (ms) beyond twice the time their start took
+/// before they ran: so they are clearly slower however slow the machine
+/// (a fully emulated 8-core machine takes over 20 s to start any app).
 const SLOW_MS: u64 = 8000;
 const CARD: &str = "postcard.txt";
 const CLOCK_BIT: u64 = 2;
@@ -59,7 +61,14 @@ fn main(info: &'static StartInfo) -> ! {
         // A deliberately slow version, for the checks.
         // (The clock signals once a second.)
         let t0 = rt::now_ms();
-        while rt::now_ms() - t0 < SLOW_MS {
+        let began = info.args[dk::ARG_STARTED];
+        let before = if began != 0 && began <= t0 {
+            t0 - began
+        } else {
+            0
+        };
+        let wait = 2 * before + SLOW_MS;
+        while rt::now_ms() - t0 < wait {
             let _ = alaya_sys::wait(ntfn);
         }
     }
