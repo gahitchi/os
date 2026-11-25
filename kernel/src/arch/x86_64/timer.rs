@@ -20,6 +20,9 @@ use super::trap::TIMER_VECTOR;
 use super::{apic, legacy};
 use crate::kprintln;
 
+/// Whether writing the deadline is costly: a trip out of a virtual machine (the deadline MSR traps).
+pub const WRITE_IS_COSTLY: bool = true;
+
 pub(crate) static DEADLINE_MODE: AtomicBool = AtomicBool::new(false);
 /// APIC timer counts per 2^32 TSC ticks (one-shot fallback only).
 pub(crate) static APIC_PER_TSC_FIXED: AtomicU64 = AtomicU64::new(0);

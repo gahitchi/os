@@ -63,11 +63,11 @@ pub fn set_deadline(ticks: u64) {
     // A remembered time already past means its interrupt was lost or is
     // late: write the timer again rather than trust it, so one lost
     // interrupt can never leave a core without its timer for good.
-    // Only on a PC: there the timer write is a trip out of a virtual
-    // machine. On ARM it is a cheap register write, so the timer is
-    // simply written every time (a phone's QEMU lost wake-ups with the
+    // Only where writing the timer is costly (on a PC, a trip out of a
+    // virtual machine). On ARM it is a cheap register write, so the timer
+    // is simply written every time (a phone's QEMU lost wake-ups with the
     // skip on).
-    if cfg!(target_arch = "x86_64") && now_armed != 0 && now_armed <= ticks && now_armed > now() {
+    if timer::WRITE_IS_COSTLY && now_armed != 0 && now_armed <= ticks && now_armed > now() {
         return;
     }
     armed.store(ticks, Ordering::Relaxed);
