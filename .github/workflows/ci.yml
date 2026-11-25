@@ -201,8 +201,13 @@ jobs:
           for n in 1 2 4; do
             cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --accel tcg --cpus $n --timeout 900
           done
-      - name: Boot, KVM if available, 8 cores
-        run: cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus 8 --timeout 7000
+      # Up to 8 cores, but never more than the runner has (decision 149):
+      # 8 emulated ARM cores on a 4-core runner took 2 hours and more
+      # (the 1, 2 and 4 core boots take 7 minutes each).
+      - name: Boot, KVM if available, up to 8 cores
+        run: |
+          cores=$(nproc); [ "$cores" -gt 8 ] && cores=8
+          cargo xtask test --arch aarch64 --image build/alaya-aarch64.iso --cpus $cores --timeout 3600
 
       - name: Fault reports
         run: |
